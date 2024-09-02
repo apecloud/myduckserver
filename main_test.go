@@ -64,9 +64,7 @@ func TestDebugHarness(t *testing.T) {
 	setupData := []setup.SetupScript{{
 		`create database if not exists mydb`,
 		`use mydb`,
-		`create table t0 (id int primary key, val int)`,
-		`insert into t0 values (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9)`,
-		`create index t0_val on t0(val)`,
+		"create table mytable (i bigint primary key, s varchar(20) comment 'column s' NOT NULL)",
 	}}
 
 	harness.Setup(setupData)
@@ -77,7 +75,7 @@ func TestDebugHarness(t *testing.T) {
 	engine.EngineAnalyzer().Verbose = true
 
 	ctx := enginetest.NewContext(harness)
-	_, iter, _, err := engine.Query(ctx, "SHOW CREATE TABLE t0")
+	_, iter, _, err := engine.Query(ctx, "create index mytable_i_s on mytable (i,s)")
 	require.NoError(t, err)
 	defer iter.Close(ctx)
 

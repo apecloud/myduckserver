@@ -65,7 +65,7 @@ func (d *Database) GetTableInsensitive(ctx *sql.Context, tblName string) (sql.Ta
 }
 
 func (d *Database) tablesInsensitive() (map[string]sql.Table, error) {
-	rows, err := d.storage.Query("SELECT DISTINCT table_name FROM duckdb_tables() where database_name = ? and schema_name = ?", d.catalogName, d.name)
+	rows, err := d.storage.Query("SELECT DISTINCT table_name, comment FROM duckdb_tables() where database_name = ? and schema_name = ?", d.catalogName, d.name)
 	if err != nil {
 		return nil, ErrDuckDB.New(err)
 	}
@@ -74,10 +74,11 @@ func (d *Database) tablesInsensitive() (map[string]sql.Table, error) {
 	tbls := make(map[string]sql.Table)
 	for rows.Next() {
 		var tblName string
-		if err := rows.Scan(&tblName); err != nil {
+		var comment stdsql.NullString
+		if err := rows.Scan(&tblName, &comment); err != nil {
 			return nil, ErrDuckDB.New(err)
 		}
-		tbls[strings.ToLower(tblName)] = NewTable(tblName, d)
+		tbls[strings.ToLower(tblName)] = NewTable(tblName, d).WithComment(DecodeComment(comment.String))
 	}
 	return tbls, nil
 }
@@ -93,12 +94,13 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 	defer d.mu.Unlock()
 
 	var columns []string
+	var columnCommentSQLs []string
 	for _, col := range schema.Schema {
 		typ, err := duckdbDataType(col.Type)
 		if err != nil {
 			return err
 		}
-		colDef := fmt.Sprintf(`"%s" %s`, col.Name, typ)
+		colDef := fmt.Sprintf(`"%s" %s`, col.Name, typ.str)
 		if col.Nullable {
 			colDef += " NULL"
 		} else {
@@ -110,9 +112,15 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 		}
 
 		columns = append(columns, colDef)
+
+		if col.Comment != "" || typ.extra != "" {
+			columnCommentSQLs = append(columnCommentSQLs,
+				fmt.Sprintf(`COMMENT ON COLUMN %s IS %s`, FullColumnName(d.catalogName, d.name, name, col.Name),
+					NewCommentWithMeta(col.Comment, typ.extra).Encode()))
+		}
 	}
 
-	createTableSQL := fmt.Sprintf(`CREATE TABLE %s (%s`, FullTableName(d.catalogName, d.name, name), strings.Join(columns, ", "))
+	sql := fmt.Sprintf(`CREATE TABLE %s (%s`, FullTableName(d.catalogName, d.name, name), strings.Join(columns, ", "))
 
 	var primaryKeys []string
 	for pkord := range schema.PkOrdinals {
@@ -120,11 +128,22 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 	}
 
 	if len(primaryKeys) > 0 {
-		createTableSQL += fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", "))
+		sql += fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", "))
 	}
 
-	createTableSQL += ")"
-	_, err := d.storage.Exec(createTableSQL)
+	sql += ")"
+
+	// Add comment to the table
+	if comment != "" {
+		sql += fmt.Sprintf("; COMMENT ON TABLE %s IS %s", FullTableName(d.catalogName, d.name, name), NewComment(comment).Encode())
+	}
+
+	// Add column comments
+	for _, s := range columnCommentSQLs {
+		sql += ";" + s
+	}
+
+	_, err := d.storage.Exec(sql)
 	if err != nil {
 		return ErrDuckDB.New(err)
 	}

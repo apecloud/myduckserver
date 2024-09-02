@@ -18,3 +18,7 @@ func FullTableName(catalog, schema, table string) string {
 func FullIndexName(catalog, schema, index string) string {
 	return FullTableName(catalog, schema, index)
 }
+
+func FullColumnName(catalog, schema, table, column string) string {
+	return FullTableName(catalog, schema, table) + `."` + column + `"`
+}

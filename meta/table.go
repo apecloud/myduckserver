@@ -8,12 +8,14 @@ import (
 
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/marcboeker/go-duckdb"
+	"github.com/sirupsen/logrus"
 )
 
 type Table struct {
-	mu   *sync.RWMutex
-	name string
-	db   *Database
+	mu      *sync.RWMutex
+	name    string
+	db      *Database
+	comment *Comment // save the comment to avoid querying duckdb everytime
 }
 
 var _ sql.Table = (*Table)(nil)
@@ -24,12 +26,18 @@ var _ sql.IndexAddressableTable = (*Table)(nil)
 var _ sql.InsertableTable = (*Table)(nil)
 var _ sql.UpdatableTable = (*Table)(nil)
 var _ sql.DeletableTable = (*Table)(nil)
+var _ sql.CommentedTable = (*Table)(nil)
 
 func NewTable(name string, db *Database) *Table {
 	return &Table{
 		mu:   &sync.RWMutex{},
 		name: name,
 		db:   db}
+}
+
+func (t *Table) WithComment(comment *Comment) *Table {
+	t.comment = comment
+	return t
 }
 
 // Collation implements sql.Table.
@@ -64,7 +72,7 @@ func (t *Table) Schema() sql.Schema {
 
 func (t *Table) schema() sql.Schema {
 	rows, err := t.db.storage.Query(`
-		SELECT column_name, data_type, is_nullable, column_default, numeric_precision, numeric_scale FROM duckdb_columns() WHERE database_name = ? AND schema_name = ? AND table_name = ?
+		SELECT column_name, data_type, is_nullable, column_default, comment, numeric_precision, numeric_scale FROM duckdb_columns() WHERE database_name = ? AND schema_name = ? AND table_name = ?
 	`, t.db.catalogName, t.db.name, t.name)
 	if err != nil {
 		panic(ErrDuckDB.New(err))
@@ -76,8 +84,9 @@ func (t *Table) schema() sql.Schema {
 		var columnName, dataType string
 		var isNullable bool
 		var columnDefault stdsql.NullString
+		var comment stdsql.NullString
 		var numericPrecision, numericScale stdsql.NullInt32
-		if err := rows.Scan(&columnName, &dataType, &isNullable, &columnDefault, &numericPrecision, &numericScale); err != nil {
+		if err := rows.Scan(&columnName, &dataType, &isNullable, &columnDefault, &comment, &numericPrecision, &numericScale); err != nil {
 			panic(ErrDuckDB.New(err))
 		}
 
@@ -86,13 +95,16 @@ func (t *Table) schema() sql.Schema {
 			defaultValue = sql.NewUnresolvedColumnDefaultValue(columnDefault.String)
 		}
 
+		decodedComment := DecodeComment(comment.String)
+
 		column := &sql.Column{
 			Name:           columnName,
-			Type:           mysqlDataType(dataType, uint8(numericPrecision.Int32), uint8(numericScale.Int32)),
+			Type:           mysqlDataType(newDuckType(dataType, decodedComment.Meta), uint8(numericPrecision.Int32), uint8(numericScale.Int32)),
 			Nullable:       isNullable,
 			Source:         t.name,
 			DatabaseSource: t.db.name,
 			Default:        defaultValue,
+			Comment:        decodedComment.Text,
 		}
 
 		schema = append(schema, column)
@@ -160,7 +172,7 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 		return err
 	}
 
-	sql := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN "%s" %s`, FullTableName(t.db.catalogName, t.db.name, t.name), column.Name, typ)
+	sql := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN "%s" %s`, FullTableName(t.db.catalogName, t.db.name, t.name), column.Name, typ.str)
 
 	if !column.Nullable {
 		sql += " NOT NULL"
@@ -169,6 +181,10 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	if column.Default != nil {
 		sql += fmt.Sprintf(" DEFAULT %s", column.Default.String())
 	}
+
+	// add comment
+	comment := NewCommentWithMeta(column.Comment, typ.extra)
+	sql += fmt.Sprintf(`; COMMENT ON COLUMN %s IS %s`, FullColumnName(t.db.catalogName, t.db.name, t.name, column.Name), comment.Encode())
 
 	_, err = t.db.storage.Exec(sql)
 	if err != nil {
@@ -198,29 +214,40 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	sql := fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN "%s"`, FullTableName(t.db.catalogName, t.db.name, t.name), columnName)
-
 	typ, err := duckdbDataType(column.Type)
 	if err != nil {
 		return err
 	}
 
-	sql += fmt.Sprintf(" SET DATA TYPE %s", typ)
+	baseSQL := fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN "%s"`, FullTableName(t.db.catalogName, t.db.name, t.name), columnName)
+	sqls := []string{
+		fmt.Sprintf(`%s TYPE %s`, baseSQL, typ.str),
+	}
 
 	if column.Nullable {
-		sql += " DROP NOT NULL"
+		sqls = append(sqls, fmt.Sprintf(`%s DROP NOT NULL`, baseSQL))
 	} else {
-		sql += " SET NOT NULL"
+		sqls = append(sqls, fmt.Sprintf(`%s SET NOT NULL`, baseSQL))
 	}
 
 	if column.Default != nil {
-		sql += fmt.Sprintf(" SET DEFAULT %s", column.Default.String())
+		sqls = append(sqls, fmt.Sprintf(`%s SET DEFAULT %s`, baseSQL, column.Default.String()))
 	} else {
-		sql += " DROP DEFAULT"
+		sqls = append(sqls, fmt.Sprintf(`%s DROP DEFAULT`, baseSQL))
 	}
 
-	_, err = t.db.storage.Exec(sql)
+	if columnName != column.Name {
+		sqls = append(sqls, fmt.Sprintf(`ALTER TABLE %s RENAME "%s" TO "%s"`, FullTableName(t.db.catalogName, t.db.name, t.name), columnName, column.Name))
+	}
+
+	// alter comment
+	comment := NewCommentWithMeta(column.Comment, typ.extra)
+	sqls = append(sqls, fmt.Sprintf(`COMMENT ON COLUMN %s IS %s`, FullColumnName(t.db.catalogName, t.db.name, t.name, column.Name), comment.Encode()))
+
+	joinedSQL := strings.Join(sqls, "; ")
+	_, err = t.db.storage.Exec(joinedSQL)
 	if err != nil {
+		logrus.Errorf("run duckdb sql failed: %s", joinedSQL)
 		return ErrDuckDB.New(err)
 	}
 
@@ -283,9 +310,9 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 
 	// Add the index comment if provided
 	if indexDef.Comment != "" {
-		sql += fmt.Sprintf("; COMMENT ON INDEX %s IS '%s'",
+		sql += fmt.Sprintf("; COMMENT ON INDEX %s IS %s",
 			FullIndexName(t.db.catalogName, t.db.name, indexDef.Name),
-			strings.ReplaceAll(indexDef.Comment, "'", "''"))
+			NewComment(indexDef.Comment).Encode())
 	}
 
 	// Execute the SQL statement to create the index
@@ -346,7 +373,7 @@ func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 			return nil, ErrDuckDB.New(err)
 		}
 
-		indexes = append(indexes, NewIndex(t.db.name, t.name, indexName, isUnique, comment.String))
+		indexes = append(indexes, NewIndex(t.db.name, t.name, indexName, isUnique, DecodeComment(comment.String)))
 	}
 
 	if err := rows.Err(); err != nil {
@@ -364,4 +391,9 @@ func (t *Table) IndexedAccess(lookup sql.IndexLookup) sql.IndexedTable {
 // PreciseMatch implements sql.IndexAddressableTable.
 func (t *Table) PreciseMatch() bool {
 	panic("unimplemented")
+}
+
+// Comment implements sql.CommentedTable.
+func (t *Table) Comment() string {
+	return t.comment.Text
 }

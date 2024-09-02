@@ -8,7 +8,7 @@ type Index struct {
 	Exprs      []sql.Expression
 	Name       string
 	Unique     bool
-	CommentStr string
+	CommentObj *Comment
 	PrefixLens []uint16
 }
 
@@ -16,13 +16,13 @@ var _ sql.Index = (*Index)(nil)
 
 // TODO: DuckDB doesn't have a convenient way to get the expressions from an index
 // so we need to implement our own. Storing it in the index comment is a good idea.
-func NewIndex(dbName, tableName, name string, unique bool, comment string) *Index {
+func NewIndex(dbName, tableName, name string, unique bool, comment *Comment) *Index {
 	return &Index{
 		DbName:     dbName,
 		TableName:  tableName,
 		Name:       name,
 		Unique:     unique,
-		CommentStr: comment,
+		CommentObj: comment,
 	}
 }
 
@@ -69,7 +69,7 @@ func (idx *Index) IsFullText() bool {
 
 // Comment returns the comment for this index
 func (idx *Index) Comment() string {
-	return idx.CommentStr
+	return idx.CommentObj.Text
 }
 
 // IndexType returns the type of this index, e.g. BTREE
