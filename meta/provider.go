@@ -1,8 +1,8 @@
 package meta
 
 import (
-	"path/filepath"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,14 +37,16 @@ func NewInMemoryDBProvider() *DbProvider {
 func NewDBProvider(dataDir, dbFile string) (*DbProvider, error) {
 	dbFile = strings.TrimSpace(dbFile)
 	name := ""
+	dsn := ""
 	if dbFile == "" {
 		// in-memory mode, mainly for testing
 		name = "memory"
 	} else {
 		name = strings.Split(dbFile, ".")[0]
+		dsn = filepath.Join(dataDir, dbFile)
 	}
 
-	storage, err := stdsql.Open("duckdb", filepath.Join(dataDir, dbFile))
+	storage, err := stdsql.Open("duckdb", dsn)
 	if err != nil {
 		return nil, err
 	}
