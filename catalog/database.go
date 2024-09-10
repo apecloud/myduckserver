@@ -149,10 +149,7 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 		sqlsBuild.WriteString(";")
 		sqlsBuild.WriteString(s)
 	}
-
-	sqlString := sqlsBuild.String()
-	fmt.Println(sqlString)
-
+	
 	_, err := d.storage.Exec(sqlsBuild.String())
 	if err != nil {
 		if IsDuckDBTableAlreadyExistsError(err) {
