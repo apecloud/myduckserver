@@ -24,7 +24,7 @@ type ColumnInfo struct {
 	ColumnIndex   int
 	DataType      sql.Type
 	IsNullable    bool
-	ColumnDefault stdsql.NullString
+	ColumnDefault interface{}
 	Comment       stdsql.NullString
 }
 type IndexedTable struct {
@@ -93,8 +93,11 @@ func (t *Table) schema() (sql.Schema, []int) {
 	}
 	for _, columnInfo := range columnsInfo {
 		defaultValue := (*sql.ColumnDefaultValue)(nil)
-		if columnInfo.ColumnDefault.Valid {
-			defaultValue = sql.NewUnresolvedColumnDefaultValue(columnInfo.ColumnDefault.String)
+		if columnInfo.ColumnDefault != nil {
+			defaultValue, err = sql.NewColumnDefaultValue(expression.NewLiteral(columnInfo.ColumnDefault, columnInfo.DataType), columnInfo.DataType, false, true, false)
+			if err != nil {
+				panic(ErrDuckDB.New(err))
+			}
 		}
 
 		decodedComment := DecodeComment[MySQLType](columnInfo.Comment.String)
@@ -460,12 +463,18 @@ func queryColumnsInfo(db *stdsql.DB, catalogName, schemaName, tableName string) 
 		decodedComment := DecodeComment[MySQLType](comment.String)
 		dataType := mysqlDataType(AnnotatedDuckType{dataTypes, decodedComment.Meta}, uint8(numericPrecision.Int32), uint8(numericScale.Int32))
 
+		convertedValue, err := convertColumnDefault(dataTypes, columnDefault.String)
+
+		if err != nil {
+			return nil, err
+		}
+
 		columnInfo := &ColumnInfo{
 			ColumnName:    columnName,
 			ColumnIndex:   columnIndex,
 			DataType:      dataType,
 			IsNullable:    isNullable,
-			ColumnDefault: columnDefault,
+			ColumnDefault: convertedValue,
 			Comment:       comment,
 		}
 		columnsInfo = append(columnsInfo, columnInfo)

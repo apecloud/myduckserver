@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dolthub/go-mysql-server/sql"
@@ -303,4 +304,39 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 	default:
 		panic(fmt.Sprintf("encountered unknown DuckDB type(%v). This is likely a bug - please check the duckdbDataType function for missing type mappings", duckType))
 	}
+}
+
+func convertColumnDefault(dataTypes string, columnDefault string) (interface{}, error) {
+	// TODO: The current implementation for handling value types is not comprehensive.
+	// We need to add support for additional types to ensure full coverage and accurate type conversions.
+
+	if columnDefault == "" {
+		return nil, nil
+	}
+	columnDefault = strings.Trim(columnDefault, "'")
+
+	var (
+		convertedValue interface{}
+		err            error
+	)
+
+	switch strings.ToLower(dataTypes) {
+	case "int", "bigint":
+		convertedValue, err = strconv.ParseInt(columnDefault, 10, 64)
+
+	case "float", "double":
+		convertedValue, err = strconv.ParseFloat(columnDefault, 64)
+
+	case "bool":
+		convertedValue, err = strconv.ParseBool(columnDefault)
+
+	default:
+		convertedValue = columnDefault
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("could not convert string to %s: %v", dataTypes, err)
+	}
+
+	return convertedValue, nil
 }
