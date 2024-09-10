@@ -108,7 +108,11 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 		}
 
 		if col.Default != nil {
-			colDef += " DEFAULT " + col.Default.String()
+			if strings.Contains(col.Default.String(), "CURRENT_TIMESTAMP") {
+				colDef += " DEFAULT " + "CURRENT_TIMESTAMP"
+			} else {
+				colDef += " DEFAULT " + col.Default.String()
+			}
 		}
 
 		columns = append(columns, colDef)
@@ -145,6 +149,9 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 		sqlsBuild.WriteString(";")
 		sqlsBuild.WriteString(s)
 	}
+
+	sqlString := sqlsBuild.String()
+	fmt.Println(sqlString)
 
 	_, err := d.storage.Exec(sqlsBuild.String())
 	if err != nil {
