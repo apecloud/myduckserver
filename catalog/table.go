@@ -100,7 +100,10 @@ func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) sql.Pr
 	for _, columnInfo := range columns {
 		defaultValue := (*sql.ColumnDefaultValue)(nil)
 		if columnInfo.ColumnDefault.Valid {
-			defaultValue = sql.NewUnresolvedColumnDefaultValue(columnInfo.ColumnDefault.String)
+			// When not enclosed in parentheses, will recognize the default value as a literal and thus becomes a string
+			// DuckDB returns the default value without parentheses, so we need to add them
+			columnDefaultWithParentheses := "(" + columnInfo.ColumnDefault.String + ")"
+			defaultValue = sql.NewUnresolvedColumnDefaultValue(columnDefaultWithParentheses)
 		}
 
 		decodedComment := DecodeComment[MySQLType](columnInfo.Comment.String)

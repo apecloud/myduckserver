@@ -126,7 +126,11 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 		}
 
 		if col.Default != nil {
-			colDef += " DEFAULT " + transpiler.NormalizeStrings(col.Default.String())
+			if strings.Contains(col.Default.String(), "CURRENT_TIMESTAMP") {
+				colDef += " DEFAULT " + "CURRENT_TIMESTAMP"
+			} else {
+				colDef += " DEFAULT " + transpiler.NormalizeStrings(col.Default.String())
+			}
 		}
 
 		columns = append(columns, colDef)
