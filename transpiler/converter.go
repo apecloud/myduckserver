@@ -167,3 +167,99 @@ func NormalizeStrings(q string) string {
 
 	return normalized.String()
 }
+
+// normalizes a query string to convert any Postgres syntax to MySQL syntax
+func DenormalizeStrings(q string) string {
+	state := notInString
+	lastCharWasBackslash := false
+	denormalized := strings.Builder{}
+
+	for _, c := range q {
+		switch state {
+		case notInString:
+			switch c {
+			case singleQuote:
+				state = inSingleQuote
+				denormalized.WriteRune(singleQuote)
+			case doubleQuote:
+				state = inDoubleQuote
+				denormalized.WriteRune(backtick)
+			default:
+				denormalized.WriteRune(c)
+			}
+		case inSingleQuote:
+			switch c {
+			case backslash:
+				if lastCharWasBackslash {
+					denormalized.WriteRune(c)
+				} else {
+					lastCharWasBackslash = !lastCharWasBackslash
+				}
+			case singleQuote:
+				if lastCharWasBackslash {
+					denormalized.WriteRune(c)
+					lastCharWasBackslash = false
+				} else {
+					state = maybeEndSingleQuote
+				}
+			default:
+				lastCharWasBackslash = false
+				denormalized.WriteRune(c)
+			}
+		case maybeEndSingleQuote:
+			switch c {
+			case singleQuote:
+				state = inSingleQuote
+				denormalized.WriteRune(singleQuote)
+				denormalized.WriteRune(singleQuote)
+			default:
+				state = notInString
+				denormalized.WriteRune(singleQuote)
+				denormalized.WriteRune(c)
+			}
+		case inDoubleQuote:
+			switch c {
+			case backslash:
+				if lastCharWasBackslash {
+					denormalized.WriteRune(c)
+				} else {
+					lastCharWasBackslash = !lastCharWasBackslash
+				}
+			case doubleQuote:
+				if lastCharWasBackslash {
+					denormalized.WriteRune(c)
+					lastCharWasBackslash = !lastCharWasBackslash
+				} else {
+					state = maybeEndDoubleQuote
+				}
+			case backtick:
+				denormalized.WriteRune(backtick)
+				denormalized.WriteRune(backtick)
+			default:
+				lastCharWasBackslash = false
+				denormalized.WriteRune(c)
+			}
+		case maybeEndDoubleQuote:
+			switch c {
+			case doubleQuote:
+				state = inDoubleQuote
+				denormalized.WriteRune(doubleQuote)
+			default:
+				state = notInString
+				denormalized.WriteRune(backtick)
+				denormalized.WriteRune(c)
+			}
+		default:
+			panic("unknown state")
+		}
+	}
+	switch state {
+	case maybeEndSingleQuote:
+		denormalized.WriteRune(singleQuote)
+	case maybeEndDoubleQuote:
+		denormalized.WriteRune(backtick)
+	default: // do nothing
+
+	}
+	return denormalized.String()
+}

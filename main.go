@@ -37,7 +37,7 @@ import (
 // The included MySQL client is used in this example, however any MySQL-compatible client will work.
 
 var (
-	address       = "localhost"
+	address       = "0.0.0.0"
 	port          = 3306
 	dataDirectory = "."
 	dbFileName    = "mysql.db"

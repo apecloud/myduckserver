@@ -16,7 +16,8 @@ func IsDuckDBCatalogError(err error) bool {
 }
 
 func IsDuckDBTableAlreadyExistsError(err error) bool {
-	return IsDuckDBCatalogError(err) && strings.Contains(err.Error(), "Table with name") && strings.Contains(err.Error(), "already exists")
+	return IsDuckDBCatalogError(err) &&
+		(strings.Contains(err.Error(), "Table with name") || strings.Contains(err.Error(), "Could not rename")) && strings.Contains(err.Error(), "already exists")
 }
 
 func IsDuckDBTableNotFoundError(err error) bool {

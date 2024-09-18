@@ -67,6 +67,16 @@ func setPersister(provider sql.DatabaseProvider, engine *sqle.Engine) error {
 		}
 	}
 
-	mysqlDb.AddRootAccount()
+	addAccount := func(account string, address string) {
+		ed := mysqlDb.Editor()
+		defer ed.Close()
+		mysqlDb.AddSuperUser(ed, account, address, "")
+	}
+
+	// Modify it to "%" to allow accepting connections outside when myduckserver runs in Docker
+	// TODO should add a config to decide this or some better way to support this
+	// addAccount("root", "localhost")
+	addAccount("root", "%")
+
 	return nil
 }

@@ -9,7 +9,7 @@ def extract_subtest_names(test_suite, error_log_file):
         error_log = file.read()
 
     # Regex pattern to match the subtest names for the given test suite and extract only the part after the last '/'
-    pattern = rf'--- FAIL: {test_suite}/(?:[^\s/]*/)*([^\s/]+)'
+    pattern = rf'--- FAIL: {test_suite}/([^\s]+)'
 
     # Extract all matches
     matches = re.findall(pattern, error_log)

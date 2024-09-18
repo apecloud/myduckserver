@@ -17,14 +17,16 @@ import (
 )
 
 type DatabaseProvider struct {
-	mu          *sync.RWMutex
-	storage     *stdsql.DB
-	catalogName string
-	dataDir     string
+	mu                        *sync.RWMutex
+	storage                   *stdsql.DB
+	catalogName               string
+	dataDir                   string
+	externalProcedureRegistry sql.ExternalStoredProcedureRegistry
 }
 
 var _ sql.DatabaseProvider = (*DatabaseProvider)(nil)
 var _ sql.MutableDatabaseProvider = (*DatabaseProvider)(nil)
+var _ sql.ExternalStoredProcedureProvider = (*DatabaseProvider)(nil)
 var _ configuration.DataDirProvider = (*DatabaseProvider)(nil)
 
 func NewInMemoryDBProvider() *DatabaseProvider {
@@ -64,10 +66,11 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 	}
 
 	return &DatabaseProvider{
-		mu:          &sync.RWMutex{},
-		storage:     storage,
-		catalogName: name,
-		dataDir:     dataDir,
+		mu:                        &sync.RWMutex{},
+		storage:                   storage,
+		catalogName:               name,
+		dataDir:                   dataDir,
+		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
 	}, nil
 }
 
@@ -85,6 +88,16 @@ func (prov *DatabaseProvider) CatalogName() string {
 
 func (prov *DatabaseProvider) DataDir() string {
 	return prov.dataDir
+}
+
+// ExternalStoredProcedure implements sql.ExternalStoredProcedureProvider.
+func (prov *DatabaseProvider) ExternalStoredProcedure(ctx *sql.Context, name string, numOfParams int) (*sql.ExternalStoredProcedureDetails, error) {
+	return prov.externalProcedureRegistry.LookupByNameAndParamCount(name, numOfParams)
+}
+
+// ExternalStoredProcedures implements sql.ExternalStoredProcedureProvider.
+func (prov *DatabaseProvider) ExternalStoredProcedures(ctx *sql.Context, name string) ([]sql.ExternalStoredProcedureDetails, error) {
+	return prov.externalProcedureRegistry.LookupByName(name)
 }
 
 // AllDatabases implements sql.DatabaseProvider.
