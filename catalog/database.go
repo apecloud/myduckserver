@@ -9,6 +9,7 @@ import (
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/transpiler"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/vt/sqlparser"
 )
 
 type Database struct {
@@ -126,19 +127,39 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 		}
 
 		if col.Default != nil {
-			if strings.Contains(col.Default.String(), "CURRENT_TIMESTAMP") {
-				colDef += " DEFAULT " + "CURRENT_TIMESTAMP"
-			} else {
+			parsed, err := sqlparser.Parse(fmt.Sprintf("SELECT %s", col.Default.String()))
+			if err != nil {
+				return err
+			}
+			selectStmt, ok := parsed.(*sqlparser.Select)
+			if !ok {
+				return fmt.Errorf("expected SELECT statement, got %T", parsed)
+			}
+			expr := selectStmt.SelectExprs[0].(*sqlparser.AliasedExpr).Expr
+			switch expr := expr.(type) {
+			case *sqlparser.FuncExpr:
+				if expr.Name.Lowered() == "current_timestamp" {
+					colDef += " DEFAULT " + "CURRENT_TIMESTAMP"
+				} else {
+					colDef += " DEFAULT " + transpiler.NormalizeStrings(col.Default.String())
+				}
+			default:
 				colDef += " DEFAULT " + transpiler.NormalizeStrings(col.Default.String())
 			}
 		}
 
 		columns = append(columns, colDef)
 
-		if col.Comment != "" || typ.mysql.Name != "" {
-			columnCommentSQLs = append(columnCommentSQLs,
-				fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
-					NewCommentWithMeta[MySQLType](col.Comment, typ.mysql).Encode()))
+		if col.Comment != "" || typ.mysql.Name != "" || col.Default != nil {
+			if col.Default != nil {
+				columnCommentSQLs = append(columnCommentSQLs,
+					fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
+						NewCommentWithColumnDefaut[MySQLType](col.Comment, typ.mysql, col.Default.String()).Encode()))
+			} else {
+				columnCommentSQLs = append(columnCommentSQLs,
+					fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
+						NewCommentWithMeta[MySQLType](col.Comment, typ.mysql).Encode()))
+			}
 		}
 	}
 
