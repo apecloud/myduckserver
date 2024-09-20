@@ -13,11 +13,6 @@ type Comment[T any] struct {
 	Meta T      `json:"meta,omitempty"` // extra information, e.g. the original MySQL column type, etc.
 }
 
-type MetaData struct {
-	Type          MySQLType
-	ColumnDefault string
-}
-
 const ManagedCommentPrefix = "base64:"
 
 func DecodeComment[T any](encodedOrRawText string) *Comment[T] {

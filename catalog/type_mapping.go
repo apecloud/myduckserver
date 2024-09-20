@@ -27,6 +27,7 @@ type MySQLType struct {
 	Display   uint8    `json:",omitempty"` // Display width for integer types
 	Collation uint16   `json:",omitempty"` // For string types
 	Values    []string `json:",omitempty"` // For ENUM and SET
+	Default   string   `json:",omitempty"` // Default value of column
 }
 
 func newCommonType(name string) AnnotatedDuckType {
