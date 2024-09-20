@@ -9,9 +9,13 @@ import (
 )
 
 type Comment[T any] struct {
-	Text          string `json:"text,omitempty"`
-	Meta          T      `json:"meta,omitempty"`          // extra information, e.g. the original MySQL column type, etc.
-	ColumnDefault string `json:"columnDefault,omitempty"` // default value for column
+	Text string `json:"text,omitempty"`
+	Meta T      `json:"meta,omitempty"` // extra information, e.g. the original MySQL column type, etc.
+}
+
+type MetaData struct {
+	Type          MySQLType
+	ColumnDefault string
 }
 
 const ManagedCommentPrefix = "base64:"
@@ -45,10 +49,6 @@ func NewComment[T any](text string) *Comment[T] {
 
 func NewCommentWithMeta[T any](text string, meta T) *Comment[T] {
 	return &Comment[T]{Text: text, Meta: meta}
-}
-
-func NewCommentWithColumnDefaut[T any](text string, meta T, columnDefault string) *Comment[T] {
-	return &Comment[T]{Text: text, Meta: meta, ColumnDefault: columnDefault}
 }
 
 func (c *Comment[T]) Encode() string {

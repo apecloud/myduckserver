@@ -151,15 +151,13 @@ func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.Primary
 		columns = append(columns, colDef)
 
 		if col.Comment != "" || typ.mysql.Name != "" || col.Default != nil {
+			columnDefault := ""
 			if col.Default != nil {
-				columnCommentSQLs = append(columnCommentSQLs,
-					fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
-						NewCommentWithColumnDefaut[MySQLType](col.Comment, typ.mysql, col.Default.String()).Encode()))
-			} else {
-				columnCommentSQLs = append(columnCommentSQLs,
-					fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
-						NewCommentWithMeta[MySQLType](col.Comment, typ.mysql).Encode()))
+				columnDefault = col.Default.String()
 			}
+			columnCommentSQLs = append(columnCommentSQLs,
+				fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
+					NewCommentWithMeta[MetaData](col.Comment, MetaData{typ.mysql, columnDefault}).Encode()))
 		}
 	}
 
