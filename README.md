@@ -114,7 +114,7 @@ MyDuck Server supports setting up replicas from common cloud-based MySQL offerin
 
 ## HTAP setup
 
-We have also offered a tutorial of building a HTAP service based on official MySQL instance and myduck server. You can follow our [instructions](docs/tutorial/htap-setup.md) to have a simple HTAP service.
+We have also offered a tutorial of building a HTAP service based on official MySQL instance and MyDuck Server. You can follow our [instructions](docs/tutorial/htap-setup.md) to have a simple HTAP service.
 
 ## 💡 Contributing
 
