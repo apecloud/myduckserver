@@ -1,0 +1,1 @@
+The code in this directory was copied and modified from [the DoltgreSQL project](https://github.com/dolthub/doltgresql) (as of 2024-11-08, https://github.com/dolthub/doltgresql/blob/main/server). The original code is licensed under the Apache License, Version 2.0. The modifications are also licensed under the Apache License, Version 2.0.
