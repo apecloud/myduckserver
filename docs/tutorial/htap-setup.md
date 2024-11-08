@@ -8,7 +8,7 @@ This a tutorial to build a HTAP based on official MySQL instance and myduck serv
         * Run `sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose`.
         * And then run `sudo chmod +x /usr/local/bin/docker-compose`.
 
-* Go to the directory `trial` under the root path of this project. `cd trial/`
+* Go to the directory `devtools/htap-setup` under the root path of this project. `cd devtools/htap-setup/`
 
 # Launch the HTAP cluster
 
