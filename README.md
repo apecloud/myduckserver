@@ -112,7 +112,7 @@ docker run \
 
 MyDuck Server supports setting up replicas from common cloud-based MySQL offerings. For more information, please refer to the [replica setup guide](docs/tutorial/replica-setup-rds.md).
 
-### HTAP
+## HTAP setup
 
 We have also offered a tutorial of building a HTAP service based on official MySQL instance and myduck server. You can follow our [instructions](docs/tutorial/htap-setup.md) to have a simple HTAP service.
 
