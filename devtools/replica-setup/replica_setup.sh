@@ -8,11 +8,10 @@ usage() {
 
 MYDUCK_HOST="127.0.0.1"
 MYDUCK_PORT=3306
-MYDUCK_USER="_sys_admin_for_rep_"
-MYDUCK_PASSWORD="_sys_admin_for_rep_"
+MYDUCK_USER="_replicator_"
+MYDUCK_PASSWORD="_replicator_"
 MYDUCK_IN_DOCKER="false"
 
-# Parse input parameters using a more efficient approach
 while [[ $# -gt 0 ]]; do
     case $1 in
         --mysql_host)
@@ -77,7 +76,7 @@ fi
 
 # Step 2: Check if Replica of MyDuck Server has already been started
 echo "Checking if replica of MyDuck Server has already been started..."
-check_if_myduckserver_already_have_replica
+check_if_myduck_has_replica
 if [[ $? -ne 0 ]]; then
     echo "Replica has already been started. Exiting."
     exit 1
