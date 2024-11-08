@@ -41,7 +41,7 @@ MyDuck Server isn't here to replace MySQL — it's here to help MySQL users do m
 
 - **Standalone Mode**: MyDuck can run in standalone mode, without MySQL replication. In this mode, it is a drop-in replacement for MySQL, but with a DuckDB heart. You can `CREATE TABLE`, transactionally `INSERT`, `UPDATE`, and `DELETE` data, and run blazingly fast `SELECT` queries.
 
-- **HTAP Architecture Support**: MyDuck works well with MySQL proxy tools to enable hybrid transactional/analytical processing setups. You can route write operations to MySQL and analytical queries to MyDuck, creating a powerful HTAP architecture that combines the best of both worlds.
+- **HTAP Architecture Support**: MyDuck works well with MySQL proxy tools to enable hybrid transactional/analytical processing setups. You can route DML operations to MySQL and analytical queries to MyDuck, creating a powerful HTAP architecture that combines the best of both worlds.
 
 ## 📊 Performance
 
