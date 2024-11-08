@@ -61,7 +61,7 @@ done
 source checker.sh
 
 # Check if all parameters are set
-if [[ -z "$MYSQL_HOST" || -z "$MYSQL_PORT" || -z "$MYSQL_USER" || -z "$MYSQL_PASSWORD" ]]; then
+if [[ -z "$MYSQL_HOST" || -z "$MYSQL_PORT" || -z "$MYSQL_USER" ]]; then
     echo "Error: All parameters are required."
     usage
 fi

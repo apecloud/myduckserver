@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: myduck-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: true
+    volumes:
+      - ./myduck-mysql/mysql:/var/lib/mysql
+    command:
+      --log_bin_trust_function_creators=ON
+      --enforce_gtid_consistency=ON
+      --gtid_mode=ON
+      --binlog_expire_logs_seconds=7200
+
+  myduckserver:
+    image: sean/myduckserver:main
+    container_name: myduckserver
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./myduckserver/data:/home/admin/data
+    command: >
+      /bin/sh -c "mysqlsh --sql --host=127.0.0.1 --port=3306 --user=root --password='' -e 'set global server_id = 2'"
+
+  maxscale:
+    image: mariadb/maxscale:24.02
+    container_name: maxscale
+    ports:
+      - "14000:4000"
+      - "8989:8989"
+    volumes:
+      - ./maxscale/my-maxscale.cnf:/etc/maxscale.cnf.d/my-maxscale.cnf
+
+volumes:
+  mysql_data_dirs:
+    driver: local
