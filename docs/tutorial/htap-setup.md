@@ -36,7 +36,7 @@ Just run `/bin/bash startup.sh`. Then you'll get a HTAP cluster. And an account 
 └─────────┴──────────────────────┴──────┴─────────────┴─────────────────┴──────┴───────────────┘
 ```
 
-* After you connect to the HTAP service, any read statements will be sent to MyDuck Server. MyDuck Server will leverage the power of DuckDB to boost the analytical performance! you can execute `docker exec maxscale maxctrl show server server2 | grep count | grep -v '"count": 0,'` to get the request counting sent to the replica. If you want to check the request counting of primary node, please replace the `server2` with `server1` in the former command.
+* After you connect to the HTAP service, any read statements will be sent to MyDuck Server. MyDuck Server will leverage the power of DuckDB to boost the analytical performance! you can execute `docker exec maxscale maxctrl show server server2 | grep count | grep -v '"count": 0,'` to get the counting of the requests have been sent to the replica. If you want to check the counting of the requests sent to primary node, please replace the `server2` with `server1` in the former command.
 
 For instance, before executing a `READ` statement on HTAP service:
 ```bash
@@ -54,4 +54,4 @@ after executing the `READ` statement:
 
 # Cleanup
 
-You can run `/bin/bash cleanup.sh` to clean up all the testing data after the trial.
+You can run `/bin/bash cleanup.sh` to cleanup all the testing data after the trial.
