@@ -1,4 +1,4 @@
-This a tutorial to build a HTAP based on official MySQL instance and myduck server.
+This a tutorial to build a HTAP based on official MySQL instance and MyDuck Server.
 
 # Prerequisite
 
@@ -17,7 +17,7 @@ Just run `/bin/bash startup.sh`. Then you'll get a HTAP cluster. And an account 
 # Connecting
 
 * The primary MySQL instance can be connected with `mysql -h127.0.0.1 -P3306 -ulol -plol`.
-* The replica(i.e. myduckserver) can be connected with `mysql -h127.0.0.1 -P3307 -ulol -plol`.
+* The replica(i.e. MyDuck Server) can be connected with `mysql -h127.0.0.1 -P3307 -ulol -plol`.
 * The HTAP service can be accessed by `mysql -h127.0.0.1 -P14000 -ulol -plol`.
 
 # Monitor status
@@ -36,7 +36,7 @@ Just run `/bin/bash startup.sh`. Then you'll get a HTAP cluster. And an account 
 └─────────┴──────────────────────┴──────┴─────────────┴─────────────────┴──────┴───────────────┘
 ```
 
-* After you connect to the HTAP service, any read statements will be sent to myduckserver. myduckserver will leverage the power of DuckDB to boost the analytical performance! you can execute `docker exec maxscale maxctrl show server server2 | grep count | grep -v '"count": 0,'` to get the request counting sent to the replica. If you want to check the request counting of primary node, please replace the `server2` with `server1` in the former command.
+* After you connect to the HTAP service, any read statements will be sent to MyDuck Server. MyDuck Server will leverage the power of DuckDB to boost the analytical performance! you can execute `docker exec maxscale maxctrl show server server2 | grep count | grep -v '"count": 0,'` to get the request counting sent to the replica. If you want to check the request counting of primary node, please replace the `server2` with `server1` in the former command.
 
 For instance, before executing a `READ` statement on HTAP service:
 ```bash
