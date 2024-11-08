@@ -12,7 +12,7 @@ This a tutorial to build a HTAP based on MySQL, MyDuck Server, and MariaDB MaxSc
 
 # Launch the HTAP cluster
 
-Just run `/bin/bash startup.sh`. Then you'll get a HTAP cluster. And an account 'lol' with password 'lol' has been created for connecting. Have fun!
+Just run `bash startup.sh`. Then you'll get a HTAP cluster. And an account 'lol' with password 'lol' has been created for connecting. Have fun!
 
 # Connecting
 
@@ -54,4 +54,4 @@ after executing the `READ` statement:
 
 # Cleanup
 
-You can run `/bin/bash cleanup.sh` to cleanup all the testing data after the trial.
+You can run `bash cleanup.sh` to cleanup all the testing data after the trial.
