@@ -1,14 +1,14 @@
-This a tutorial to build a HTAP based on official MySQL instance and MyDuck Server.
+This a tutorial to build a HTAP based on MySQL, MyDuck Server, and MariaDB MaxScale.
 
-# Prerequisite
+# Prerequisites
 
-* Install docker-compose
+* Install `docker-compose`
     * On MacOS, please run `brew install docker-compose`.
     * On Linux, please do the following:
         * Run `sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose`.
         * And then run `sudo chmod +x /usr/local/bin/docker-compose`.
 
-* Go to the directory `devtools/htap-setup` under the root path of this project. `cd devtools/htap-setup/`
+* Go to the directory `devtools/htap-setup` under the root path of this project: `cd devtools/htap-setup/`
 
 # Launch the HTAP cluster
 

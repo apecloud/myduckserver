@@ -17,14 +17,14 @@ if [ -z "$EXECUTED_GTID_SET" ]; then
   exit 1
 fi
 
-if [[ "${MYDUCKSERVER_IN_DOCKER}" =~ "true" ]] && [[ "$OS" == "Darwin" ]] && ([[ "${MYSQL_HOST}" == "127.0.0.1" ]] || [[ "${MYSQL_HOST}" == "localhost" ]] || [[ "${MYSQL_HOST}" == "0.0.0.0" ]]); then
+if [[ "${MYDUCK_IN_DOCKER}" =~ "true" ]] && [[ "$OS" == "Darwin" ]] && ([[ "${MYSQL_HOST}" == "127.0.0.1" ]] || [[ "${MYSQL_HOST}" == "localhost" ]] || [[ "${MYSQL_HOST}" == "0.0.0.0" ]]); then
     MYSQL_HOST_FOR_REPLICA="host.docker.internal"
 else
     MYSQL_HOST_FOR_REPLICA="${MYSQL_HOST}"
 fi
 
 # Connect to MySQL and execute the replication configuration commands
-mysqlsh --sql --host=${MYDUCKSERVER_HOST} --port=${MYDUCKSERVER_PORT} --user=root --password='' <<EOF
+mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --password='' <<EOF
 SET global gtid_purged = "${EXECUTED_GTID_SET}";
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}',
   SOURCE_PORT=${MYSQL_PORT},

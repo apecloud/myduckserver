@@ -3,26 +3,26 @@ version: '3.8'
 services:
   mysql:
     image: mysql:8
-    container_name: myduck-mysql
+    container_name: htap-mysql
     ports:
       - "3306:3306"
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: true
     volumes:
-      - ./myduck-mysql/mysql:/var/lib/mysql
+      - ./htap/mysql:/var/lib/mysql
     command:
       --log_bin_trust_function_creators=ON
       --enforce_gtid_consistency=ON
       --gtid_mode=ON
       --binlog_expire_logs_seconds=7200
 
-  myduckserver:
-    image: sean/myduckserver:main
-    container_name: myduckserver
+  myduck:
+    image: apecloud/myduckserver:latest
+    container_name: htap-myduck
     ports:
       - "3307:3306"
     volumes:
-      - ./myduckserver/data:/home/admin/data
+      - ./htap/data:/home/admin/data
     command: >
       /bin/sh -c "mysqlsh --sql --host=127.0.0.1 --port=3306 --user=root --password='' -e 'set global server_id = 2'"
 

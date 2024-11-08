@@ -9,11 +9,11 @@ if [[ "$OS" == "Darwin" ]]; then
     LOCAL_HOST="host.docker.internal"
 fi
 
-# mkdir for myduck-mysql
-mkdir -p myduck-mysql/mysql
+# mkdir for mysql
+mkdir -p htap/mysql
 
-# mkdir for myduckserver
-mkdir -p myduckserver/data
+# mkdir for myduck
+mkdir -p htap/duck
 
 # mkdir for maxscale
 mkdir -p maxscale

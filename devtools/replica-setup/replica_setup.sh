@@ -2,15 +2,15 @@
 
 # Function to display usage
 usage() {
-    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password> [--myduckserver_host <host>] [--myduckserver_port <port>] [--myduckserver_user <user>] [--myduckserver_password <password>] [--myduckserver_in_docker <true|false>]"
+    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password> [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>] [--myduck_in_docker <true|false>]"
     exit 1
 }
 
-MYDUCKSERVER_HOST="127.0.0.1"
-MYDUCKSERVER_PORT=3306
-MYDUCKSERVER_USER="_sys_admin_for_rep_"
-MYDUCKSERVER_PASSWORD="_sys_admin_for_rep_"
-MYDUCKSERVER_IN_DOCKER="false"
+MYDUCK_HOST="127.0.0.1"
+MYDUCK_PORT=3306
+MYDUCK_USER="_sys_admin_for_rep_"
+MYDUCK_PASSWORD="_sys_admin_for_rep_"
+MYDUCK_IN_DOCKER="false"
 
 # Parse input parameters using a more efficient approach
 while [[ $# -gt 0 ]]; do
@@ -31,24 +31,24 @@ while [[ $# -gt 0 ]]; do
             MYSQL_PASSWORD="$2"
             shift 2
             ;;
-        --myduckserver_host)
-            MYDUCKSERVER_HOST="$2"
+        --myduck_host)
+            MYDUCK_HOST="$2"
             shift 2
             ;;
-        --myduckserver_port)
-            MYDUCKSERVER_PORT="$2"
+        --myduck_port)
+            MYDUCK_PORT="$2"
             shift 2
             ;;
-        --myduckserver_user)
-            MYDUCKSERVER_USER="$2"
+        --myduck_user)
+            MYDUCK_USER="$2"
             shift 2
             ;;
-        --myduckserver_password)
-            MYDUCKSERVER_PASSWORD="$2"
+        --myduck_password)
+            MYDUCK_PASSWORD="$2"
             shift 2
             ;;
-        --myduckserver_in_docker)
-            MYDUCKSERVER_IN_DOCKER="$2"
+        --myduck_in_docker)
+            MYDUCK_IN_DOCKER="$2"
             shift 2
             ;;
         *)
@@ -75,8 +75,8 @@ else
     echo "mysqlsh is already installed."
 fi
 
-# Step 2: Check if Replica of MyDuckServer has already been started
-echo "Checking if replica of MyDuckServer has already been started..."
+# Step 2: Check if Replica of MyDuck Server has already been started
+echo "Checking if replica of MyDuck Server has already been started..."
 check_if_myduckserver_already_have_replica
 if [[ $? -ne 0 ]]; then
     echo "Replica has already been started. Exiting."

@@ -3,11 +3,8 @@
 # docker-compose down
 docker-compose down
 
-# rm myduck-mysql
-rm -rf myduck-mysql
-
-# rm myduckserver
-rm -rf myduckserver
+# rm data
+rm -rf htap
 
 # rm maxscale
 rm -rf maxscale
