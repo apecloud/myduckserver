@@ -2,9 +2,15 @@
 
 # Function to display usage
 usage() {
-    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password>"
+    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password> [--myduckserver_host <host>] [--myduckserver_port <port>] [--myduckserver_user <user>] [--myduckserver_password <password>] [--myduckserver_in_docker <true|false>]"
     exit 1
 }
+
+MYDUCKSERVER_HOST="127.0.0.1"
+MYDUCKSERVER_PORT=3306
+MYDUCKSERVER_USER="_sys_admin_for_rep_"
+MYDUCKSERVER_PASSWORD="_sys_admin_for_rep_"
+MYDUCKSERVER_IN_DOCKER="false"
 
 # Parse input parameters using a more efficient approach
 while [[ $# -gt 0 ]]; do
@@ -23,6 +29,26 @@ while [[ $# -gt 0 ]]; do
             ;;
         --mysql_password)
             MYSQL_PASSWORD="$2"
+            shift 2
+            ;;
+        --myduckserver_host)
+            MYDUCKSERVER_HOST="$2"
+            shift 2
+            ;;
+        --myduckserver_port)
+            MYDUCKSERVER_PORT="$2"
+            shift 2
+            ;;
+        --myduckserver_user)
+            MYDUCKSERVER_USER="$2"
+            shift 2
+            ;;
+        --myduckserver_password)
+            MYDUCKSERVER_PASSWORD="$2"
+            shift 2
+            ;;
+        --myduckserver_in_docker)
+            MYDUCKSERVER_IN_DOCKER="$2"
             shift 2
             ;;
         *)

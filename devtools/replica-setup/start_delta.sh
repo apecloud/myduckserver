@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Detect system architecture (x86_64, arm64, etc.)
+ARCH=$(uname -m)
+
+# Detect OS platform (Linux or Darwin for macOS)
+OS=$(uname -s)
+
 if [[ $SOURCE_IS_EMPTY -eq 0 ]]; then
   EXECUTED_GTID_SET=$(mysqlsh --host="$MYSQL_HOST" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "SHOW BINARY LOG STATUS\G" | grep -i "Executed_Gtid_Set" | awk -F': ' '{print $2}')
 fi
@@ -10,10 +16,16 @@ if [ -z "$EXECUTED_GTID_SET" ]; then
   exit 1
 fi
 
+if [[ "${MYDUCKSERVER_IN_DOCKER,,}" == "true" ]] && [[ "$OS" == "Darwin" ]] && ([[ "${MYSQL_HOST}" == "127.0.0.1" ]] || [[ "${MYSQL_HOST}" == "localhost" ]] || [[ "${MYSQL_HOST}" == "0.0.0.0" ]]); then
+    MYSQL_HOST_FOR_REPLICA="host.docker.internal"
+else
+    MYSQL_HOST_FOR_REPLICA="${MYSQL_HOST}"
+fi
+
 # Connect to MySQL and execute the replication configuration commands
-mysqlsh --sql --host=127.0.0.1 --user=root --port=3306 --password='' <<EOF
+mysqlsh --sql --host=${MYDUCKSERVER_HOST} --port=${MYDUCKSERVER_PORT} --user=${MYDUCKSERVER_USER} --password=${MYDUCKSERVER_PASSWORD} <<EOF
 SET global gtid_purged = "${EXECUTED_GTID_SET}";
-CHANGE REPLICATION SOURCE TO SOURCE_HOST='${MYSQL_HOST}',
+CHANGE REPLICATION SOURCE TO SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}',
   SOURCE_PORT=${MYSQL_PORT},
   SOURCE_USER='${MYSQL_USER}',
   SOURCE_PASSWORD='${MYSQL_PASSWORD}'

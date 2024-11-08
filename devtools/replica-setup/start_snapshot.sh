@@ -1,15 +1,17 @@
 #!/bin/bash
 
-# 1st step: Run MySQL commands to create 'admin' user and set local_infile
-echo "Creating admin user and setting local_infile..."
-mysqlsh --sql --host=127.0.0.1 --user=root --port=3306 --password='' <<EOF
-CREATE USER 'admin'@'%' IDENTIFIED BY 'admin';
-GRANT ALL PRIVILEGES ON *.* TO 'admin'@'%';
+# 1st step: Run MySQL commands to create admin user for replication and set local_infile to 1
+if ! mysqlsh --sql --host=${MYDUCKSERVER_HOST} --port=${MYDUCKSERVER_PORT}  --user=root --password='' -e "SELECT 1 FROM mysql.user WHERE user = '${MYDUCKSERVER_USER}'" | grep -q 1; then
+    echo "Creating admin user for replication and setting local_infile to 1..."
+    mysqlsh --sql --host=${MYDUCKSERVER_HOST} --port=${MYDUCKSERVER_PORT}  --user=root --password='' <<EOF
+CREATE USER '${MYDUCKSERVER_USER}'@'%' IDENTIFIED BY '${MYDUCKSERVER_PASSWORD}';
+GRANT ALL PRIVILEGES ON *.* TO '${MYDUCKSERVER_USER}'@'%';
 SET GLOBAL local_infile = 1;
 EOF
+fi
 
 if [[ $? -ne 0 ]]; then
-    echo "Failed to create admin user or set local_infile. Exiting."
+    echo "Failed to create '${MYDUCKSERVER_USER}' user or set local_infile. Exiting."
     exit 1
 fi
 
@@ -52,7 +54,7 @@ echo "Thread count set to: $THREAD_COUNT"
 # 3rd step: Execute mysqlsh command
 echo "Starting snapshot copy with mysqlsh..."
 # Run mysqlsh command and capture the output
-output=$(mysqlsh -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -- util copy-instance 'mysql://admin:admin@127.0.0.1:3306' --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M)
+output=$(mysqlsh -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -- util copy-instance "mysql://${MYDUCKSERVER_USER}:${MYDUCKSERVER_PASSWORD}@${MYDUCKSERVER_HOST}:${MYDUCKSERVER_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M)
 
 # Extract the EXECUTED_GTID_SET using grep and awk
 EXECUTED_GTID_SET=$(echo "$output" | grep -i "EXECUTED_GTID_SET" | awk '{print $2}')
