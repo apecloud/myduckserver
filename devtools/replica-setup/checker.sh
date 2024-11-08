@@ -127,3 +127,24 @@ check_if_myduckserver_already_have_replica() {
     fi
 }
 
+check_mysql_version_less_than_8_3() {
+    # Use mysqlsh to retrieve the MySQL version
+    version_output=$(mysqlsh --host="$MYSQL_HOST" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "SELECT VERSION();" --batch --silent 2>/dev/null)
+    
+    # Check if mysqlsh command was successful
+    if [[ -z "$version_output" ]]; then
+        echo "Error: Could not retrieve MySQL version."
+        return 1
+    fi
+    
+    # Extract the major and minor version numbers
+    major_version=$(echo "$version_output" | cut -d'.' -f1)
+    minor_version=$(echo "$version_output" | cut -d'.' -f2)
+    
+    # Check if version is less than 8.3
+    if [[ "$major_version" -lt 8 ]] || { [[ "$major_version" -eq 8 ]] && [[ "$minor_version" -lt 3 ]]; }; then
+        return 0  # Version is less than 8.3
+    else
+        return 1  # Version is 8.3 or higher
+    fi
+}

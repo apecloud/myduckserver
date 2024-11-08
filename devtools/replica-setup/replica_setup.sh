@@ -76,7 +76,12 @@ else
     echo "Source MySQL server is empty. Skipping snapshot."
 fi
 
-# Step 6: Call start_delta.sh with MySQL parameters
+# Step 6: Check if MySQL version is less than 8.3
+echo "Checking if MySQL version is less than 8.3..."
+check_mysql_version_less_than_8_3
+MYSQL_VERSION_IS_LESS_THAN_8_3=$?
+
+# Step 7: Call start_delta.sh with MySQL parameters
 echo "Starting delta..."
 source start_delta.sh
 check_command "starting delta"
