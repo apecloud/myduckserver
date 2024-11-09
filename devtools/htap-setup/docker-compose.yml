@@ -2,27 +2,56 @@ services:
   mysql:
     image: mysql:8
     container_name: htap-mysql
-    ports:
-      - "3306:3306"
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: true
-    volumes:
-      - ./htap/mysql:/var/lib/mysql
     command:
-      --log_bin_trust_function_creators=ON
-      --enforce_gtid_consistency=ON
-      --gtid_mode=ON
-      --binlog_expire_logs_seconds=7200
+      - --mysql-native-password=ON
+      - --log_bin_trust_function_creators=ON
+      - --enforce_gtid_consistency=ON
+      - --gtid_mode=ON
+      - --binlog_expire_logs_seconds=7200
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mysql-setup:
+    image: mysql:8
+    container_name: htap-mysql-setup
+    command: ["mysql", "-h", "mysql", "-u", "root", "-e", "create user 'lol'@'%' identified with 'mysql_native_password' by 'lol'; grant all privileges on *.* to 'lol'@'%';"]
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   myduck:
     image: apecloud/myduckserver:latest
     container_name: htap-myduck
-    ports:
-      - "3307:3306"
-    volumes:
-      - ./htap/data:/home/admin/data
-    command: >
-      /bin/sh -c "mysqlsh --sql --host=127.0.0.1 --port=3306 --user=root --password='' -e 'set global server_id = 2'"
+    environment:
+      SETUP_MODE: REPLICA
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "mysqlsh", "-h", "localhost", "-P", "3306", "-u", "root", "--no-password", "-e", "SELECT VERSION();"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  myduck-tmp-fix:
+    image: mysql:8
+    container_name: htap-myduck-tmp-fix
+    command: ["mysql", "-h", "myduck", "-u", "root", "-e", "alter user 'lol'@'%' identified by 'lol';"]
+    restart: "no"
+    depends_on:
+      myduck:
+        condition: service_healthy
 
   maxscale:
     image: mariadb/maxscale:24.02
@@ -31,8 +60,13 @@ services:
       - "14000:4000"
       - "8989:8989"
     volumes:
-      - ./maxscale/my-maxscale.cnf:/etc/maxscale.cnf.d/my-maxscale.cnf
-
-volumes:
-  mysql_data_dirs:
-    driver: local
+      - ./maxscale.cnf:/etc/maxscale.cnf.d/my-maxscale.cnf
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-setup:
+        condition: service_completed_successfully
+      myduck:
+        condition: service_healthy
+      myduck-tmp-fix:
+        condition: service_completed_successfully

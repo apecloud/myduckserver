@@ -81,8 +81,8 @@ COPY --from=builder /myduckserver /usr/local/bin/myduckserver
 COPY --chown=admin:admin --chmod=755 docker/*.sh .
 COPY --chown=admin:admin --chmod=755 devtools/replica-setup ./replica-setup
 
-ENV LC_CTYPE="en_US.UTF-8"
-ENV LANG="en_US.UTF-8"
+# ENV LC_CTYPE="en_US.UTF-8"
+# ENV LANG="en_US.UTF-8"
 
 # Expose the port your server will run on (if applicable)
 EXPOSE 3306

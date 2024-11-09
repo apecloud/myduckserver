@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Detect OS platform (Linux or Darwin for macOS)
+# Detect OS platform (Linux or Darwin)
 OS=$(uname -s)
 
 if [[ $SOURCE_IS_EMPTY -eq 0 ]]; then
@@ -24,9 +24,10 @@ else
 fi
 
 # Connect to MySQL and execute the replication configuration commands
-mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --password='' <<EOF
+mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
 SET global gtid_purged = "${EXECUTED_GTID_SET}";
-CHANGE REPLICATION SOURCE TO SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}',
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}',
   SOURCE_PORT=${MYSQL_PORT},
   SOURCE_USER='${MYSQL_USER}',
   SOURCE_PASSWORD='${MYSQL_PASSWORD}'
@@ -39,5 +40,5 @@ if [ $? -ne 0 ]; then
   echo "Failed to start replication. Exiting."
   exit 1
 else
-  echo "Replication started successfully."
+  echo "Replication established successfully."
 fi

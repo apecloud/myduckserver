@@ -1,4 +1,4 @@
-This a tutorial to build a HTAP based on MySQL, MyDuck Server, and MariaDB MaxScale.
+This a tutorial to build a HTAP service based on MySQL, MyDuck Server, and MariaDB MaxScale.
 
 # Prerequisites
 
@@ -8,17 +8,20 @@ This a tutorial to build a HTAP based on MySQL, MyDuck Server, and MariaDB MaxSc
         * Run `sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose`.
         * And then run `sudo chmod +x /usr/local/bin/docker-compose`.
 
-* Go to the directory `devtools/htap-setup` under the root path of this project: `cd devtools/htap-setup/`
-
 # Launch the HTAP cluster
 
-Just run `bash startup.sh`. Then you'll get a HTAP cluster. And an account 'lol' with password 'lol' has been created for connecting. Have fun!
+Go the root path of this project and run the following commands:
+
+```sh
+cd devtools/htap-setup
+docker-compose up
+```
+
+Then you'll get a HTAP cluster. And an account 'lol' with password 'lol' has been created for connecting. Have fun!
 
 # Connecting
 
-* The primary MySQL instance can be connected with `mysql -h127.0.0.1 -P3306 -ulol -plol`.
-* The replica(i.e. MyDuck Server) can be connected with `mysql -h127.0.0.1 -P3307 -ulol -plol`.
-* The HTAP service can be accessed by `mysql -h127.0.0.1 -P14000 -ulol -plol`.
+The HTAP service can be accessed by `mysql -h127.0.0.1 -P14000 -ulol -plol`. 
 
 # Monitor status
 
@@ -53,4 +56,4 @@ after executing the `READ` statement:
 
 # Cleanup
 
-You can run `bash cleanup.sh` to cleanup all the testing data after the trial.
+You can run `docker-compose down` to cleanup all the testing data after the trial.
