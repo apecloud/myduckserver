@@ -9,6 +9,7 @@ MYDUCK_HOST=${MYDUCK_HOST:-127.0.0.1}
 MYDUCK_PORT=${MYDUCK_PORT:-3306}
 MYDUCK_USER=${MYDUCK_USER:-root}
 MYDUCK_PASSWORD=${MYDUCK_PASSWORD:-}
+MYDUCK_SERVER_ID=${MYDUCK_SERVER_ID:-2}
 MYDUCK_IN_DOCKER=${MYDUCK_IN_DOCKER:-false}
 
 while [[ $# -gt 0 ]]; do
@@ -43,6 +44,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --myduck_password)
             MYDUCK_PASSWORD="$2"
+            shift 2
+            ;;
+        --myduck_server_id)
+            MYDUCK_SERVER_ID="$2"
             shift 2
             ;;
         --myduck_in_docker)

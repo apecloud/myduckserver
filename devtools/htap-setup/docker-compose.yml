@@ -1,11 +1,11 @@
 services:
   mysql:
-    image: mysql:8
+    image: mysql:8.0
     container_name: htap-mysql
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: true
     command:
-      - --mysql-native-password=ON
+      - --default-authentication-plugin=mysql_native_password
       - --log_bin_trust_function_creators=ON
       - --enforce_gtid_consistency=ON
       - --gtid_mode=ON
@@ -17,7 +17,7 @@ services:
       retries: 5
 
   mysql-setup:
-    image: mysql:8
+    image: mysql:8.0
     container_name: htap-mysql-setup
     command: ["mysql", "-h", "mysql", "-u", "root", "-e", "create user 'lol'@'%' identified with 'mysql_native_password' by 'lol'; grant all privileges on *.* to 'lol'@'%';"]
     restart: "no"
@@ -27,6 +27,7 @@ services:
 
   myduck:
     image: apecloud/myduckserver:latest
+    pull_policy: always
     container_name: htap-myduck
     environment:
       SETUP_MODE: REPLICA
@@ -45,9 +46,9 @@ services:
       retries: 5
 
   myduck-tmp-fix:
-    image: mysql:8
+    image: mysql:8.0
     container_name: htap-myduck-tmp-fix
-    entrypoint: ["bash", "-c", "until mysql -h myduck -u root -e \"alter user 'lol'@'%' identified by 'lol';\"; do echo 'Waiting for account to be ready...'; sleep 2; done"]
+    entrypoint: ["bash", "-c", "until mysql -h myduck -u root -e \"alter user 'lol'@'%' identified by 'lol';\" ; do echo 'Waiting for account to be ready...'; sleep 2; done"]
     restart: "no"
     depends_on:
       myduck:
