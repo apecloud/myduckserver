@@ -86,6 +86,9 @@ Connect using any MySQL client to run MySQL-style SQL queries:
 mysql -h127.0.0.1 -P13306 -uroot
 ```
 
+> [!NOTE]
+> MySQL CLI clients version 9.0 and above are not yet supported. If you are using macOS, consider `brew install mysql-client@8.4`.
+
 #### Connecting via PostgreSQL
 
 For full analytical power, connect using the PostgreSQL-compatible port and write DuckDB SQL directly:
@@ -117,7 +120,7 @@ MyDuck Server supports setting up replicas from common cloud-based MySQL offerin
 
 ### HTAP Setup
 
-With MyDuck's powerful analytics capabilities, you can create an HTAP (Hybrid Transactional/Analytical Processing) system where high-frequency data writes are directed to a standard MySQL instance, while analytical queries are handled by a MyDuck Server instance. Follow our [HTAP setup instructions](docs/tutorial/htap-setup.md) to easily set up an HTAP demonstration.
+With MyDuck's powerful analytics capabilities, you can create an HTAP (Hybrid Transactional/Analytical Processing) system where high-frequency data writes are directed to a standard MySQL instance, while analytical queries are handled by a MyDuck Server instance. Follow our HTAP setup instructions based on [ProxySQL](docs/tutorial/htap-proxysql-setup.md) or [MariaDB MaxScale](docs/tutorial/htap-maxscale-setup.md) to easily set up an HTAP demonstration.
 
 ## 💡 Contributing
 

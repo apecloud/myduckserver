@@ -1,4 +1,4 @@
-This a tutorial to build a HTAP service based on MySQL, MyDuck Server, and MariaDB MaxScale.
+This a tutorial to build an HTAP service based on MySQL, MyDuck Server, and MariaDB MaxScale.
 
 # Prerequisites
 
@@ -13,7 +13,7 @@ This a tutorial to build a HTAP service based on MySQL, MyDuck Server, and Maria
 Go the root path of this project and run the following commands:
 
 ```sh
-cd devtools/htap-setup
+cd devtools/htap-setup/maxscale
 docker-compose up
 ```
 
@@ -21,7 +21,11 @@ Then you'll get a HTAP cluster. And an account 'lol' with password 'lol' has bee
 
 # Connecting
 
-The HTAP service can be accessed by `mysql -h127.0.0.1 -P14000 -ulol -plol`. 
+The HTAP service can be accessed by
+
+```sh
+mysql -h127.0.0.1 -P14000 -ulol -plol
+``` 
 
 # Monitor status
 
@@ -56,4 +60,4 @@ after executing the `READ` statement:
 
 # Cleanup
 
-You can run `docker-compose down` to cleanup all the testing data after the trial.
+You can run `docker-compose down` to clean up all resources after the trial.
