@@ -51,8 +51,9 @@ Typical OLAP queries can run **up to 1000x faster** with MyDuck Server compared 
 
 We have big plans for MyDuck Server! Here are some of the features we’re working on:
 
-- [ ] Be compatible with MySQL proxy tools like [ProxySQL](https://proxysql.com/) and [MariaDB MaxScale](https://mariadb.com/kb/en/maxscale/).
+- [x] Be compatible with MySQL proxy tools like [ProxySQL](https://proxysql.com/) and [MariaDB MaxScale](https://mariadb.com/kb/en/maxscale/).
 - [ ] Replicate data from PostgreSQL.
+- [ ] Authentication.
 - [ ] ...and more! We’re always looking for ways to make MyDuck Server better. If you have a feature request, please let us know by [opening an issue](https://github.com/apecloud/myduckserver/issues/new).
 
 
