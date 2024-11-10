@@ -18,7 +18,7 @@ type=monitor
 module=mariadbmon
 servers=mysql-primary,myduck-server
 user=root
-password=''
+password=
 monitor_interval=2000ms
 assume_unique_hostnames=false
 
@@ -28,7 +28,7 @@ type=service
 router=readwritesplit
 servers=mysql-primary,myduck-server
 user=root
-password=''
+password=
 filters=Hint
 
 # The filter of hint
