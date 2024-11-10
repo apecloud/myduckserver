@@ -1,12 +1,17 @@
 #!/bin/bash
 
-# Function to display usage
 usage() {
-    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password>"
+    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password> [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>] [--myduck_in_docker <true|false>]"
     exit 1
 }
 
-# Parse input parameters using a more efficient approach
+MYDUCK_HOST=${MYDUCK_HOST:-127.0.0.1}
+MYDUCK_PORT=${MYDUCK_PORT:-3306}
+MYDUCK_USER=${MYDUCK_USER:-root}
+MYDUCK_PASSWORD=${MYDUCK_PASSWORD:-}
+MYDUCK_SERVER_ID=${MYDUCK_SERVER_ID:-2}
+MYDUCK_IN_DOCKER=${MYDUCK_IN_DOCKER:-false}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --mysql_host)
@@ -25,6 +30,30 @@ while [[ $# -gt 0 ]]; do
             MYSQL_PASSWORD="$2"
             shift 2
             ;;
+        --myduck_host)
+            MYDUCK_HOST="$2"
+            shift 2
+            ;;
+        --myduck_port)
+            MYDUCK_PORT="$2"
+            shift 2
+            ;;
+        --myduck_user)
+            MYDUCK_USER="$2"
+            shift 2
+            ;;
+        --myduck_password)
+            MYDUCK_PASSWORD="$2"
+            shift 2
+            ;;
+        --myduck_server_id)
+            MYDUCK_SERVER_ID="$2"
+            shift 2
+            ;;
+        --myduck_in_docker)
+            MYDUCK_IN_DOCKER="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown parameter: $1"
             usage
@@ -35,8 +64,8 @@ done
 source checker.sh
 
 # Check if all parameters are set
-if [[ -z "$MYSQL_HOST" || -z "$MYSQL_PORT" || -z "$MYSQL_USER" || -z "$MYSQL_PASSWORD" ]]; then
-    echo "Error: All parameters are required."
+if [[ -z "$MYSQL_HOST" || -z "$MYSQL_PORT" || -z "$MYSQL_USER" ]]; then
+    echo "Error: Missing required MySQL connection variables: MYSQL_HOST, MYSQL_PORT, MYSQL_USER."
     usage
 fi
 
@@ -49,34 +78,39 @@ else
     echo "mysqlsh is already installed."
 fi
 
-# Step 2: Check if Replica of MyDuckServer has already been started
-echo "Checking if replica of MyDuckServer has already been started..."
-check_if_myduckserver_already_have_replica
+# Step 2: Check if replication has already been started
+echo "Checking if replication has already been started..."
+check_if_myduck_has_replica
 if [[ $? -ne 0 ]]; then
-    echo "Replica has already been started. Exiting."
+    echo "Replication has already been started. Exiting."
     exit 1
 fi
 
-# Step 3: Check MySQL server and user configuration
-echo "Checking MySQL server and user configuration..."
+# Step 3: Check MySQL configuration
+echo "Checking MySQL configuration..."
 check_mysql_config
-check_command "MySQL server and user configuration check"
+check_command "MySQL configuration check"
 
-# Step 4: Check if source MySQL server is empty
+# Step 3: Prepare MyDuck Server for replication
+echo "Preparing MyDuck Server for replication..."
+source prepare.sh
+check_command "preparing MyDuck Server for replication"
+
+# Step 4: Check if the MySQL server is empty
 echo "Checking if source MySQL server is empty..."
 check_if_source_mysql_is_empty
 SOURCE_IS_EMPTY=$?
 
-# Step 5: Call start_snapshot.sh with MySQL parameters if MySQL server is not empty
+# Step 5: Copy the existing data if the MySQL instance is not empty
 if [[ $SOURCE_IS_EMPTY -ne 0 ]]; then
-    echo "Starting snapshot..."
-    source start_snapshot.sh
-    check_command "starting snapshot"
+    echo "Copying a snapshot of the MySQL instance to MyDuck Server..."
+    source snapshot.sh
+    check_command "copying a snapshot of the MySQL instance"
 else
-    echo "Source MySQL server is empty. Skipping snapshot."
+    echo "This MySQL instance is empty. Skipping snapshot."
 fi
 
-# Step 6: Call start_delta.sh with MySQL parameters
-echo "Starting delta..."
-source start_delta.sh
-check_command "starting delta"
+# Step 6: Establish replication
+echo "Starting replication..."
+source start_replication.sh
+check_command "starting replication"

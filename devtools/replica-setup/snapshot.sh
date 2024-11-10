@@ -1,20 +1,5 @@
 #!/bin/bash
 
-# 1st step: Run MySQL commands to create 'admin' user and set local_infile
-echo "Creating admin user and setting local_infile..."
-mysqlsh --sql --host=127.0.0.1 --user=root --port=3306 --password='' <<EOF
-CREATE USER 'admin'@'%' IDENTIFIED BY 'admin';
-GRANT ALL PRIVILEGES ON *.* TO 'admin'@'%';
-SET GLOBAL local_infile = 1;
-EOF
-
-if [[ $? -ne 0 ]]; then
-    echo "Failed to create admin user or set local_infile. Exiting."
-    exit 1
-fi
-
-# 2nd step: Get the core count based on cgroup information
-
 # Function to extract core count from cgroup v1 and v2
 get_core_count() {
     if [[ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us && -f /sys/fs/cgroup/cpu/cpu.cfs_period_us ]]; then
@@ -49,10 +34,9 @@ THREAD_COUNT=$(( 2 * CORE_COUNT ))
 echo "Detected core count: $CORE_COUNT"
 echo "Thread count set to: $THREAD_COUNT"
 
-# 3rd step: Execute mysqlsh command
-echo "Starting snapshot copy with mysqlsh..."
+echo "Copying data from MySQL to MyDuck..."
 # Run mysqlsh command and capture the output
-output=$(mysqlsh -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -- util copy-instance 'mysql://admin:admin@127.0.0.1:3306' --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M)
+output=$(mysqlsh -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M)
 
 # Extract the EXECUTED_GTID_SET using grep and awk
 EXECUTED_GTID_SET=$(echo "$output" | grep -i "EXECUTED_GTID_SET" | awk '{print $2}')

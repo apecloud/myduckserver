@@ -1,0 +1,44 @@
+# Define the primary server
+[mysql-primary]
+type=server
+address=mysql
+port=3306
+protocol=MariaDBBackend
+
+# Define the secondary server
+[myduck-server]
+type=server
+address=myduck
+port=3306
+protocol=MariaDBBackend
+
+# Monitor to check the status of the servers
+[MySQL-Monitor]
+type=monitor
+module=mariadbmon
+servers=mysql-primary,myduck-server
+user=root
+password=
+monitor_interval=2000ms
+assume_unique_hostnames=false
+
+# The read-write splitting service
+[Read-Write-Service]
+type=service
+router=readwritesplit
+servers=mysql-primary,myduck-server
+user=root
+password=
+filters=Hint
+
+# The filter of hint
+[Hint]
+type=filter
+module=hintfilter
+
+# Define listener for the service
+[Read-Write-Listener]
+type=listener
+service=Read-Write-Service
+protocol=MariaDBClient
+port=4000

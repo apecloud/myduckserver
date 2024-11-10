@@ -3,11 +3,11 @@
 export DATA_PATH="${HOME}/data"
 export LOG_PATH="${HOME}/log"
 export REPLICA_SETUP_PATH="${HOME}/replica-setup"
-export PID_FILE="${LOG_PATH}/myDuckServer.pid"
+export PID_FILE="${LOG_PATH}/myduck.pid"
 
 # Function to run replica setup
 run_replica_setup() {
-    if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_PORT" ] || [ -z "$MYSQL_PORT" ] || [ -z "$MYSQL_PASSWORD" ]; then
+    if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_PORT" ] || [ -z "$MYSQL_USER" ]; then
         echo "Error: Missing required MySQL connection variables for replica setup."
         exit 1
     fi
@@ -15,7 +15,7 @@ run_replica_setup() {
     cd "$REPLICA_SETUP_PATH" || { echo "Error: Could not change directory to ${REPLICA_SETUP_PATH}"; exit 1; }
 
     # Run replica_setup.sh and check for errors
-    if bash replica_setup.sh --mysql_host "$MYSQL_HOST" --mysql_port "$MYSQL_PORT" --mysql_user "$MYSQL_USER" --mysql_password "$MYSQL_PASSWORD"; then
+    if bash replica_setup.sh; then
         echo "Replica setup completed."
     else
         echo "Error: Replica setup failed."
@@ -23,10 +23,15 @@ run_replica_setup() {
     fi
 }
 
-run_server() {
+run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
       nohup myduckserver >> "${LOG_PATH}"/server.log 2>&1 &
       echo "$!" > "${PID_FILE}"
+}
+
+run_server_in_foreground() {
+    cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
+    myduckserver
 }
 
 wait_for_my_duck_server_ready() {
@@ -39,7 +44,7 @@ wait_for_my_duck_server_ready() {
 
     echo "Waiting for MyDuck Server at $host:$port to be ready..."
 
-    until mysqlsh --sql --host "$host" --user "$user" --password="" --port "$port" --execute "SELECT 1;" &> /dev/null; do
+    until mysqlsh --sql --host "$host" --port "$port" --user "$user" --no-password --execute "SELECT VERSION();" &> /dev/null; do
         attempt=$((attempt+1))
         if [ "$attempt" -ge "$max_attempts" ]; then
             echo "Error: MySQL connection timed out after $max_attempts attempts."
@@ -81,30 +86,26 @@ setup() {
     case "$SETUP_MODE" in
         "" | "SERVER")
             echo "Starting MyDuck Server in SERVER mode..."
-            run_server
+            run_server_in_foreground
             ;;
 
         "REPLICA")
             echo "Starting MyDuck Server and running replica setup in REPLICA mode..."
-            run_server
+            run_server_in_background
             wait_for_my_duck_server_ready
             run_replica_setup
             ;;
 
-        "REPLICA_ONLY")
-            echo "Running in REPLICA_ONLY mode..."
-            run_replica_setup
-            ;;
-
         *)
-            echo "Error: Invalid setup_mode value. Valid options are: SERVER, REPLICA_ONLY, REPLICA."
+            echo "Error: Invalid SETUP_MODE value. Valid options are: SERVER, REPLICA."
             exit 1
             ;;
     esac
 }
 
 setup
-while [[ "$SETUP_MODE" != "REPLICA_ONLY" ]]; do
+
+while [[ "$SETUP_MODE" == "REPLICA" ]]; do
     # Check if the processes have started
     check_process_alive "$PID_FILE" "MyDuck Server"
     MY_DUCK_SERVER_STATUS=$?

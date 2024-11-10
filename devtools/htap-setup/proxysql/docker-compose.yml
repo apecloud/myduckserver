@@ -1,0 +1,74 @@
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: htap-mysql
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: true
+    command:
+      - --mysql_native_password=ON
+      - --log_bin_trust_function_creators=ON
+      - --enforce_gtid_consistency=ON
+      - --gtid_mode=ON
+      - --binlog_expire_logs_seconds=7200
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mysql-setup:
+    image: mysql:8
+    container_name: htap-mysql-setup
+    command: ["mysql", "-h", "mysql", "-u", "root", "-e", "create user 'lol'@'%' identified with 'mysql_native_password' by 'lol'; grant all privileges on *.* to 'lol'@'%';"]
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  myduck:
+    image: apecloud/myduckserver:latest
+    pull_policy: always
+    container_name: htap-myduck
+    environment:
+      SETUP_MODE: REPLICA
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "mysqlsh", "-h", "localhost", "-P", "3306", "-u", "root", "--no-password", "-e", "SELECT VERSION();"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  myduck-tmp-fix:
+    image: mysql:8
+    container_name: htap-myduck-tmp-fix
+    entrypoint: ["bash", "-c", "until mysql -h myduck -u root -e \"alter user 'lol'@'%' identified by 'lol';\" ; do echo 'Waiting for account to be ready...'; sleep 2; done"]
+    restart: "no"
+    depends_on:
+      myduck:
+        condition: service_healthy
+
+  proxysql:
+    image: proxysql/proxysql:latest
+    container_name: proxysql
+    volumes:
+      - ./proxysql.cnf:/etc/proxysql.cnf
+    ports:
+      - "16033:6033"  # MySQL client port
+      - "16032:6032"  # Admin port
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-setup:
+        condition: service_completed_successfully
+      myduck:
+        condition: service_healthy
+      myduck-tmp-fix:
+        condition: service_completed_successfully

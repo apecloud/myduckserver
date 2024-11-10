@@ -111,16 +111,16 @@ check_if_source_mysql_is_empty() {
     fi
 }
 
-# Function to check if MyDuckServer has already been started
-check_if_myduckserver_already_have_replica() {
-    REPLICA_STATUS=$(mysqlsh --sql --host=127.0.0.1 --user=root --port=3306 --password='' -e "SHOW REPLICA STATUS\G")
+# Function to check if there is ongoing replication on MyDuck Server
+check_if_myduck_has_replica() {
+    REPLICA_STATUS=$(mysqlsh --sql --host=$MYDUCK_HOST --port=$MYDUCK_PORT --user=root --password='' -e "SHOW REPLICA STATUS\G")
     check_command "retrieving replica status"
 
     SOURCE_HOST=$(echo "$REPLICA_STATUS" | awk '/Source_Host/ {print $2}')
 
     # Check if Source_Host is not null or empty
     if [[ -n "$SOURCE_HOST" ]]; then
-        echo "Replica has already been started. Source Host: $SOURCE_HOST"
+        echo "Replication has already been started. Source Host: $SOURCE_HOST"
         return 1
     else
         return 0
