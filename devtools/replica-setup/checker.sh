@@ -102,7 +102,7 @@ check_if_source_mysql_is_empty() {
     check_command "retrieving database list"
 
     # Check if the output contains only the default databases
-    NON_DEFAULT_DBs=$(echo "$OUTPUT" | grep -v -E "^(Database|information_schema|mysql|performance_schema|sys)$" | wc -l)
+    NON_DEFAULT_DBs=$(echo "$OUTPUT" | grep -cv -E "^(Database|information_schema|mysql|performance_schema|sys)$")
 
     if [[ "$NON_DEFAULT_DBs" -gt 0 ]]; then
         return 1
