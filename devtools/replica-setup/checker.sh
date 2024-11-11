@@ -13,7 +13,7 @@ check_server_params() {
     echo "Checking MySQL server parameters..."
 
     # Retrieve the required MySQL server variables using mysqlsh
-    result=$(mysqlsh --host="$MYSQL_HOST" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "
+    result=$(mysqlsh --host="$MYSQL_HOST" --user="$MYSQL_USER" --port="$MYSQL_PORT" --password="$MYSQL_PASSWORD" --sql -e "
     SHOW VARIABLES WHERE variable_name IN ('binlog_format', 'enforce_gtid_consistency', 'gtid_mode', 'log_bin');
     ")
 
@@ -50,8 +50,8 @@ check_server_params() {
     fi
 
     # Validate log_bin
-    if [[ "$log_bin" != "ON" ]]; then
-        echo "Error: log_bin is not set to 'ON', it is set to '$log_bin'."
+    if [[ "$log_bin" != "ON" && "$log_bin" != "1" ]]; then
+        echo "Error: log_bin is not enabled. Current value is '$log_bin'."
         return 1
     fi
 
