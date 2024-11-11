@@ -16,16 +16,18 @@ package logrepl
 
 import (
 	"context"
+	stdsql "database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/catalog"
 	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/google/uuid"
@@ -47,7 +49,6 @@ type LogicalReplicator struct {
 	primaryDns string
 	engine     *gms.Engine
 
-	walFilePath     string
 	running         bool
 	messageReceived bool
 	stop            chan struct{}
@@ -57,12 +58,11 @@ type LogicalReplicator struct {
 // NewLogicalReplicator creates a new logical replicator instance which connects to the primary and replication
 // databases using the connection strings provided. The connection to the replica is established immediately, and the
 // connection to the primary is established when StartReplication is called.
-func NewLogicalReplicator(walFilePath string, primaryDns string, engine *gms.Engine) (*LogicalReplicator, error) {
+func NewLogicalReplicator(primaryDns string, engine *gms.Engine) (*LogicalReplicator, error) {
 	return &LogicalReplicator{
-		primaryDns:  primaryDns,
-		engine:      engine,
-		walFilePath: walFilePath,
-		mu:          &sync.Mutex{},
+		primaryDns: primaryDns,
+		engine:     engine,
+		mu:         &sync.Mutex{},
 	}, nil
 }
 
@@ -173,18 +173,18 @@ type replicationState struct {
 
 // StartReplication starts the replication process for the given slot name. This function blocks until replication is
 // stopped via the Stop method, or an error occurs.
-func (r *LogicalReplicator) StartReplication(slotName string) error {
+func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName string) error {
 	standbyMessageTimeout := 10 * time.Second
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
-	lastWrittenLsn, err := r.readWALPosition()
+	lastWrittenLsn, err := r.readWALPosition(sqlCtx, slotName)
 	if err != nil {
 		return err
 	}
 
 	state := &replicationState{
 		lastWrittenLSN: lastWrittenLsn,
-		replicaCtx:     r.sqlCtx,
+		replicaCtx:     sqlCtx,
 		relations:      map[uint32]*pglogrepl.RelationMessageV2{},
 		typeMap:        pgtype.NewMap(),
 	}
@@ -350,7 +350,7 @@ func (r *LogicalReplicator) StartReplication(slotName string) error {
 				if committed {
 					state.lastWrittenLSN = state.currentTransactionLSN
 					log.Printf("Writing LSN %s to file\n", state.lastWrittenLSN.String())
-					err := r.writeWALPosition(state.lastWrittenLSN)
+					err := r.writeWALPosition(sqlCtx, slotName, state.lastWrittenLSN)
 					if err != nil {
 						return err
 					}
@@ -568,13 +568,13 @@ func (r *LogicalReplicator) processMessage(
 		state.currentTransactionLSN = logicalMsg.FinalLSN
 
 		log.Printf("BeginMessage: %v", logicalMsg)
-		err = r.replicateQuery(state.replicaCtx, "START TRANSACTION")
+		err = r.execute(state.replicaCtx, "START TRANSACTION")
 		if err != nil {
 			return false, err
 		}
 	case *pglogrepl.CommitMessage:
 		log.Printf("CommitMessage: %v", logicalMsg)
-		err = r.replicateQuery(state.replicaCtx, "COMMIT")
+		err = r.execute(state.replicaCtx, "COMMIT")
 		if err != nil {
 			return false, err
 		}
@@ -758,23 +758,44 @@ func (r *LogicalReplicator) processMessage(
 	return false, nil
 }
 
-// readWALPosition reads the recorded WAL position from the WAL position file
-func (r *LogicalReplicator) readWALPosition() (pglogrepl.LSN, error) {
-	walFileContents, err := os.ReadFile(r.walFilePath)
-	if err != nil {
-		// if the file doesn't exist, consider this a cold start and return 0
-		if os.IsNotExist(err) {
+// readWALPosition reads the recorded WAL position from the WAL position table
+func (r *LogicalReplicator) readWALPosition(ctx *sql.Context, slotName string) (pglogrepl.LSN, error) {
+	var lsn string
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.SelectStmt(), slotName).Scan(&lsn); err != nil {
+		if errors.Is(err, stdsql.ErrNoRows) {
+			// if the LSN doesn't exist, consider this a cold start and return 0
 			return pglogrepl.LSN(0), nil
 		}
 		return 0, err
 	}
 
-	return pglogrepl.ParseLSN(string(walFileContents))
+	return pglogrepl.ParseLSN(lsn)
 }
 
-// writeWALPosition writes the recorded WAL position to the WAL position file
-func (r *LogicalReplicator) writeWALPosition(lsn pglogrepl.LSN) error {
-	return os.WriteFile(r.walFilePath, []byte(lsn.String()), 0644)
+func (r *LogicalReplicator) execute(ctx *sql.Context, query string) error {
+	_, iter, _, err := r.engine.Query(ctx, query)
+	if err != nil {
+		// Log any errors, except for commits with "nothing to commit"
+		if err.Error() != "nothing to commit" {
+			return err
+		}
+		return nil
+	}
+	for {
+		if _, err := iter.Next(ctx); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			ctx.GetLogger().Errorf("ERROR reading query results: %v ", err.Error())
+			return err
+		}
+	}
+}
+
+// writeWALPosition writes the recorded WAL position to the WAL position table
+func (r *LogicalReplicator) writeWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
+	_, err := adapter.Exec(ctx, catalog.InternalTables.PgReplicationLSN.UpsertStmt(), slotName, lsn.String())
+	return err
 }
 
 // whereClause returns a WHERE clause string with the contents of the builder if it's non-empty, or the empty

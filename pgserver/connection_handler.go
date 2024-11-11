@@ -30,6 +30,7 @@ import (
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
@@ -67,12 +68,12 @@ func init() {
 }
 
 // NewConnectionHandler returns a new ConnectionHandler for the connection provided
-func NewConnectionHandler(conn net.Conn, handler mysql.Handler, server *server.Server) *ConnectionHandler {
+func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engine, sm *server.SessionManager, connID uint32) *ConnectionHandler {
 	mysqlConn := &mysql.Conn{
 		Conn:        conn,
 		PrepareData: make(map[uint32]*mysql.PrepareData),
 	}
-	mysqlConn.ConnectionID = server.Listener.(*mysql.Listener).ConnectionID.Add(1)
+	mysqlConn.ConnectionID = connID
 
 	// Postgres has a two-stage procedure for prepared queries. First the query is parsed via a |Parse| message, and
 	// the result is stored in the |preparedStatements| map by the name provided. Then one or more |Bind| messages
@@ -84,8 +85,8 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, server *server.S
 	// TODO: possibly should define engine and session manager ourselves
 	//  instead of depending on the GetRunningServer method.
 	duckHandler := &DuckHandler{
-		e:                 server.Engine,
-		sm:                server.SessionManager(),
+		e:                 engine,
+		sm:                sm,
 		readTimeout:       0,     // cfg.ConnReadTimeout,
 		encodeLoggedQuery: false, // cfg.EncodeLoggedQuery,
 	}

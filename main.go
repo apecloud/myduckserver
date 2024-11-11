@@ -27,11 +27,12 @@ import (
 	"github.com/apecloud/myduckserver/replica"
 	"github.com/apecloud/myduckserver/transpiler"
 	sqle "github.com/dolthub/go-mysql-server"
+	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/sirupsen/logrus"
-
+	"github.com/dolthub/vitess/go/mysql"
 	_ "github.com/marcboeker/go-duckdb"
+	"github.com/sirupsen/logrus"
 )
 
 // This is an example of how to implement a MySQL server.
@@ -119,20 +120,29 @@ func main() {
 		Address:  fmt.Sprintf("%s:%d", address, port),
 		Socket:   socket,
 	}
-	srv, err := server.NewServerWithHandler(config, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
+	myServer, err := server.NewServerWithHandler(config, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
 
 	if postgresPort > 0 {
-		pgServer, err := pgserver.NewServer(srv, address, postgresPort)
+		pgServer, err := pgserver.NewServer(
+			address, postgresPort,
+			func() *sql.Context {
+				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
+				return sql.NewContext(context.Background(), sql.WithSession(session))
+			},
+			pgserver.WithEngine(myServer.Engine),
+			pgserver.WithSessionManager(myServer.SessionManager()),
+			pgserver.WithConnID(&myServer.Listener.(*mysql.Listener).ConnectionID), // Shared connection ID counter
+		)
 		if err != nil {
-			panic(err)
+			logrus.WithError(err).Fatalln("Failed to create Postgres-protocol server")
 		}
 		go pgServer.Start()
 	}
 
-	if err = srv.Start(); err != nil {
-		panic(err)
+	if err = myServer.Start(); err != nil {
+		logrus.WithError(err).Fatalln("Failed to start MySQL-protocol server")
 	}
 }
