@@ -13,7 +13,7 @@ check_server_params() {
     echo "Checking MySQL server parameters..."
 
     # Retrieve the required MySQL server variables using mysqlsh
-    result=$(mysqlsh --host="$MYSQL_HOST" --user="$MYSQL_USER" --port="$MYSQL_PORT" --password="$MYSQL_PASSWORD" --sql -e "
+    result=$(mysqlsh --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "
     SHOW VARIABLES WHERE variable_name IN ('binlog_format', 'enforce_gtid_consistency', 'gtid_mode', 'log_bin');
     ")
 
@@ -64,7 +64,7 @@ check_user_privileges() {
     echo "Checking privileges for the current user '$MYSQL_USER'..."
 
     # Check the user grants for the currently authenticated user using mysqlsh
-    result=$(mysqlsh --host="$MYSQL_HOST" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "
+    result=$(mysqlsh --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "
     SHOW GRANTS FOR CURRENT_USER();
     ")
 
@@ -97,7 +97,7 @@ check_mysql_config() {
 # Function to check if source MySQL server is empty
 check_if_source_mysql_is_empty() {
     # Run the query using mysqlsh and capture the output
-    OUTPUT=$(mysqlsh --uri "$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST" --sql -e "SHOW DATABASES;" 2>/dev/null)
+    OUTPUT=$(mysqlsh --uri "$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST:$MYSQL_PORT" --sql -e "SHOW DATABASES;" 2>/dev/null)
 
     check_command "retrieving database list"
 

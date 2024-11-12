@@ -46,15 +46,6 @@ services:
       timeout: 5s
       retries: 5
 
-  myduck-tmp-fix:
-    image: mysql:8
-    container_name: htap-myduck-tmp-fix
-    entrypoint: ["bash", "-c", "until mysql -h myduck -u root -e \"alter user 'lol'@'%' identified by 'lol';\" ; do echo 'Waiting for account to be ready...'; sleep 2; done"]
-    restart: "no"
-    depends_on:
-      myduck:
-        condition: service_healthy
-
   proxysql:
     image: proxysql/proxysql:latest
     container_name: proxysql
