@@ -8,7 +8,7 @@ require (
 	github.com/cockroachdb/apd/v3 v3.2.1
 	github.com/cockroachdb/cockroachdb-parser v0.23.2
 	github.com/dolthub/doltgresql v0.13.0
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241106010546-3281d09c1f15
+	github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2
 	github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jackc/pgx/v5 v5.7.1
@@ -26,7 +26,7 @@ require (
 )
 
 replace (
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241106010546-3281d09c1f15 => github.com/apecloud/go-mysql-server v0.0.0-20241112031328-30cddba3eea7
+	github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2 => github.com/apecloud/go-mysql-server v0.0.0-20241112031328-30cddba3eea7
 	github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9 => github.com/apecloud/dolt-vitess v0.0.0-20241112063127-f62e98a9936a
 )
 
