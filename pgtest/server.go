@@ -21,6 +21,13 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	provider := catalog.NewInMemoryDBProvider()
 	pool := backend.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
 
+	// Postgres tables are created in the `public` schema by default.
+	// Create the `public` schema if it doesn't exist.
+	_, err = pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
 	engine := sqle.NewDefault(provider)
 
 	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, pool, provider)
@@ -68,7 +75,8 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 		)
 	}
 
-	dsn := fmt.Sprintf("postgres://mysql:@127.0.0.1:%d/postgres", port)
+	// Since we use the in-memory DuckDB storage, we need to connect to the `memory` database
+	dsn := fmt.Sprintf("postgres://mysql:@127.0.0.1:%d/memory", port)
 	conn, err = pgx.Connect(ctx, dsn)
 	if err != nil {
 		close()

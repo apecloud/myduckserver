@@ -40,14 +40,17 @@ func StartPostgresServer() (containerName string, dsn string, port int, err erro
 	// Use a random name for the container to avoid conflicts
 	containerName = "postgres-test-" + strconv.Itoa(rand.Int())
 
-	// Build the Docker command to start the MySQL container
+	// Build the Docker command to start the Postgres container
+	// NOTE: wal_level must be set to logical for logical replication to work.
+	//   Otherwise: ERROR: logical decoding requires "wal_level" >= "logical" (SQLSTATE 55000)
 	cmd := exec.Command("docker", "run",
 		"--rm",                             // Remove the container when it stops
 		"-d",                               // Run in detached mode
 		"-p", fmt.Sprintf("%d:5432", port), // Map the container's port 5432 to the host's port
 		"-e", "POSTGRES_PASSWORD=password", // Set the root password
 		"--name", containerName, // Give the container a name
-		"postgres:latest", // Use the latest Postgres image
+		"postgres:latest",         // Use the latest Postgres image
+		"-c", "wal_level=logical", // Enable logical replication
 	)
 
 	// Execute the Docker command

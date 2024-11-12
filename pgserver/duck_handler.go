@@ -16,6 +16,7 @@ package pgserver
 
 import (
 	"context"
+	stdsql "database/sql"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -114,11 +115,30 @@ func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, que
 
 // ComPrepareParsed implements the Handler interface.
 func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement) ([]pgproto3.FieldDescription, error) {
-	return nil, fmt.Errorf("not implemented")
-	// sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
-	// if err != nil {
-	// 	return nil, err
-	// }
+	// In order to implement this correctly, we need to contribute to DuckDB's C API and go-duckdb
+	// to expose the parameter types and result types of a prepared statement.
+	// Currently, we have to work around this.
+	// Let's do some crazy stuff here:
+	// 1. Fork go-duckdb to expose the parameter types of a prepared statement.
+	//    This is relatively easy to do since the information is already available in the C API.
+	// 2. For SELECT statements, we will supply all NULL values as parameters
+	//    to execute the query with a LIMIT 0 to get the result types.
+	// 3. For SHOW/CALL/PRAGMA statements, we will just execute the query and get the result types
+	//    because they usually don't have parameters and are efficient to execute.
+	// 4. For other statements (DDLs and DMLs), we just return the "affected rows" field.
+	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := adapter.GetConn(sqlCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	conn.Raw(func(driverConn interface{}) error {
+		conn := duckdb.stmt
+	})
 
 	// analyzed, err := h.e.PrepareParsedQuery(sqlCtx, query, query, parsed)
 	// if err != nil {
@@ -312,31 +332,65 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	// 	return nil, nil, nil, err
 	// }
 
-	// if plan.NodeRepresentsSelect(analyzed) {
-	// 	sql.IncrementStatusVariable(ctx, "Com_select", 1)
-	// }
+	if _, ok := parsed.(tree.SelectStatement); ok {
+		sql.IncrementStatusVariable(ctx, "Com_select", 1)
+	}
 
 	// err = e.readOnlyCheck(analyzed)
 	// if err != nil {
 	// 	return nil, nil, nil, err
 	// }
 
-	// TODO(fan): For DML statements, we should call Exec
-	rows, err := adapter.Query(ctx, query)
-	if err != nil {
-		return nil, nil, nil, err
+	var rows *stdsql.Rows
+
+	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
+	//   Consequently, the following classification is not perfect.
+	switch parsed.(type) {
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction:
+		return h.e.Query(ctx, query)
+
+	case *tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate:
+		result, err := adapter.Exec(ctx, query)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		insertId, err := result.LastInsertId()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{
+			RowsAffected: uint64(affected),
+			InsertID:     uint64(insertId),
+		})), nil, nil
+
+	case *tree.SetVar, *tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex:
+		_, err := adapter.Exec(ctx, query)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{})), nil, nil
+
+	default:
+		rows, err = adapter.Query(ctx, query)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		schema, err := inferSchema(rows)
+		if err != nil {
+			rows.Close()
+			return nil, nil, nil, err
+		}
+		iter, err := backend.NewSQLRowIter(rows, schema)
+		if err != nil {
+			rows.Close()
+			return nil, nil, nil, err
+		}
+		return schema, iter, nil, nil
 	}
-	schema, err := inferSchema(rows)
-	if err != nil {
-		rows.Close()
-		return nil, nil, nil, err
-	}
-	iter, err := backend.NewSQLRowIter(rows, schema)
-	if err != nil {
-		rows.Close()
-		return nil, nil, nil, err
-	}
-	return schema, iter, nil, nil
 }
 
 // executeBoundPlan is a QueryExecutor that calls QueryWithBindings on the given engine using the given query and parsed

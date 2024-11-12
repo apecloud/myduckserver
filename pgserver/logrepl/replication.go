@@ -142,6 +142,7 @@ var errShutdownRequested = errors.New("shutdown requested")
 
 type replicationState struct {
 	replicaCtx *sql.Context
+	slotName   string
 
 	// lastWrittenLSN is the LSN of the commit record of the last transaction that was successfully replicated to the
 	// database.
@@ -183,11 +184,18 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 	}
 
 	state := &replicationState{
-		lastWrittenLSN: lastWrittenLsn,
 		replicaCtx:     sqlCtx,
+		slotName:       slotName,
+		lastWrittenLSN: lastWrittenLsn,
 		relations:      map[uint32]*pglogrepl.RelationMessageV2{},
 		typeMap:        pgtype.NewMap(),
 	}
+
+	// Switch to the `public` schema.
+	if _, err := adapter.Exec(sqlCtx, "USE public"); err != nil {
+		return err
+	}
+	sqlCtx.SetCurrentDatabase("public")
 
 	var primaryConn *pgconn.PgConn
 	defer func() {
@@ -337,23 +345,10 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 					return err
 				}
 
-				committed, err := r.processMessage(xld, state)
+				_, err = r.processMessage(xld, state)
 				if err != nil {
 					// TODO: do we need more than one handler, one for each connection?
 					return handleErrWithRetry(err, true)
-				}
-
-				// TODO: we have a two-phase commit race here: if the WAL file update doesn't happen before the process crashes,
-				//  we will receive a duplicate LSN the next time we start replication. A better solution would be to write the
-				//  LSN directly into the DoltCommit message, and then parsing this message back out when we begin replication
-				//  next.
-				if committed {
-					state.lastWrittenLSN = state.currentTransactionLSN
-					log.Printf("Writing LSN %s to file\n", state.lastWrittenLSN.String())
-					err := r.writeWALPosition(sqlCtx, slotName, state.lastWrittenLSN)
-					if err != nil {
-						return err
-					}
 				}
 
 				return sendStandbyStatusUpdate(state)
@@ -574,10 +569,20 @@ func (r *LogicalReplicator) processMessage(
 		}
 	case *pglogrepl.CommitMessage:
 		log.Printf("CommitMessage: %v", logicalMsg)
+
+		// Record the LSN before we commit the transaction
+		log.Printf("Writing LSN %s\n", state.currentTransactionLSN)
+		err := r.writeWALPosition(state.replicaCtx, state.slotName, state.currentTransactionLSN)
+		if err != nil {
+			return false, err
+		}
+
 		err = r.execute(state.replicaCtx, "COMMIT")
 		if err != nil {
 			return false, err
 		}
+
+		state.lastWrittenLSN = state.currentTransactionLSN
 		state.processMessages = false
 
 		return true, nil

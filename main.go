@@ -126,6 +126,13 @@ func main() {
 	}
 
 	if postgresPort > 0 {
+		// Postgres tables are created in the `public` schema by default.
+		// Create the `public` schema if it doesn't exist.
+		_, err := pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
+		if err != nil {
+			logrus.WithError(err).Fatalln("Failed to create the `public` schema")
+		}
+
 		pgServer, err := pgserver.NewServer(
 			address, postgresPort,
 			func() *sql.Context {
