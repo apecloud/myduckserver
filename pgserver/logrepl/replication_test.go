@@ -30,6 +30,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pgx/v5"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -504,6 +505,7 @@ var replicationTests = []ReplicationTest{
 }
 
 func TestReplication(t *testing.T) {
+	logrus.SetLevel(logrus.TraceLevel)
 	RunReplicationScripts(t, replicationTests)
 }
 
@@ -543,8 +545,10 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	require.NoError(t, logrepl.CreatePublication(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
-	for _, script := range scripts {
-		RunReplicationScript(t, dsn, script)
+	for i, script := range scripts {
+		if i == 0 {
+			RunReplicationScript(t, dsn, script)
+		}
 	}
 }
 

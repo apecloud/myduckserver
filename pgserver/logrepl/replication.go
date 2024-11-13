@@ -402,7 +402,11 @@ func (r *LogicalReplicator) Stop() {
 // replicateQuery executes the query provided on the replica connection
 func (r *LogicalReplicator) replicateQuery(replicaCtx *sql.Context, query string) error {
 	log.Printf("replicating query: %s", query)
-	_, err := adapter.Exec(replicaCtx, query)
+	result, err := adapter.Exec(replicaCtx, query)
+	if err == nil {
+		affected, _ := result.RowsAffected()
+		log.Printf("Affected rows: %d", affected)
+	}
 	return err
 }
 
@@ -563,7 +567,7 @@ func (r *LogicalReplicator) processMessage(
 		state.currentTransactionLSN = logicalMsg.FinalLSN
 
 		log.Printf("BeginMessage: %v", logicalMsg)
-		err = r.execute(state.replicaCtx, "START TRANSACTION")
+		err = r.replicateQuery(state.replicaCtx, "START TRANSACTION")
 		if err != nil {
 			return false, err
 		}
@@ -577,7 +581,7 @@ func (r *LogicalReplicator) processMessage(
 			return false, err
 		}
 
-		err = r.execute(state.replicaCtx, "COMMIT")
+		err = r.replicateQuery(state.replicaCtx, "COMMIT")
 		if err != nil {
 			return false, err
 		}

@@ -34,7 +34,6 @@ import (
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
-	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
@@ -455,25 +454,34 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		return nil
 	}
 
-	fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
+	stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
 	if err != nil {
 		return err
 	}
 
-	// A valid Parse message must have ParameterObjectIDs if there are any binding variables.
+	// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
+	// > A parameter data type can be left unspecified by setting it to zero,
+	// > or by making the array of parameter type OIDs shorter than the number of
+	// > parameter symbols ($n)used in the query string.
+	// > ...
+	// > Parameter data types can be specified by OID;
+	// > if not given, the parser attempts to infer the data types in the same way
+	// > as it would do for untyped literal string constants.
 	bindVarTypes := message.ParameterOIDs
-	// if len(bindVarTypes) == 0 {
-	// 	// NOTE: This is used for Prepared Statement Tests only.
-	// 	bindVarTypes, err = extractBindVarTypes(analyzedPlan)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// }
+	if len(bindVarTypes) < len(params) {
+		bindVarTypes = append(bindVarTypes, params[len(bindVarTypes):]...)
+	}
+	for i := range params {
+		if bindVarTypes[i] == 0 {
+			bindVarTypes[i] = params[i]
+		}
+	}
 
 	h.preparedStatements[message.Name] = PreparedStatementData{
 		Query:        query,
 		ReturnFields: fields,
 		BindVarTypes: bindVarTypes,
+		Stmt:         stmt,
 	}
 	return h.send(&pgproto3.ParseComplete{})
 }
@@ -533,20 +541,15 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 		return err
 	}
 
-	analyzedPlan, fields, err := h.duckHandler.ComBind(context.Background(), h.mysqlConn, preparedData.Query.String, preparedData.Query.AST, bindVars)
+	fields, err := h.duckHandler.ComBind(context.Background(), h.mysqlConn, preparedData, bindVars)
 	if err != nil {
 		return err
 	}
 
-	boundPlan, ok := analyzedPlan.(sql.Node)
-	if !ok {
-		return fmt.Errorf("expected a sql.Node, got %T", analyzedPlan)
-	}
-
 	h.portals[message.DestinationPortal] = PortalData{
-		Query:     preparedData.Query,
-		Fields:    fields,
-		BoundPlan: boundPlan,
+		Query:  preparedData.Query,
+		Fields: fields,
+		Stmt:   preparedData.Stmt,
 	}
 	return h.send(&pgproto3.BindComplete{})
 }
@@ -578,7 +581,7 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	rowsAffected := int32(0)
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, true)
-	err = h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, query.String, portalData.BoundPlan, callback)
+	err = h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, portalData, callback)
 	if err != nil {
 		return err
 	}
@@ -785,26 +788,18 @@ func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedSta
 }
 
 // convertBindParameters handles the conversion from bind parameters to variable values.
-func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []int16, values [][]byte) (map[string]sqlparser.Expr, error) {
-	bindings := make(map[string]sqlparser.Expr, len(values))
-	// for i := range values {
-	// 	typ := types[i]
-	// 	var bindVarString string
-	// 	// We'll rely on a library to decode each format, which will deal with text and binary representations for us
-	// 	if err := h.pgTypeMap.Scan(typ, formatCodes[i], values[i], &bindVarString); err != nil {
-	// 		return nil, err
-	// 	}
-
-	// 	pgTyp, ok := pgtypes.OidToBuildInDoltgresType[typ]
-	// 	if !ok {
-	// 		return nil, fmt.Errorf("unhandled oid type: %v", typ)
-	// 	}
-	// 	v, err := pgTyp.IoInput(nil, bindVarString)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	bindings[fmt.Sprintf("v%d", i+1)] = sqlparser.InjectedExpr{Expression: pgexprs.NewUnsafeLiteral(v, pgTyp)}
-	// }
+func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []int16, values [][]byte) ([]string, error) {
+	if len(types) != len(values) {
+		return nil, fmt.Errorf("number of values does not match number of parameters")
+	}
+	bindings := make([]string, len(values))
+	for i := range values {
+		typ := types[i]
+		// We'll rely on a library to decode each format, which will deal with text and binary representations for us
+		if err := h.pgTypeMap.Scan(typ, formatCodes[i], values[i], &bindings[i]); err != nil {
+			return nil, err
+		}
+	}
 	return bindings, nil
 }
 
