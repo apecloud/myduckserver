@@ -459,6 +459,10 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		return err
 	}
 
+	if !query.PgParsable {
+		query.StatementTag = getStatementTag(stmt)
+	}
+
 	// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
 	// > A parameter data type can be left unspecified by setting it to zero,
 	// > or by making the array of parameter type OIDs shorter than the number of
@@ -826,6 +830,7 @@ func (h *ConnectionHandler) spoolRowsCallback(tag string, rows *int32, isExecute
 	// IsIUD returns whether the query is either an INSERT, UPDATE, or DELETE query.
 	isIUD := tag == "INSERT" || tag == "UPDATE" || tag == "DELETE"
 	return func(res *Result) error {
+		logrus.Tracef("spooling %d rows for tag %s", res.RowsAffected, tag)
 		if returnsRow(tag) {
 			// EXECUTE does not send RowDescription; instead it should be sent from DESCRIBE prior to it
 			if !isExecute {
@@ -1004,9 +1009,11 @@ func (h *ConnectionHandler) sendError(err error) {
 
 // convertQuery takes the given Postgres query, and converts it as an ast.ConvertedQuery that will work with the handler.
 func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
+	parsable := true
 	stmts, err := parser.Parse(query)
 	if err != nil {
 		// DuckDB syntax is not fully compatible with PostgreSQL, so we need to handle some queries differently.
+		parsable = false
 		stmts, _ = parser.Parse("SELECT 'SQL syntax is incompatible with PostgreSQL' AS error")
 	}
 
@@ -1017,12 +1024,19 @@ func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
 		return ConvertedQuery{String: query}, nil
 	}
 
-	query = sql.RemoveSpaceAndDelimiter(query, ';')
 	var stmtTag string
-	for i, c := range query {
-		if unicode.IsSpace(c) {
-			stmtTag = strings.ToUpper(query[:i])
-			break
+	if parsable {
+		stmtTag = stmts[0].AST.StatementTag()
+	} else {
+		// Guess the statement tag by looking for the first space in the query
+		// This is unreliable, but it's the best we can do for now.
+		// /* ... */ comments can break this.
+		query := sql.RemoveSpaceAndDelimiter(query, ';')
+		for i, c := range query {
+			if unicode.IsSpace(c) {
+				stmtTag = strings.ToUpper(query[:i])
+				break
+			}
 		}
 	}
 
@@ -1030,6 +1044,7 @@ func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
 		String:       query,
 		AST:          stmts[0].AST,
 		StatementTag: stmtTag,
+		PgParsable:   parsable,
 	}, nil
 }
 

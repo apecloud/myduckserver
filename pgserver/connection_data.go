@@ -55,6 +55,7 @@ type ConvertedQuery struct {
 	String       string
 	AST          tree.Statement
 	StatementTag string
+	PgParsable   bool
 }
 
 // copyFromStdinState tracks the metadata for an import of data into a table using a COPY FROM STDIN statement. When

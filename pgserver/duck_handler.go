@@ -162,18 +162,27 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		return nil, nil, nil, err
 	}
 
-	var paramOIDs []uint32
+	paramOIDs := make([]uint32, len(paramTypes))
 	for i, t := range paramTypes {
 		paramOIDs[i] = duckdbTypeToPostgresOID[t]
 	}
 
-	var fields []pgproto3.FieldDescription
+	var (
+		fields []pgproto3.FieldDescription
+		rows   *stdsql.Rows
+	)
 	switch stmtType {
 	case duckdb.DUCKDB_STATEMENT_TYPE_SELECT,
 		duckdb.DUCKDB_STATEMENT_TYPE_RELATION,
 		duckdb.DUCKDB_STATEMENT_TYPE_CALL,
 		duckdb.DUCKDB_STATEMENT_TYPE_PRAGMA,
 		duckdb.DUCKDB_STATEMENT_TYPE_EXPLAIN:
+		// Close the statement to reset the state.
+		err = stmt.Close()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
 		// Execute the query with all NULL values as parameters to get the result types.
 		query := query
 		if stmtType == duckdb.DUCKDB_STATEMENT_TYPE_SELECT ||
@@ -182,7 +191,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 			query = "SELECT * FROM (" + query + ") LIMIT 0"
 		}
 		params := make([]any, len(paramTypes)) // all nil
-		rows, err := conn.QueryContext(sqlCtx, query, params...)
+		rows, err = conn.QueryContext(sqlCtx, query, params...)
 		if err != nil {
 			break
 		}
@@ -192,6 +201,20 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 			break
 		}
 		fields = schemaToFieldDescriptions(sqlCtx, schema)
+
+		// Prepare the statement again to reset the state.
+		err = conn.Raw(func(driverConn interface{}) error {
+			dc := driverConn.(*duckdb.Conn)
+			s, err := dc.PrepareContext(sqlCtx, query)
+			if err != nil {
+				return err
+			}
+			stmt = s.(*duckdb.Stmt)
+			return nil
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	default:
 		// For other statements, we just return the "affected rows" field.
 		fields = []pgproto3.FieldDescription{
@@ -343,6 +366,8 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 	ctx = oCtx
 
 	sqlCtx.GetLogger().Debugf("Query finished in %d ms", time.Since(start).Milliseconds())
+
+	sqlCtx.GetLogger().Tracef("AtLeastOneBatch: %v, Last batch of rows: %+v", processedAtLeastOneBatch, r)
 
 	// processedAtLeastOneBatch means we already called callback() at least
 	// once, so no need to call it if RowsAffected == 0.

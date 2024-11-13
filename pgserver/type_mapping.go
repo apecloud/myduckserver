@@ -16,7 +16,7 @@ import (
 
 var defaultTypeMap = pgtype.NewMap()
 
-var duckdbToPostgresTypeMap = map[string]string{
+var duckdbTypeStrToPostgresTypeStr = map[string]string{
 	"INVALID":      "unknown",
 	"BOOLEAN":      "bool",
 	"TINYINT":      "int2",
@@ -92,7 +92,7 @@ func inferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 
 	schema := make(sql.Schema, len(types))
 	for i, t := range types {
-		pgTypeName, ok := duckdbToPostgresTypeMap[t.DatabaseTypeName()]
+		pgTypeName, ok := duckdbTypeStrToPostgresTypeStr[t.DatabaseTypeName()]
 		if !ok {
 			return nil, fmt.Errorf("unsupported type %s", t.DatabaseTypeName())
 		}
@@ -125,7 +125,7 @@ func inferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 	for i, colName := range columns {
 		var pgTypeName string
 		if colType, ok := rows.(driver.RowsColumnTypeDatabaseTypeName); ok {
-			pgTypeName = duckdbToPostgresTypeMap[colType.ColumnTypeDatabaseTypeName(i)]
+			pgTypeName = duckdbTypeStrToPostgresTypeStr[colType.ColumnTypeDatabaseTypeName(i)]
 		} else {
 			pgTypeName = "text" // Default to text if type name is not available
 		}
