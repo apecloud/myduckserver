@@ -19,7 +19,6 @@ import (
 	stdsql "database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"strings"
@@ -30,7 +29,6 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/google/uuid"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -567,7 +565,7 @@ func (r *LogicalReplicator) processMessage(
 		state.currentTransactionLSN = logicalMsg.FinalLSN
 
 		log.Printf("BeginMessage: %v", logicalMsg)
-		err = r.replicateQuery(state.replicaCtx, "START TRANSACTION")
+		err = r.replicateQuery(state.replicaCtx, "BEGIN TRANSACTION")
 		if err != nil {
 			return false, err
 		}
@@ -781,26 +779,6 @@ func (r *LogicalReplicator) readWALPosition(ctx *sql.Context, slotName string) (
 	return pglogrepl.ParseLSN(lsn)
 }
 
-func (r *LogicalReplicator) execute(ctx *sql.Context, query string) error {
-	_, iter, _, err := r.engine.Query(ctx, query)
-	if err != nil {
-		// Log any errors, except for commits with "nothing to commit"
-		if err.Error() != "nothing to commit" {
-			return err
-		}
-		return nil
-	}
-	for {
-		if _, err := iter.Next(ctx); err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			ctx.GetLogger().Errorf("ERROR reading query results: %v ", err.Error())
-			return err
-		}
-	}
-}
-
 // writeWALPosition writes the recorded WAL position to the WAL position table
 func (r *LogicalReplicator) writeWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
 	_, err := adapter.Exec(ctx, catalog.InternalTables.PgReplicationLSN.UpsertStmt(), slotName, lsn.String())
@@ -850,8 +828,11 @@ func encodeColumnData(mi *pgtype.Map, data interface{}, dataType uint32) (string
 		return fmt.Sprintf("'%s'", value), nil
 	case [16]byte:
 		// TODO: should we actually register an encoder for this type?
-		uid := uuid.UUID(data)
-		return fmt.Sprintf("'%s'", uid.String()), nil
+		bytes, err := mi.Encode(pgtype.UUIDOID, pgtype.TextFormatCode, data, nil)
+		if err != nil {
+			return "", err
+		}
+		return `'` + string(bytes) + `'`, nil
 	default:
 		return value, nil
 	}

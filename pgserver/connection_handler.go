@@ -27,7 +27,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/apecloud/myduckserver/backend"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	gms "github.com/dolthub/go-mysql-server"
@@ -364,9 +363,9 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 		return false, false, h.handleExecute(message)
 	case *pgproto3.Close:
 		if message.ObjectType == 'S' {
-			delete(h.preparedStatements, message.Name)
+			h.deletePreparedStatement(message.Name)
 		} else {
-			delete(h.portals, message.Name)
+			h.deletePortal(message.Name)
 		}
 		return false, false, h.send(&pgproto3.CloseComplete{})
 	case *pgproto3.CopyData:
@@ -402,8 +401,8 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	}
 
 	// A query message destroys the unnamed statement and the unnamed portal
-	delete(h.preparedStatements, "")
-	delete(h.portals, "")
+	h.deletePreparedStatement("")
+	h.deletePortal("")
 
 	// Certain statement types get handled directly by the handler instead of being passed to the engine
 	handled, endOfMessages, err = h.handleQueryOutsideEngine(query)
@@ -626,13 +625,9 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 		return false, true, fmt.Errorf("COPY DATA message received without a COPY FROM STDIN operation in progress")
 	}
 
-	// Grab a sql.Context and ensure the session has a transaction started, otherwise the copied data
-	// won't get committed correctly.
+	// Grab a sql.Context.
 	sqlCtx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		return false, false, err
-	}
-	if err = startTransaction(sqlCtx); err != nil {
 		return false, false, err
 	}
 
@@ -721,17 +716,6 @@ func (h *ConnectionHandler) handleCopyDone(_ *pgproto3.CopyDone) (stop bool, end
 		return false, false, err
 	}
 
-	// If we aren't in an explicit/user managed transaction, we need to commit the transaction
-	if !sqlCtx.GetIgnoreAutoCommit() {
-		txSession, ok := sqlCtx.Session.(sql.TransactionSession)
-		if !ok {
-			return false, false, fmt.Errorf("session does not implement sql.TransactionSession")
-		}
-		if err = txSession.CommitTransaction(sqlCtx, txSession.GetTransaction()); err != nil {
-			return false, false, err
-		}
-	}
-
 	h.copyFromStdinState = nil
 	// We send back endOfMessage=true, since the COPY DONE message ends the COPY DATA flow and the server is ready
 	// to accept the next query now.
@@ -762,33 +746,32 @@ func (h *ConnectionHandler) handleCopyFail(_ *pgproto3.CopyFail) (stop bool, end
 	return false, true, nil
 }
 
-// startTransaction checks to see if the current session has a transaction started yet or not, and if not,
-// creates a read/write transaction for the session to use. This is necessary for handling commands that alter
-// data without going through the GMS engine.
-func startTransaction(ctx *sql.Context) error {
-	session, ok := ctx.Session.(*backend.Session)
-	if !ok {
-		return fmt.Errorf("unexpected session type: %T", ctx.Session)
-	}
-	if session.GetTransaction() == nil {
-		if _, err := session.StartTransaction(ctx, sql.ReadWrite); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedStatements map[string]PreparedStatementData, query ConvertedQuery, conn net.Conn) error {
 	_, ok := preparedStatements[name]
 	if !ok {
 		return fmt.Errorf("prepared statement %s does not exist", name)
 	}
-	delete(preparedStatements, name)
+	h.deletePreparedStatement(name)
 
 	return h.send(&pgproto3.CommandComplete{
 		CommandTag: []byte(query.StatementTag),
 	})
+}
+
+func (h *ConnectionHandler) deletePreparedStatement(name string) {
+	ps, ok := h.preparedStatements[name]
+	if ok {
+		delete(h.preparedStatements, name)
+		ps.Stmt.Close()
+	}
+}
+
+func (h *ConnectionHandler) deletePortal(name string) {
+	p, ok := h.portals[name]
+	if ok {
+		delete(h.portals, name)
+		p.Stmt.Close()
+	}
 }
 
 // convertBindParameters handles the conversion from bind parameters to variable values.
@@ -811,6 +794,15 @@ func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []
 func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
+
+	// Get the accurate statement tag for the query
+	if !query.PgParsable && query.StatementTag != "SELECT" {
+		tag, err := h.duckHandler.getStatementTag(h.mysqlConn, query.String)
+		if err != nil {
+			return err
+		}
+		query.StatementTag = tag
+	}
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
 	err := h.duckHandler.ComQuery(context.Background(), h.mysqlConn, query.String, query.AST, callback)

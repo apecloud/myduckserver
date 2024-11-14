@@ -271,7 +271,7 @@ var replicationTests = []ReplicationTest{
 			{
 				Query: "/* replica */ SELECT * FROM public.test order by id",
 				Expected: []sql.Row{
-					{int32(2), "three", "3232abe7-560b-4714-a020-2b1a11a1ec65", int32(2), 2.2},
+					{int32(2), "three", "3232abe7-560b-4714-a020-2b1a11a1ec65", int32(2), float32(2.2)},
 				},
 			},
 		},
@@ -545,10 +545,13 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	require.NoError(t, logrepl.CreatePublication(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
-	for i, script := range scripts {
-		if i == 0 {
-			RunReplicationScript(t, dsn, script)
-		}
+	// for i, script := range scripts {
+	// 	if i == 4 {
+	// 		RunReplicationScript(t, dsn, script)
+	// 	}
+	// }
+	for _, script := range scripts {
+		RunReplicationScript(t, dsn, script)
 	}
 }
 

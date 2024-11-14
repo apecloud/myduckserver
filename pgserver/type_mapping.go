@@ -9,7 +9,6 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/sqltypes"
 	"github.com/dolthub/vitess/go/vt/proto/query"
-	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/marcboeker/go-duckdb"
 )
@@ -84,6 +83,42 @@ var duckdbTypeToPostgresOID = map[duckdb.Type]uint32{
 	duckdb.TYPE_VARINT:       pgtype.NumericOID,
 }
 
+var pgTypeSizes = map[uint32]int32{
+	pgtype.BoolOID:        1,  // bool
+	pgtype.ByteaOID:       -1, // bytea
+	pgtype.NameOID:        -1, // name
+	pgtype.Int8OID:        8,  // int8
+	pgtype.Int2OID:        2,  // int2
+	pgtype.Int4OID:        4,  // int4
+	pgtype.TextOID:        -1, // text
+	pgtype.OIDOID:         4,  // oid
+	pgtype.TIDOID:         8,  // tid
+	pgtype.XIDOID:         -1, // xid
+	pgtype.CIDOID:         -1, // cid
+	pgtype.JSONOID:        -1, // json
+	pgtype.XMLOID:         -1, // xml
+	pgtype.PointOID:       8,  // point
+	pgtype.Float4OID:      4,  // float4
+	pgtype.Float8OID:      8,  // float8
+	pgtype.UnknownOID:     -1, // unknown
+	pgtype.MacaddrOID:     -1, // macaddr
+	pgtype.InetOID:        -1, // inet
+	pgtype.BoolArrayOID:   -1, // bool[]
+	pgtype.ByteaArrayOID:  -1, // bytea[]
+	pgtype.NameArrayOID:   -1, // name[]
+	pgtype.Int2ArrayOID:   -1, // int2[]
+	pgtype.Int4ArrayOID:   -1, // int4[]
+	pgtype.TextArrayOID:   -1, // text[]
+	pgtype.BPCharOID:      -1, // char(n)
+	pgtype.VarcharOID:     -1, // varchar
+	pgtype.DateOID:        4,  // date
+	pgtype.TimeOID:        8,  // time
+	pgtype.TimestampOID:   8,  // timestamp
+	pgtype.TimestamptzOID: 8,  // timestamptz
+	pgtype.NumericOID:     -1, // numeric
+	pgtype.UUIDOID:        16, // uuid
+}
+
 func inferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 	types, err := rows.ColumnTypes()
 	if err != nil {
@@ -102,15 +137,11 @@ func inferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 		}
 		nullable, _ := t.Nullable()
 
-		l, ok := t.Length()
-
 		schema[i] = &sql.Column{
 			Name: t.Name(),
 			Type: PostgresType{
-				PG:         pgType,
-				Length:     l,
-				LengthSet:  ok,
-				GoTypeSize: int(t.ScanType().Size()),
+				PG:   pgType,
+				Size: pgTypeSizes[pgType.OID],
 			},
 			Nullable: nullable,
 		}
@@ -140,24 +171,11 @@ func inferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 			nullable, _ = colNullable.ColumnTypeNullable(i)
 		}
 
-		var l int64
-		var set bool
-		if colLength, ok := rows.(driver.RowsColumnTypeLength); ok {
-			l, set = colLength.ColumnTypeLength(i)
-		}
-
-		var goTypeSize int
-		if colScanType, ok := rows.(driver.RowsColumnTypeScanType); ok {
-			goTypeSize = int(colScanType.ColumnTypeScanType(i).Size())
-		}
-
 		schema[i] = &sql.Column{
 			Name: colName,
 			Type: PostgresType{
-				PG:         pgType,
-				Length:     l,
-				LengthSet:  set,
-				GoTypeSize: goTypeSize,
+				PG:   pgType,
+				Size: pgTypeSizes[pgType.OID],
 			},
 			Nullable: nullable,
 		}
@@ -166,14 +184,13 @@ func inferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 }
 
 type PostgresType struct {
-	PG         *pgtype.Type
-	Length     int64
-	LengthSet  bool
-	GoTypeSize int
+	PG *pgtype.Type
+	// https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ROWDESCRIPTION
+	Size int32
 }
 
 func (p PostgresType) Encode(v any, buf []byte) ([]byte, error) {
-	return defaultTypeMap.Encode(p.PG.OID, pgproto3.TextFormat, v, buf)
+	return defaultTypeMap.Encode(p.PG.OID, p.PG.Codec.PreferredFormat(), v, buf)
 }
 
 var _ sql.Type = PostgresType{}
@@ -219,5 +236,5 @@ func (p PostgresType) Zero() interface{} {
 }
 
 func (p PostgresType) String() string {
-	panic("not implemented")
+	return fmt.Sprintf("PostgresType(%s)", p.PG.Name)
 }

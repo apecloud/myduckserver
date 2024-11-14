@@ -34,14 +34,11 @@ import (
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/analyzer"
-	"github.com/dolthub/go-mysql-server/sql/plan"
-	"github.com/dolthub/go-mysql-server/sql/rowexec"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/vitess/go/mysql"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/marcboeker/go-duckdb"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -177,11 +174,6 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		duckdb.DUCKDB_STATEMENT_TYPE_CALL,
 		duckdb.DUCKDB_STATEMENT_TYPE_PRAGMA,
 		duckdb.DUCKDB_STATEMENT_TYPE_EXPLAIN:
-		// Close the statement to reset the state.
-		err = stmt.Close()
-		if err != nil {
-			return nil, nil, nil, err
-		}
 
 		// Execute the query with all NULL values as parameters to get the result types.
 		query := query
@@ -201,20 +193,6 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 			break
 		}
 		fields = schemaToFieldDescriptions(sqlCtx, schema)
-
-		// Prepare the statement again to reset the state.
-		err = conn.Raw(func(driverConn interface{}) error {
-			dc := driverConn.(*duckdb.Conn)
-			s, err := dc.PrepareContext(sqlCtx, query)
-			if err != nil {
-				return err
-			}
-			stmt = s.(*duckdb.Stmt)
-			return nil
-		})
-		if err != nil {
-			return nil, nil, nil, err
-		}
 	default:
 		// For other statements, we just return the "affected rows" field.
 		fields = []pgproto3.FieldDescription{
@@ -285,14 +263,34 @@ func (h *DuckHandler) NewContext(ctx context.Context, c *mysql.Conn, query strin
 	return h.sm.NewContext(ctx, c, query)
 }
 
+func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (string, error) {
+	ctx := context.Background()
+	sqlCtx, err := h.NewContext(ctx, mysqlConn, "")
+	if err != nil {
+		return "", err
+	}
+	conn, err := adapter.GetConn(sqlCtx)
+	if err != nil {
+		return "", err
+	}
+	var tag string
+	err = conn.Raw(func(driverConn any) error {
+		c := driverConn.(*duckdb.Conn)
+		s, err := c.PrepareContext(sqlCtx, query)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		stmt := s.(*duckdb.Stmt)
+		tag = getStatementTag(stmt)
+		return nil
+	})
+	return tag, err
+}
+
 var queryLoggingRegex = regexp.MustCompile(`[\r\n\t ]+`)
 
 func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, queryExec QueryExecutor, callback func(*Result) error) error {
-	defer func() {
-		if stmt != nil {
-			stmt.Close()
-		}
-	}()
 	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
 	if err != nil {
 		return err
@@ -367,7 +365,7 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 
 	sqlCtx.GetLogger().Debugf("Query finished in %d ms", time.Since(start).Milliseconds())
 
-	sqlCtx.GetLogger().Tracef("AtLeastOneBatch: %v, Last batch of rows: %+v", processedAtLeastOneBatch, r)
+	sqlCtx.GetLogger().Tracef("AtLeastOneBatch=%v RowsInLastBatch=%d", processedAtLeastOneBatch, len(r.Rows))
 
 	// processedAtLeastOneBatch means we already called callback() at least
 	// once, so no need to call it if RowsAffected == 0.
@@ -388,47 +386,24 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	// return h.e.QueryWithBindings(ctx, query, parsed, nil, nil)
 
 	sql.IncrementStatusVariable(ctx, "Questions", 1)
-
-	// Give the integrator a chance to reject the session before proceeding
-	// TODO: this check doesn't belong here
-	err := ctx.Session.ValidateSession(ctx)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	err = h.beginTransaction(ctx)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// analyzed, err := e.analyzeNode(ctx, query, bound, qFlags)
-	// if err != nil {
-	// 	return nil, nil, nil, err
-	// }
-
 	if _, ok := parsed.(tree.SelectStatement); ok {
 		sql.IncrementStatusVariable(ctx, "Com_select", 1)
 	}
-
-	// err = e.readOnlyCheck(analyzed)
-	// if err != nil {
-	// 	return nil, nil, nil, err
-	// }
 
 	var (
 		schema sql.Schema
 		iter   sql.RowIter
 		rows   *stdsql.Rows
 		result stdsql.Result
+		err    error
 	)
 
 	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
 	//   Consequently, the following classification is not perfect.
 	switch parsed.(type) {
-	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction:
-		return h.e.Query(ctx, query)
-
-	case *tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo:
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
+		*tree.SetVar, *tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
+		*tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo:
 		result, err = adapter.Exec(ctx, query)
 		if err != nil {
 			break
@@ -440,14 +415,6 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			RowsAffected: uint64(affected),
 			InsertID:     uint64(insertId),
 		}))
-
-	case *tree.SetVar, *tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex:
-		_, err = adapter.Exec(ctx, query)
-		if err != nil {
-			break
-		}
-		schema = types.OkResultSchema
-		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
 
 	default:
 		rows, err = adapter.Query(ctx, query)
@@ -466,15 +433,6 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		}
 	}
 
-	if err != nil {
-		clearAutocommitErr := clearAutocommitTransaction(ctx)
-		if clearAutocommitErr != nil {
-			return nil, nil, nil, errors.Wrap(err, "unable to clear autocommit transaction: "+clearAutocommitErr.Error())
-		}
-		return nil, nil, nil, err
-	}
-
-	iter = FinalizeIters(ctx, nil, iter)
 	return schema, iter, nil, nil
 }
 
@@ -483,28 +441,12 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.Statement, stmt *duckdb.Stmt) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
 	// return h.e.PrepQueryPlanForExecution(ctx, query, plan, nil)
 
-	// Give the integrator a chance to reject the session before proceeding
-	// TODO: this check doesn't belong here
-	err := ctx.Session.ValidateSession(ctx)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	err = h.beginTransaction(ctx)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// err = e.readOnlyCheck(plan)
-	// if err != nil {
-	// 	return nil, nil, nil, err
-	// }
-
 	var (
 		schema sql.Schema
 		iter   sql.RowIter
 		rows   driver.Rows
 		result driver.Result
+		err    error
 	)
 	switch stmt.StatementType() {
 	case duckdb.DUCKDB_STATEMENT_TYPE_SELECT,
@@ -521,7 +463,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 			rows.Close()
 			break
 		}
-		iter, err = backend.NewDriverRowIter(rows, schema)
+		iter, err = NewDriverRowIter(rows, schema)
 		if err != nil {
 			rows.Close()
 			break
@@ -540,66 +482,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 		}))
 	}
 
-	if err != nil {
-		err2 := clearAutocommitTransaction(ctx)
-		if err2 != nil {
-			return nil, nil, nil, errors.Wrap(err, "unable to clear autocommit transaction: "+err2.Error())
-		}
-		return nil, nil, nil, err
-	}
-
 	return schema, iter, nil, nil
-}
-
-func (h *DuckHandler) beginTransaction(ctx *sql.Context) error {
-	beginNewTransaction := ctx.GetTransaction() == nil
-	if beginNewTransaction {
-		ctx.GetLogger().Tracef("beginning new transaction")
-		ts, ok := ctx.Session.(sql.TransactionSession)
-		if ok {
-			tx, err := ts.StartTransaction(ctx, sql.ReadWrite)
-			if err != nil {
-				return err
-			}
-
-			ctx.SetTransaction(tx)
-		}
-	}
-
-	return nil
-}
-
-// clearAutocommitTransaction unsets the transaction from the current session if it is an implicitly
-// created autocommit transaction. This enables the next request to have an autocommit transaction
-// correctly started.
-func clearAutocommitTransaction(ctx *sql.Context) error {
-	// The GetIgnoreAutoCommit property essentially says the current transaction is an explicit,
-	// user-created transaction and we should not process autocommit. So, if it's set, then we
-	// don't need to do anything here to clear implicit transaction state.
-	//
-	// TODO: This logic would probably read more clearly if we could just ask the session/ctx if the
-	//       current transaction is automatically created or explicitly created by the caller.
-	if ctx.GetIgnoreAutoCommit() {
-		return nil
-	}
-
-	autocommit, err := plan.IsSessionAutocommit(ctx)
-	if err != nil {
-		return err
-	}
-
-	if autocommit {
-		ctx.SetTransaction(nil)
-	}
-
-	return nil
-}
-
-// FinalizeIters applies the final transformations on sql.RowIter before execution.
-func FinalizeIters(ctx *sql.Context, qFlags *sql.QueryFlags, iter sql.RowIter) sql.RowIter {
-	iter = rowexec.AddTriggerRollbackIter(ctx, qFlags, iter)
-	iter = rowexec.AddTransactionCommittingIter(qFlags, iter)
-	return iter
 }
 
 // maybeReleaseAllLocks makes a best effort attempt to release all locks on the given connection. If the attempt fails,
@@ -628,15 +511,8 @@ func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema) []pgproto3.FieldD
 		var err error
 		if pgType, ok := c.Type.(PostgresType); ok {
 			oid = pgType.PG.OID
-			// format = pgType.PG.Codec.PreferredFormat()
-			format = 0
-			if pgType.LengthSet {
-				size = int16(pgType.Length)
-			} else if format == pgproto3.BinaryFormat {
-				size = int16(pgType.GoTypeSize)
-			} else {
-				size = -1
-			}
+			format = pgType.PG.Codec.PreferredFormat()
+			size = int16(pgType.Size)
 		} else {
 			oid, err = VitessTypeToObjectID(c.Type.Type())
 			if err != nil {

@@ -344,8 +344,8 @@ func NormalizeIntsAndFloats(v any) any {
 	case uint64:
 		// PostgreSQL does not support an uint64 type, so we can always convert this to an int64 safely.
 		return int64(val)
-	case float32:
-		return float64(val)
+	// case float32:
+	// 	return float64(val)
 	default:
 		return val
 	}
