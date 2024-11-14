@@ -11,7 +11,6 @@ import (
 	"unsafe"
 
 	"github.com/apache/arrow-go/v18/arrow/ipc"
-	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -28,12 +27,10 @@ type FlushStats struct {
 type DeltaController struct {
 	mutex  sync.Mutex
 	tables map[tableIdentifier]*DeltaAppender
-	pool   *backend.ConnectionPool
 }
 
-func NewController(pool *backend.ConnectionPool) *DeltaController {
+func NewController() *DeltaController {
 	return &DeltaController{
-		pool:   pool,
 		tables: make(map[tableIdentifier]*DeltaAppender),
 	}
 }

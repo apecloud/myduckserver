@@ -1,4 +1,4 @@
-package pgserver
+package pgtypes
 
 import (
 	stdsql "database/sql"
@@ -6,16 +6,18 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/dolthub/vitess/go/sqltypes"
 	"github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/marcboeker/go-duckdb"
+
+	"github.com/dolthub/go-mysql-server/sql"
 )
 
-var defaultTypeMap = pgtype.NewMap()
+var DefaultTypeMap = pgtype.NewMap()
 
-var duckdbTypeStrToPostgresTypeStr = map[string]string{
+var DuckdbTypeStrToPostgresTypeStr = map[string]string{
 	"INVALID":      "unknown",
 	"BOOLEAN":      "bool",
 	"TINYINT":      "int2",
@@ -49,7 +51,7 @@ var duckdbTypeStrToPostgresTypeStr = map[string]string{
 	"VARINT":       "numeric", // Variable integer, mapped to numeric
 }
 
-var duckdbTypeToPostgresOID = map[duckdb.Type]uint32{
+var DuckdbTypeToPostgresOID = map[duckdb.Type]uint32{
 	duckdb.TYPE_INVALID:      pgtype.UnknownOID,
 	duckdb.TYPE_BOOLEAN:      pgtype.BoolOID,
 	duckdb.TYPE_TINYINT:      pgtype.Int2OID,
@@ -83,7 +85,7 @@ var duckdbTypeToPostgresOID = map[duckdb.Type]uint32{
 	duckdb.TYPE_VARINT:       pgtype.NumericOID,
 }
 
-var pgTypeSizes = map[uint32]int32{
+var PostgresTypeSizes = map[uint32]int32{
 	pgtype.BoolOID:        1,  // bool
 	pgtype.ByteaOID:       -1, // bytea
 	pgtype.NameOID:        -1, // name
@@ -119,7 +121,47 @@ var pgTypeSizes = map[uint32]int32{
 	pgtype.UUIDOID:        16, // uuid
 }
 
-func inferSchema(rows *stdsql.Rows) (sql.Schema, error) {
+func PostgresTypeToArrowType(oid uint32) arrow.DataType {
+	switch oid {
+	case pgtype.BoolOID:
+		return arrow.FixedWidthTypes.Boolean
+	case pgtype.ByteaOID:
+		return arrow.BinaryTypes.Binary
+	case pgtype.NameOID, pgtype.TextOID, pgtype.JSONOID, pgtype.XMLOID:
+		return arrow.BinaryTypes.String
+	case pgtype.Int8OID:
+		return arrow.PrimitiveTypes.Int64
+	case pgtype.Int2OID:
+		return arrow.PrimitiveTypes.Int16
+	case pgtype.Int4OID:
+		return arrow.PrimitiveTypes.Int32
+	case pgtype.OIDOID:
+		return arrow.PrimitiveTypes.Uint32
+	case pgtype.TIDOID:
+		return &arrow.FixedSizeBinaryType{ByteWidth: 8}
+	case pgtype.Float4OID:
+		return arrow.PrimitiveTypes.Float32
+	case pgtype.Float8OID:
+		return arrow.PrimitiveTypes.Float64
+	case pgtype.PointOID:
+		return arrow.StructOf(arrow.Field{Name: "x", Type: arrow.PrimitiveTypes.Float64},
+			arrow.Field{Name: "y", Type: arrow.PrimitiveTypes.Float64})
+	case pgtype.DateOID:
+		return arrow.FixedWidthTypes.Date32
+	case pgtype.TimeOID:
+		return arrow.FixedWidthTypes.Time64ns
+	case pgtype.TimestampOID, pgtype.TimestamptzOID:
+		return arrow.FixedWidthTypes.Timestamp_s
+	case pgtype.NumericOID: // TODO: Use Decimal128Type for precision <= 38
+		return arrow.BinaryTypes.String
+	case pgtype.UUIDOID:
+		return &arrow.FixedSizeBinaryType{ByteWidth: 16}
+	default:
+		return arrow.BinaryTypes.Binary // fall back for unknown types
+	}
+}
+
+func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 	types, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, err
@@ -127,11 +169,11 @@ func inferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 
 	schema := make(sql.Schema, len(types))
 	for i, t := range types {
-		pgTypeName, ok := duckdbTypeStrToPostgresTypeStr[t.DatabaseTypeName()]
+		pgTypeName, ok := DuckdbTypeStrToPostgresTypeStr[t.DatabaseTypeName()]
 		if !ok {
 			return nil, fmt.Errorf("unsupported type %s", t.DatabaseTypeName())
 		}
-		pgType, ok := defaultTypeMap.TypeForName(pgTypeName)
+		pgType, ok := DefaultTypeMap.TypeForName(pgTypeName)
 		if !ok {
 			return nil, fmt.Errorf("unsupported type %s", pgTypeName)
 		}
@@ -141,7 +183,7 @@ func inferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 			Name: t.Name(),
 			Type: PostgresType{
 				PG:   pgType,
-				Size: pgTypeSizes[pgType.OID],
+				Size: PostgresTypeSizes[pgType.OID],
 			},
 			Nullable: nullable,
 		}
@@ -150,18 +192,18 @@ func inferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 	return schema, nil
 }
 
-func inferDriverSchema(rows driver.Rows) (sql.Schema, error) {
+func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 	columns := rows.Columns()
 	schema := make(sql.Schema, len(columns))
 	for i, colName := range columns {
 		var pgTypeName string
 		if colType, ok := rows.(driver.RowsColumnTypeDatabaseTypeName); ok {
-			pgTypeName = duckdbTypeStrToPostgresTypeStr[colType.ColumnTypeDatabaseTypeName(i)]
+			pgTypeName = DuckdbTypeStrToPostgresTypeStr[colType.ColumnTypeDatabaseTypeName(i)]
 		} else {
 			pgTypeName = "text" // Default to text if type name is not available
 		}
 
-		pgType, ok := defaultTypeMap.TypeForName(pgTypeName)
+		pgType, ok := DefaultTypeMap.TypeForName(pgTypeName)
 		if !ok {
 			return nil, fmt.Errorf("unsupported type %s", pgTypeName)
 		}
@@ -175,7 +217,7 @@ func inferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 			Name: colName,
 			Type: PostgresType{
 				PG:   pgType,
-				Size: pgTypeSizes[pgType.OID],
+				Size: PostgresTypeSizes[pgType.OID],
 			},
 			Nullable: nullable,
 		}
@@ -189,8 +231,19 @@ type PostgresType struct {
 	Size int32
 }
 
+func NewPostgresType(oid uint32) (PostgresType, error) {
+	t, ok := DefaultTypeMap.TypeForOID(oid)
+	if !ok {
+		return PostgresType{}, fmt.Errorf("unsupported type OID %d", oid)
+	}
+	return PostgresType{
+		PG:   t,
+		Size: PostgresTypeSizes[oid],
+	}, nil
+}
+
 func (p PostgresType) Encode(v any, buf []byte) ([]byte, error) {
-	return defaultTypeMap.Encode(p.PG.OID, p.PG.Codec.PreferredFormat(), v, buf)
+	return DefaultTypeMap.Encode(p.PG.OID, p.PG.Codec.PreferredFormat(), v, buf)
 }
 
 var _ sql.Type = PostgresType{}

@@ -23,10 +23,14 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/delta"
+	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
@@ -49,6 +53,13 @@ type LogicalReplicator struct {
 	messageReceived bool
 	stop            chan struct{}
 	mu              *sync.Mutex
+
+	ongoingBatchTxn atomic.Bool   // true if we're in a batched transaction
+	dirtyTxn        atomic.Bool   // true if we have uncommitted changes
+	dirtyStream     atomic.Bool   // true if the binlog stream does not end with a commit
+	deltaBufSize    atomic.Uint64 // size of the delta buffer in bytes
+	lastCommitTime  time.Time     // time of last commit
+	inTxnStmtID     atomic.Uint64 // statement ID within transaction
 }
 
 // NewLogicalReplicator creates a new logical replicator instance which connects to the primary and replication
@@ -164,8 +175,14 @@ type replicationState struct {
 	// the final LSN of the transaction, as recorded in the Begin message. So for every Begin, we decide whether to
 	// process or ignore all messages until a corresponding Commit message.
 	processMessages bool
-	relations       map[uint32]*pglogrepl.RelationMessageV2
-	typeMap         *pgtype.Map
+
+	typeMap   *pgtype.Map
+	relations map[uint32]*pglogrepl.RelationMessageV2
+	schemas   map[uint32]sql.Schema
+	deltas    *delta.DeltaController
+
+	deltaBufSize   atomic.Uint64
+	lastCommitTime time.Time
 }
 
 // StartReplication starts the replication process for the given slot name. This function blocks until replication is
@@ -185,6 +202,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 		lastWrittenLSN: lastWrittenLsn,
 		relations:      map[uint32]*pglogrepl.RelationMessageV2{},
 		typeMap:        pgtype.NewMap(),
+		deltas:         delta.NewController(),
 	}
 
 	// Switch to the `public` schema.
@@ -557,6 +575,18 @@ func (r *LogicalReplicator) processMessage(
 	switch logicalMsg := logicalMsg.(type) {
 	case *pglogrepl.RelationMessageV2:
 		state.relations[logicalMsg.RelationID] = logicalMsg
+		schema := make(sql.Schema, len(logicalMsg.Columns))
+		for i, col := range logicalMsg.Columns {
+			pgType, err := pgtypes.NewPostgresType(col.DataType)
+			if err != nil {
+				return false, err
+			}
+			schema[i] = &sql.Column{
+				Name: col.Name,
+				Type: pgType,
+			}
+		}
+		state.schemas[logicalMsg.RelationID] = schema
 	case *pglogrepl.BeginMessage:
 		// Indicates the beginning of a group of changes in a transaction.
 		// This is only sent for committed transactions. We won't get any events from rolled back transactions.
@@ -570,11 +600,20 @@ func (r *LogicalReplicator) processMessage(
 		state.processMessages = true
 		state.currentTransactionLSN = logicalMsg.FinalLSN
 
-		log.Printf("BeginMessage: %v", logicalMsg)
-		err = r.replicateQuery(state.replicaCtx, "BEGIN TRANSACTION")
-		if err != nil {
-			return false, err
+		// Start a new transaction or extend existing batch
+		extend, reason := r.mayExtendBatchTxn()
+		if !extend {
+			err := r.commitOngoingTxn(state.replicaCtx, reason)
+			if err != nil {
+				return false, err
+			}
+			err = r.replicateQuery(state.replicaCtx, "BEGIN TRANSACTION")
+			if err != nil {
+				return false, err
+			}
+			r.ongoingBatchTxn.Store(true)
 		}
+
 	case *pglogrepl.CommitMessage:
 		log.Printf("CommitMessage: %v", logicalMsg)
 
@@ -605,147 +644,77 @@ func (r *LogicalReplicator) processMessage(
 			log.Fatalf("unknown relation ID %d", logicalMsg.RelationID)
 		}
 
-		columnStr := strings.Builder{}
-		valuesStr := strings.Builder{}
-		for idx, col := range logicalMsg.Tuple.Columns {
-			if idx > 0 {
-				columnStr.WriteString(", ")
-				valuesStr.WriteString(", ")
-			}
-
-			colName := rel.Columns[idx].Name
-			columnStr.WriteString(colName)
-
-			switch col.DataType {
-			case 'n': // null
-				valuesStr.WriteString("NULL")
-			case 't': // text
-
-				// We have to round-trip the data through the encodings to get an accurate text rep back
-				val, err := decodeTextColumnData(state.typeMap, col.Data, rel.Columns[idx].DataType)
-				if err != nil {
-					log.Fatalln("error decoding column data:", err)
-				}
-				colData, err := encodeColumnData(state.typeMap, val, rel.Columns[idx].DataType)
-				if err != nil {
-					return false, err
-				}
-				valuesStr.WriteString(colData)
-			default:
-				log.Printf("unknown column data type: %c", col.DataType)
-			}
-		}
-
-		err = r.replicateQuery(state.replicaCtx, fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)", rel.Namespace, rel.RelationName, columnStr.String(), valuesStr.String()))
+		appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[logicalMsg.RelationID])
 		if err != nil {
 			return false, err
 		}
+
+		err = r.appendInsert(state, appender, logicalMsg, rel)
+		if err != nil {
+			return false, err
+		}
+
+		r.dirtyTxn.Store(true)
+		r.dirtyStream.Store(true)
+		r.inTxnStmtID.Add(1)
+
 	case *pglogrepl.UpdateMessageV2:
 		if !state.processMessages {
 			log.Printf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
 			return false, nil
 		}
 
-		// TODO: this won't handle primary key changes correctly
-		// TODO: this probably doesn't work for unkeyed tables
 		rel, ok := state.relations[logicalMsg.RelationID]
 		if !ok {
 			log.Fatalf("unknown relation ID %d", logicalMsg.RelationID)
 		}
 
-		updateStr := strings.Builder{}
-		whereStr := strings.Builder{}
-		for idx, col := range logicalMsg.NewTuple.Columns {
-			colName := rel.Columns[idx].Name
-			colFlags := rel.Columns[idx].Flags
-
-			var stringVal string
-			switch col.DataType {
-			case 'n': // null
-				stringVal = "NULL"
-			case 'u': // unchanged toast
-			case 't': // text
-				val, err := decodeTextColumnData(state.typeMap, col.Data, rel.Columns[idx].DataType)
-				if err != nil {
-					log.Fatalln("error decoding column data:", err)
-				}
-
-				stringVal, err = encodeColumnData(state.typeMap, val, rel.Columns[idx].DataType)
-				if err != nil {
-					return false, err
-				}
-			default:
-				log.Printf("unknown column data type: %c", col.DataType)
-			}
-
-			// TODO: quote column names?
-			if colFlags == 0 {
-				if updateStr.Len() > 0 {
-					updateStr.WriteString(", ")
-				}
-				updateStr.WriteString(fmt.Sprintf("%s = %v", colName, stringVal))
-			} else {
-				if whereStr.Len() > 0 {
-					updateStr.WriteString(", ")
-				}
-				whereStr.WriteString(fmt.Sprintf("%s = %v", colName, stringVal))
-			}
-		}
-
-		err = r.replicateQuery(state.replicaCtx, fmt.Sprintf("UPDATE %s.%s SET %s%s", rel.Namespace, rel.RelationName, updateStr.String(), whereClause(whereStr)))
+		appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[logicalMsg.RelationID])
 		if err != nil {
 			return false, err
 		}
+
+		// First delete old row
+		err = r.appendDelete(state, appender, logicalMsg.OldTuple.Columns, rel)
+		if err != nil {
+			return false, err
+		}
+
+		// Then insert new row
+		err = r.appendInsertFromUpdate(state, appender, logicalMsg.NewTuple.Columns, rel)
+		if err != nil {
+			return false, err
+		}
+
+		r.dirtyTxn.Store(true)
+		r.dirtyStream.Store(true)
+		r.inTxnStmtID.Add(1)
+
 	case *pglogrepl.DeleteMessageV2:
 		if !state.processMessages {
 			log.Printf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
 			return false, nil
 		}
 
-		// TODO: this probably doesn't work for unkeyed tables
 		rel, ok := state.relations[logicalMsg.RelationID]
 		if !ok {
 			log.Fatalf("unknown relation ID %d", logicalMsg.RelationID)
 		}
 
-		whereStr := strings.Builder{}
-		for idx, col := range logicalMsg.OldTuple.Columns {
-			colName := rel.Columns[idx].Name
-			colFlags := rel.Columns[idx].Flags
-
-			var stringVal string
-			switch col.DataType {
-			case 'n': // null
-				stringVal = "NULL"
-			case 'u': // unchanged toast
-			case 't': // text
-				val, err := decodeTextColumnData(state.typeMap, col.Data, rel.Columns[idx].DataType)
-				if err != nil {
-					log.Fatalln("error decoding column data:", err)
-				}
-
-				stringVal, err = encodeColumnData(state.typeMap, val, rel.Columns[idx].DataType)
-				if err != nil {
-					return false, err
-				}
-			default:
-				log.Printf("unknown column data type: %c", col.DataType)
-			}
-
-			if colFlags == 0 {
-				// nothing to do
-			} else {
-				if whereStr.Len() > 0 {
-					whereStr.WriteString(", ")
-				}
-				whereStr.WriteString(fmt.Sprintf("%s = %v", colName, stringVal))
-			}
-		}
-
-		err = r.replicateQuery(state.replicaCtx, fmt.Sprintf("DELETE FROM %s.%s WHERE %s", rel.Namespace, rel.RelationName, whereStr.String()))
+		appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[logicalMsg.RelationID])
 		if err != nil {
 			return false, err
 		}
+
+		err = r.appendDelete(state, appender, logicalMsg.OldTuple.Columns, rel)
+		if err != nil {
+			return false, err
+		}
+
+		r.dirtyTxn.Store(true)
+		r.dirtyStream.Store(true)
+		r.inTxnStmtID.Add(1)
+
 	case *pglogrepl.TruncateMessageV2:
 		log.Printf("truncate for xid %d\n", logicalMsg.Xid)
 	case *pglogrepl.TypeMessageV2:
@@ -842,4 +811,154 @@ func encodeColumnData(mi *pgtype.Map, data interface{}, dataType uint32) (string
 	default:
 		return value, nil
 	}
+}
+
+// mayExtendBatchTxn checks if we should extend the current batch transaction
+func (r *LogicalReplicator) mayExtendBatchTxn() (bool, delta.FlushReason) {
+	extend, reason := false, delta.UnknownFlushReason
+	if r.ongoingBatchTxn.Load() {
+		extend = true
+		switch {
+		case time.Since(r.lastCommitTime) >= 200*time.Millisecond:
+			extend, reason = false, delta.TimeTickFlushReason
+		case r.deltaBufSize.Load() >= (128 << 20): // 128MB
+			extend, reason = false, delta.MemoryLimitFlushReason
+		}
+	}
+	return extend, reason
+}
+
+// commitOngoingTxn commits the current transaction
+func (r *LogicalReplicator) commitOngoingTxn(ctx *sql.Context, flushReason delta.FlushReason) error {
+	// Flush the delta buffer if too large
+	err := r.flushDeltaBuffer(ctx, flushReason)
+	if err != nil {
+		return err
+	}
+
+	// Commit the transaction
+	err = r.replicateQuery(ctx, "COMMIT")
+	if err != nil {
+		return err
+	}
+
+	// Reset transaction state
+	r.ongoingBatchTxn.Store(false)
+	r.dirtyTxn.Store(false)
+	r.dirtyStream.Store(false)
+	r.inTxnStmtID.Store(0)
+	r.lastCommitTime = time.Now()
+
+	return r.writeWALPosition(ctx, state.slotName, state.currentTransactionLSN)
+}
+
+// flushDeltaBuffer flushes the accumulated changes in the delta buffer
+func (r *LogicalReplicator) flushDeltaBuffer(ctx *sql.Context, reason delta.FlushReason) error {
+	tx, err := adapter.GetCatalogTxn(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	defer r.deltaBufSize.Store(0)
+
+	return state.deltas.FlushBuffer(ctx, tx, reason)
+}
+
+func (r *LogicalReplicator) appendInsert(state *replicationState, appender *delta.DeltaAppender, msg *pglogrepl.InsertMessageV2, rel *pglogrepl.RelationMessageV2) error {
+	// ...existing code for setting transaction metadata...
+
+	pos := 0
+	for idx, col := range msg.Tuple.Columns {
+		if col.DataType == 'n' {
+			fields[idx].AppendNull()
+			continue
+		}
+
+		length, err := decodeAndAppend(state.typeMap, col.Data, rel.Columns[idx].DataType, fields[idx])
+		if err != nil {
+			return err
+		}
+		pos += length
+	}
+
+	r.deltaBufSize.Add(uint64(pos))
+	return nil
+}
+
+func (r *LogicalReplicator) appendDelete(state *replicationState, appender *delta.DeltaAppender, columns []pglogrepl.TupleDataColumn, rel *pglogrepl.RelationMessageV2) error {
+	fields := appender.Fields()
+	actions := appender.Action()
+	txnTags := appender.TxnTag()
+	txnGroups := appender.TxnGroup()
+	txnSeqNumbers := appender.TxnSeqNumber()
+	txnStmtOrdinals := appender.TxnStmtOrdinal()
+
+	actions.Append(int8(binlog.DeleteRowEvent))
+	txnTags.Append(nil)
+	txnGroups.Append(nil)
+	txnSeqNumbers.Append(uint64(state.currentTransactionLSN))
+	txnStmtOrdinals.Append(r.inTxnStmtID.Load())
+
+	pos := 0
+	for idx, col := range columns {
+		builder := fields[idx]
+
+		if col.DataType == 'n' {
+			builder.AppendNull()
+			continue
+		}
+
+		val, err := decodeTextColumnData(state.typeMap, col.Data, rel.Columns[idx].DataType)
+		if err != nil {
+			return err
+		}
+
+		length, err := writeValue(builder, val)
+		if err != nil {
+			return err
+		}
+		pos += length
+	}
+
+	r.deltaBufSize.Add(uint64(pos))
+	return nil
+}
+
+func (r *LogicalReplicator) appendInsertFromUpdate(state *replicationState, appender *delta.DeltaAppender, columns []pglogrepl.TupleDataColumn, rel *pglogrepl.RelationMessageV2) error {
+	fields := appender.Fields()
+	actions := appender.Action()
+	txnTags := appender.TxnTag()
+	txnGroups := appender.TxnGroup()
+	txnSeqNumbers := appender.TxnSeqNumber()
+	txnStmtOrdinals := appender.TxnStmtOrdinal()
+
+	actions.Append(int8(binlog.InsertRowEvent))
+	txnTags.Append(nil)
+	txnGroups.Append(nil)
+	txnSeqNumbers.Append(uint64(state.currentTransactionLSN))
+	txnStmtOrdinals.Append(r.inTxnStmtID.Load())
+
+	pos := 0
+	for idx, col := range columns {
+		builder := fields[idx]
+
+		if col.DataType == 'n' {
+			builder.AppendNull()
+			continue
+		}
+
+		val, err := decodeTextColumnData(state.typeMap, col.Data, rel.Columns[idx].DataType)
+		if err != nil {
+			return err
+		}
+
+		length, err := writeValue(builder, val)
+		if err != nil {
+			return err
+		}
+		pos += length
+	}
+
+	r.deltaBufSize.Add(uint64(pos))
+	return nil
 }

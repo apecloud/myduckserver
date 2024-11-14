@@ -42,7 +42,7 @@ func RegisterReplicaController(provider *catalog.DatabaseProvider, engine *sqle.
 	replica.SetExecutionContext(ctx)
 
 	twp := &tableWriterProvider{pool: pool}
-	twp.controller = delta.NewController(pool)
+	twp.controller = delta.NewController()
 
 	replica.SetTableWriterProvider(twp)
 	builder.FlushDeltaBuffer = nil // TODO: implement this

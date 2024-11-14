@@ -29,6 +29,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
+	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
@@ -161,7 +162,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 
 	paramOIDs := make([]uint32, len(paramTypes))
 	for i, t := range paramTypes {
-		paramOIDs[i] = duckdbTypeToPostgresOID[t]
+		paramOIDs[i] = pgtypes.DuckdbTypeToPostgresOID[t]
 	}
 
 	var (
@@ -188,7 +189,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 			break
 		}
 		defer rows.Close()
-		schema, err := inferSchema(rows)
+		schema, err := pgtypes.InferSchema(rows)
 		if err != nil {
 			break
 		}
@@ -421,7 +422,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		if err != nil {
 			break
 		}
-		schema, err = inferSchema(rows)
+		schema, err = pgtypes.InferSchema(rows)
 		if err != nil {
 			rows.Close()
 			break
@@ -458,7 +459,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 		if err != nil {
 			break
 		}
-		schema, err = inferDriverSchema(rows)
+		schema, err = pgtypes.InferDriverSchema(rows)
 		if err != nil {
 			rows.Close()
 			break
@@ -509,7 +510,7 @@ func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema) []pgproto3.FieldD
 		var size int16
 		var format int16
 		var err error
-		if pgType, ok := c.Type.(PostgresType); ok {
+		if pgType, ok := c.Type.(pgtypes.PostgresType); ok {
 			oid = pgType.PG.OID
 			format = pgType.PG.Codec.PreferredFormat()
 			size = int16(pgType.Size)
@@ -747,7 +748,7 @@ func rowToBytes(ctx *sql.Context, s sql.Schema, row sql.Row) ([][]byte, error) {
 		}
 
 		// TODO(fan): Preallocate the buffer
-		if pgType, ok := s[i].Type.(PostgresType); ok {
+		if pgType, ok := s[i].Type.(pgtypes.PostgresType); ok {
 			bytes, err := pgType.Encode(v, []byte{})
 			if err != nil {
 				return nil, err

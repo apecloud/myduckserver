@@ -2,6 +2,7 @@ package myarrow
 
 import (
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/vt/proto/query"
 )
@@ -38,6 +39,9 @@ func ToArrowType(t sql.Type) (arrow.DataType, error) {
 }
 
 func toArrowType(t sql.Type) arrow.DataType {
+	if pgType, ok := t.(pgtypes.PostgresType); ok {
+		return pgtypes.PostgresTypeToArrowType(pgType.PG.OID)
+	}
 	switch t.Type() {
 	case query.Type_UINT8:
 		return arrow.PrimitiveTypes.Uint8
