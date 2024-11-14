@@ -188,7 +188,7 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 		}
 
 		gtidModeEnabled, err = connAndCheckGtidModeEnabled(ctx, connParams)
-		if err != nil {
+		if err != nil && connectionAttempts >= maxConnectionAttempts {
 			return nil, err
 		}
 
