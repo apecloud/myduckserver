@@ -345,6 +345,14 @@ func (d *myBinlogReplicaController) SetReplicationFilterOptions(_ *sql.Context, 
 	return nil
 }
 
+func changeSourceLogFileToInvalidIfEmpty(status *binlogreplication.ReplicaStatus) {
+	// As the original design of go-mysql-server, the source log file should be "INVALID" if GTID_MODE is ON.
+	// An empty string of source log file means GTID_MODE is ON, and we should set it to "INVALID" here.
+	if status.SourceLogFile == "" {
+		status.SourceLogFile = "INVALID"
+	}
+}
+
 // GetReplicaStatus implements the BinlogReplicaController interface
 func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogreplication.ReplicaStatus, error) {
 	replicaSourceInfo, err := loadReplicationConfiguration(ctx, d.engine.Analyzer.Catalog.MySQLDb)
@@ -358,6 +366,7 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	var copy = d.status
 
 	if replicaSourceInfo == nil {
+		changeSourceLogFileToInvalidIfEmpty(&copy)
 		return &copy, nil
 	}
 
@@ -377,6 +386,7 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 		copy.RetrievedGtidSet = copy.ExecutedGtidSet
 	}
 
+	changeSourceLogFileToInvalidIfEmpty(&copy)
 	return &copy, nil
 }
 
