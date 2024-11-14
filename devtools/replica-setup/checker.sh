@@ -14,7 +14,7 @@ check_server_params() {
 
     # Retrieve the required MySQL server variables using mysqlsh
     result=$(mysqlsh --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "
-    SHOW VARIABLES WHERE variable_name IN ('binlog_format', 'enforce_gtid_consistency', 'gtid_mode', 'log_bin');
+    SHOW VARIABLES WHERE variable_name IN ('binlog_format', 'enforce_gtid_consistency', 'gtid_mode', 'gtid_strict_mode', 'log_bin');
     ")
 
     check_command "retrieving server parameters"
@@ -29,6 +29,7 @@ check_server_params() {
     binlog_format=$(echo "$result" | grep -i "binlog_format" | awk '{print $2}')
     enforce_gtid_consistency=$(echo "$result" | grep -i "enforce_gtid_consistency" | awk '{print $2}')
     gtid_mode=$(echo "$result" | grep -i "gtid_mode" | awk '{print $2}')
+    gtid_strict_mode=$(echo "$result" | grep -i "gtid_strict_mode" | awk '{print $2}')
     log_bin=$(echo "$result" | grep -i "log_bin" | awk '{print $2}')
 
     # Validate binlog_format
@@ -37,16 +38,25 @@ check_server_params() {
         return 1
     fi
 
-    # Validate enforce_gtid_consistency
-    if [[ "$enforce_gtid_consistency" != "ON" ]]; then
-        echo "Error: enforce_gtid_consistency is not set to 'ON', it is set to '$enforce_gtid_consistency'."
-        return 1
-    fi
+    # MariaDB use gtid_strict_mode instead of gtid_mode
+    if [[ -z "$gtid_strict_mode" ]]; then
+        # Validate enforce_gtid_consistency (for MySQL)
+        if [[ "$enforce_gtid_consistency" != "ON" ]]; then
+            echo "Error: enforce_gtid_consistency is not set to 'ON', it is set to '$enforce_gtid_consistency'."
+            return 1
+        fi
 
-    # Validate gtid_mode
-    if [[ "$gtid_mode" != "ON" ]]; then
-        echo "Error: gtid_mode is not set to 'ON', it is set to '$gtid_mode'."
-        return 1
+        # Validate gtid_mode (for MySQL)
+        if [[ "$gtid_mode" != "ON" ]]; then
+            echo "Error: gtid_mode is not set to 'ON', it is set to '$gtid_mode'."
+            return 1
+        fi
+    else
+        # Validate gtid_strict_mode (for MariaDB)
+        if [[ "$gtid_strict_mode" != "ON" ]]; then
+            echo "Error: gtid_strict_mode is not set to 'ON', it is set to '$gtid_strict_mode'."
+            return 1
+        fi
     fi
 
     # Validate log_bin

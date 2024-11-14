@@ -7,10 +7,10 @@ MyDuck Server supports setting up replication from common cloud-based MySQL offe
 Ensure the necessary parameters are properly set. Run the following query to check the configuration:
 
 ```sql
-SHOW VARIABLES WHERE variable_name IN ('log_bin', 'gtid_mode', 'enforce_gtid_consistency', 'binlog_format');
+SHOW VARIABLES WHERE variable_name IN ('log_bin', 'gtid_mode', 'enforce_gtid_consistency', 'gtid_strict_mode', 'binlog_format');
 ```
 
-**Expected Output:**
+**Expected Output (for MySQL):**
 
 ```plaintext
 +--------------------------+-------+
@@ -21,6 +21,18 @@ SHOW VARIABLES WHERE variable_name IN ('log_bin', 'gtid_mode', 'enforce_gtid_con
 | gtid_mode                | ON    |
 | log_bin                  | ON    |
 +--------------------------+-------+
+```
+
+**Expected Output (for MariaDB):**
+
+```plaintext
++------------------+-------+
+| Variable_name    | Value |
++------------------+-------+
+| binlog_format    | ROW   |
+| gtid_strict_mode | ON    |
+| log_bin          | ON    |
++------------------+-------+
 ```
 
 These parameters are usually enabled by default or easily configurable with most cloud providers like Azure, Aliyun, ApeCloud, and MySQL Community Edition. However, for **AWS RDS** or **AWS Aurora for MySQL**, you may need to follow the specific instructions to enable them. Refer to the official documentation:
