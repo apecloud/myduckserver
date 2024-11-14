@@ -38,7 +38,7 @@ echo "Copying data from MySQL to MyDuck..."
 # Run mysqlsh command and capture the output
 output=$(mysqlsh --host=${MYSQL_HOST} --port=${MYSQL_PORT} --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M --ignore-version true)
 
-if [[ $LOG_POS_MODE == "OFF" ]]; then
+if [[ $GTID_MODE == "ON" ]]; then
     # Extract the EXECUTED_GTID_SET from this output:
     #   Executed_GTID_set: 369107a6-a0a5-11ef-a255-0242ac110008:1-10
     EXECUTED_GTID_SET=$(echo "$output" | grep -i "EXECUTED_GTID_SET" | awk '{print $2}')

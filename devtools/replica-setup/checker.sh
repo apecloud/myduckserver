@@ -39,13 +39,13 @@ check_server_params() {
     fi
 
     # MariaDB use gtid_strict_mode instead of gtid_mode
-    if [[ "$gtid_strict_mode" == "OFF" || "${gtid_mode}" =~ ^OFF ]]; then
-        LOG_POS_MODE="ON"
-        echo "LOG_POS_MODE is set to $LOG_POS_MODE"
+    if [[ "$gtid_strict_mode" == "OFF" || (-z "$gtid_strict_mode" && "${gtid_mode}" =~ ^OFF) ]]; then
+        GTID_MODE="OFF"
+        echo "GTID_MODE: $GTID_MODE"
     fi
 
     # If gtid_strict_mode is empty, check gtid_mode. If it's not OFF, then enforce_gtid_consistency must be ON
-    if [[ -z "$gtid_strict_mode" && $LOG_POS_MODE == "OFF" && "$enforce_gtid_consistency" != "ON" ]]; then
+    if [[ -z "$gtid_strict_mode" && $GTID_MODE == "ON" && "$enforce_gtid_consistency" != "ON" ]]; then
         echo "Error: gtid_mode is not set to 'OFF', it is set to '$gtid_mode'. enforce_gtid_consistency must be 'ON'."
         return 1
     fi

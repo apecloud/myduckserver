@@ -54,8 +54,8 @@ const (
 	ERFatalReplicaError = 13117
 )
 
-// Match any strings starting with "OFF" (case insensitive)
-var gtidModeOffRegex = regexp.MustCompile(`(?i)^OFF$`)
+// Match any strings starting with "ON" (case insensitive)
+var gtidModeIsOnRegex = regexp.MustCompile(`(?i)^ON$`)
 
 // binlogReplicaApplier represents the process that applies updates from a binlog connection.
 //
@@ -120,19 +120,6 @@ func (a *binlogReplicaApplier) IsRunning() bool {
 	return a.running.Load()
 }
 
-// check the GTID_MODE on "conn", return false if it's 'OFF', otherwise return true.
-func checkGtidModeEnabled(conn *mysql.Conn) (bool, error) {
-	qr, err := conn.ExecuteFetch("SELECT @@GLOBAL.GTID_MODE", 1, true)
-	if err != nil {
-		return false, fmt.Errorf("error checking GTID_MODE: %v", err)
-	}
-	if len(qr.Rows) == 0 {
-		return false, fmt.Errorf("no rows returned when checking GTID_MODE")
-	}
-	gtidMode := string(qr.Rows[0][0].Raw())
-	return !gtidModeOffRegex.MatchString(gtidMode), nil
-}
-
 // This function will connect to the MySQL server and check the GTID_MODE.
 func connAndCheckGtidModeEnabled(ctx *sql.Context, params mysql.ConnParams) (bool, error) {
 	conn, err := mysql.Connect(ctx, &params)
@@ -140,7 +127,21 @@ func connAndCheckGtidModeEnabled(ctx *sql.Context, params mysql.ConnParams) (boo
 		return false, err
 	}
 	defer conn.Close()
-	return checkGtidModeEnabled(conn)
+
+	var qr *sqltypes.Result
+	qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_MODE", 1, true)
+	if err != nil {
+		// Maybe it's a MariaDB server, try to get the GTID_STRICT_MODE instead
+		qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_STRICT_MODE", 1, true)
+		if err != nil {
+			return false, fmt.Errorf("error checking GTID_MODE: %v", err)
+		}
+	}
+	if len(qr.Rows) == 0 {
+		return false, fmt.Errorf("no rows returned when checking GTID_MODE")
+	}
+	gtidMode := string(qr.Rows[0][0].Raw())
+	return gtidModeIsOnRegex.MatchString(gtidMode), nil
 }
 
 // connectAndStartReplicationEventStream connects to the configured MySQL replication source, including pausing
@@ -237,7 +238,7 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 	return conn, nil
 }
 
-func (a *binlogReplicaApplier) initializedGtidPosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
+func (a *binlogReplicaApplier) loadGtidPosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
 	position, err := positionStore.Load(flavorName, ctx, a.engine)
 	if err != nil {
 		return replication.Position{}, err
@@ -286,7 +287,7 @@ func (a *binlogReplicaApplier) initializedGtidPosition(ctx *sql.Context, positio
 }
 
 // another method like "initializedGtidPosition" to get the current log file based position
-func (a *binlogReplicaApplier) initializedLogFilePosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
+func (a *binlogReplicaApplier) loadLogFilePosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
 	position, err := positionStore.Load(flavorName, ctx, a.engine)
 	if err != nil {
 		return replication.Position{}, err
@@ -317,7 +318,7 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 
 	var position replication.Position
 	if gtidModeEnabled {
-		position, err = a.initializedGtidPosition(ctx, positionStore, flavorName)
+		position, err = a.loadGtidPosition(ctx, positionStore, flavorName)
 		if err != nil {
 			return err
 		}
@@ -325,7 +326,7 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 			ctx.GetLogger().Errorf("unable to set @@GLOBAL.gtid_executed: %s", err.Error())
 		}
 	} else {
-		position, err = a.initializedLogFilePosition(ctx, positionStore, flavorName)
+		position, err = a.loadLogFilePosition(ctx, positionStore, flavorName)
 		if err != nil {
 			return err
 		}
