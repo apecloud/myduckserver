@@ -25,29 +25,22 @@ EOF
 fi
 
 # Connect to MySQL and execute the replication configuration commands
-if [ $LOG_POS_MODE == "OFF" ]; then
-  mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
-CHANGE REPLICATION SOURCE TO
-  SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}',
-  SOURCE_PORT=${MYSQL_PORT},
-  SOURCE_USER='${MYSQL_USER}',
-  SOURCE_PASSWORD='${MYSQL_PASSWORD}'
-;
-START REPLICA;
-EOF
-else
-  mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
-CHANGE REPLICATION SOURCE TO
-  SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}',
-  SOURCE_PORT=${MYSQL_PORT},
-  SOURCE_USER='${MYSQL_USER}',
-  SOURCE_PASSWORD='${MYSQL_PASSWORD}',
-  SOURCE_LOG_FILE='${BINLOG_FILE}',
-  SOURCE_LOG_POS=${BINLOG_POS}
-;
-START REPLICA;
-EOF
+REPLICATION_CMD="CHANGE REPLICATION SOURCE TO \
+  SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}', \
+  SOURCE_PORT=${MYSQL_PORT}, \
+  SOURCE_USER='${MYSQL_USER}', \
+  SOURCE_PASSWORD='${MYSQL_PASSWORD}'"
+
+if [ $LOG_POS_MODE != "OFF" ]; then
+  REPLICATION_CMD="${REPLICATION_CMD}, \
+  SOURCE_LOG_FILE='${BINLOG_FILE}', \
+  SOURCE_LOG_POS=${BINLOG_POS}"
 fi
+
+mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
+${REPLICATION_CMD};
+START REPLICA;
+EOF
 
 # Check if the commands were successful
 if [ $? -ne 0 ]; then
