@@ -81,21 +81,21 @@ var InternalTables = struct {
 	GlobalStatus       InternalTable
 }{
 	PersistentVariable: InternalTable{
-		Schema:       "__mysql_system__",
+		Schema:       "__sys__",
 		Name:         "persistent_variable",
 		KeyColumns:   []string{"name"},
 		ValueColumns: []string{"value", "vtype"},
 		DDL:          "name TEXT PRIMARY KEY, value TEXT, vtype TEXT",
 	},
 	BinlogPosition: InternalTable{
-		Schema:       "__mysql_system__",
+		Schema:       "__sys__",
 		Name:         "binlog_position",
 		KeyColumns:   []string{"channel"},
 		ValueColumns: []string{"position"},
 		DDL:          "channel TEXT PRIMARY KEY, position TEXT",
 	},
 	PgReplicationLSN: InternalTable{
-		Schema:       "main",
+		Schema:       "__sys__",
 		Name:         "pg_replication_lsn",
 		KeyColumns:   []string{"slot_name"},
 		ValueColumns: []string{"lsn"},
