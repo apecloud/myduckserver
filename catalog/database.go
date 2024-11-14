@@ -217,7 +217,7 @@ func (d *Database) RenameTable(ctx *sql.Context, oldName string, newName string)
 // extractViewDefinitions is a helper function to extract view definitions from DuckDB
 func (d *Database) extractViewDefinitions(ctx *sql.Context, schemaName string, viewName string) ([]sql.ViewDefinition, error) {
 	query := `
-		SELECT view_name, sql
+		SELECT DISTINCT view_name, sql
 		FROM duckdb_views()
 		WHERE schema_name = ?
 	`
@@ -240,6 +240,12 @@ func (d *Database) extractViewDefinitions(ctx *sql.Context, schemaName string, v
 		if err := rows.Scan(&name, &createViewStmt); err != nil {
 			return nil, ErrDuckDB.New(err)
 		}
+
+		// Skip system views directly
+		if IsSystemView(name) {
+			continue
+		}
+
 		views = append(views, sql.ViewDefinition{
 			Name:                name,
 			CreateViewStatement: createViewStmt,

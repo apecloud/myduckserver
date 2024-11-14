@@ -49,8 +49,6 @@ github.com/apache/thrift v0.12.0/go.mod h1:cp2SuWMxlEZw2r+iP2GNCdIi4C1qmUzdZFSVb
 github.com/apache/thrift v0.13.0/go.mod h1:cp2SuWMxlEZw2r+iP2GNCdIi4C1qmUzdZFSVb+bacwQ=
 github.com/apache/thrift v0.21.0 h1:tdPmh/ptjE1IJnhbhrcl2++TauVjy242rkV/UzJChnE=
 github.com/apache/thrift v0.21.0/go.mod h1:W1H8aR/QRtYNvrPeFXBtobyRkd0/YVhTc6i07XIAgDw=
-github.com/apecloud/dolt-vitess v0.0.0-20241107081545-d894da3857d8 h1:OKsyuwps5eKiUa4GHn35O8kq8R+Tf2/iUYNo3f3SoCc=
-github.com/apecloud/dolt-vitess v0.0.0-20241107081545-d894da3857d8/go.mod h1:uBvlRluuL+SbEWTCZ68o0xvsdYZER3CEG/35INdzfJM=
 github.com/apecloud/dolt-vitess v0.0.0-20241112063127-f62e98a9936a h1:2D9spsdHL5yqHqxghc7FrTfknswMbiUCCJ1Ci3WaIPY=
 github.com/apecloud/dolt-vitess v0.0.0-20241112063127-f62e98a9936a/go.mod h1:uBvlRluuL+SbEWTCZ68o0xvsdYZER3CEG/35INdzfJM=
 github.com/apecloud/go-mysql-server v0.0.0-20241112031328-30cddba3eea7 h1:nlBHJDxPrUaDpKkS1xj78C0o/hdU5O3RMwOlBJC+U2k=
@@ -139,14 +137,10 @@ github.com/dolthub/flatbuffers/v23 v23.3.3-dh.2 h1:u3PMzfF8RkKd3lB9pZ2bfn0qEG+1G
 github.com/dolthub/flatbuffers/v23 v23.3.3-dh.2/go.mod h1:mIEZOHnFx4ZMQeawhw9rhsj+0zwQj7adVsnBX7t+eKY=
 github.com/dolthub/go-icu-regex v0.0.0-20240916130659-0118adc6b662 h1:aC17hZD6iwzBwwfO5M+3oBT5E5gGRiQPdn+vzpDXqIA=
 github.com/dolthub/go-icu-regex v0.0.0-20240916130659-0118adc6b662/go.mod h1:KPUcpx070QOfJK1gNe0zx4pA5sicIK1GMikIGLKC168=
-github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2 h1:1ax2e+4r9ax5eiowBEIfRX7K/oZLeWxNNtt88CgnO0I=
-github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2/go.mod h1:sOMQzWUvHvJECzpcUxjDgV5BR/A7U+hOh596PUO2NPI=
 github.com/dolthub/jsonpath v0.0.2-0.20240227200619-19675ab05c71 h1:bMGS25NWAGTEtT5tOBsCuCrlYnLRKpbJVJkDbrTRhwQ=
 github.com/dolthub/jsonpath v0.0.2-0.20240227200619-19675ab05c71/go.mod h1:2/2zjLQ/JOOSbbSboojeg+cAwcRV0fDLzIiWch/lhqI=
 github.com/dolthub/sqllogictest/go v0.0.0-20240618184124-ca47f9354216 h1:JWkKRE4EHUcEVQCMRBej8DYxjYjRz/9MdF/NNQh0o70=
 github.com/dolthub/sqllogictest/go v0.0.0-20240618184124-ca47f9354216/go.mod h1:e/FIZVvT2IR53HBCAo41NjqgtEnjMJGKca3Y/dAmZaA=
-github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9 h1:s36zDuLPuZRWC0nBCJs2Z8joP19eKEtcsIsuE8K9Kx0=
-github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9/go.mod h1:uBvlRluuL+SbEWTCZ68o0xvsdYZER3CEG/35INdzfJM=
 github.com/dustin/go-humanize v0.0.0-20171111073723-bb3d318650d4/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
@@ -165,8 +159,6 @@ github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7
 github.com/etcd-io/bbolt v1.3.3/go.mod h1:ZF2nL25h33cCyBtcyWeZ2/I3HQOfTP+0PIEvHjkjCrw=
 github.com/fanixk/geohash v0.0.0-20150324002647-c1f9b5fa157a h1:Fyfh/dsHFrC6nkX7H7+nFdTd1wROlX/FxEIWVpKYf1U=
 github.com/fanixk/geohash v0.0.0-20150324002647-c1f9b5fa157a/go.mod h1:UgNw+PTmmGN8rV7RvjvnBMsoTU8ZXXnaT3hYsDTBlgQ=
-github.com/fanyang01/go-mysql-server v0.0.0-20241107083514-e7c2ac20ddba h1:o7t/gFGKP2Hns5JUvbGjL+eTyIrDVI7QnGdsVubsPqE=
-github.com/fanyang01/go-mysql-server v0.0.0-20241107083514-e7c2ac20ddba/go.mod h1:IvF70qil4jA4trQvcl4tsNdY4AgL94F2vWzoxAM2zFo=
 github.com/fasthttp-contrib/websocket v0.0.0-20160511215533-1f3b11f56072/go.mod h1:duJ4Jxv5lDcvg4QuQr0oowTf7dz4/CR8NtyCooz9HL8=
 github.com/fatih/color v1.7.0/go.mod h1:Zm6kSWBoL9eyXnKyktHP6abPY2pDugNf5KwzbycvMj4=
 github.com/fatih/structs v1.1.0/go.mod h1:9NiDSp5zOcgEDl+j00MP/WkGVPOlPRLejGD8Ga6PJ7M=
