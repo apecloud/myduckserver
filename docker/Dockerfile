@@ -1,9 +1,9 @@
 # Use the official Go image for building the Go application
 # Step 1: Build stage
-FROM golang:1.23.2 AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.23.2 AS builder
 
 # Set environment variables for cross-compilation
-ARG TARGETOS=linux
+ARG TARGETOS
 ARG TARGETARCH
 ENV GOOS=$TARGETOS
 ENV GOARCH=$TARGETARCH
@@ -13,18 +13,34 @@ WORKDIR /app
 
 # Copy Go module files and download dependencies
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 # Copy the remaining source code
 COPY . .
 
+RUN apt-get update && apt-get install -y \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # Build the Go application for the target OS and architecture
-RUN go build -o /myduckserver
+RUN --mount=type=bind,target=. \
+    --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go env && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+      CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++" CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /myduckserver; \
+    else \
+      CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /myduckserver; \
+    fi
+
 
 # Step 2: Final stage
 FROM debian:bookworm-slim
 
-ARG TARGETOS=linux
+ARG TARGETOS
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y \

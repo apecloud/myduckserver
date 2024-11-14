@@ -117,3 +117,8 @@ func (idx *Index) CanSupportOrderBy(expr sql.Expression) bool {
 func (idx *Index) PrefixLengths() []uint16 {
 	return idx.PrefixLens
 }
+
+// IsVector returns whether this index is a vector index
+func (idx *Index) IsVector() bool {
+	return false
+}

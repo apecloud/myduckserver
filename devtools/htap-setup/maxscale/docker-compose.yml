@@ -45,15 +45,6 @@ services:
       timeout: 5s
       retries: 5
 
-  myduck-tmp-fix:
-    image: mysql:8.0
-    container_name: htap-myduck-tmp-fix
-    entrypoint: ["bash", "-c", "until mysql -h myduck -u root -e \"alter user 'lol'@'%' identified by 'lol';\" ; do echo 'Waiting for account to be ready...'; sleep 2; done"]
-    restart: "no"
-    depends_on:
-      myduck:
-        condition: service_healthy
-
   maxscale:
     image: mariadb/maxscale:24.02
     container_name: maxscale

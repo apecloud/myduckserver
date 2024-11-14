@@ -133,8 +133,9 @@ MyDuck Server is open-source, and we’d love your help to keep it growing! Chec
 
 MyDuck Server is built on top of the a collection of amazing open-source projects, notably:
 - [DuckDB](https://duckdb.org/) - The fast in-process analytical database that powers MyDuck Server.
-- [go-mysql-server](https://github.com/dolthub/go-mysql-server) - The excellent MySQL server implementation in Go maintained by [DoltHub](https://www.dolthub.com/team) that MyDuck Server is based on.
-- [Vitess](https://vitess.io/) - Provides the MySQL replication stream subscriber used in MyDuck Server.
+- [go-mysql-server](https://github.com/dolthub/go-mysql-server) - The excellent MySQL server implementation in Go maintained by [DoltHub](https://www.dolthub.com/team) that MyDuck Server is based on. MyDuckServer is built on the outstanding MySQL server implementation in Go, maintained by [DoltHub](https://www.dolthub.com/team). We also draw significant inspiration from [Dolt](https://github.com/dolthub/dolt) and [Doltgres](https://github.com/dolthub/doltgres).
+- [Vitess](https://vitess.io/) - Provides the MySQL replication stream used in MyDuck Server.
+- [go-duckdb](https://github.com/marcboeker/go-duckdb): An excellent Go driver for DuckDB that works seamlessly.
 - [SQLGlot](https://github.com/tobymao/sqlglot) - The ultimate SQL transpiler.
 
 We are grateful to the developers and contributors of these projects for their hard work and dedication to open-source software.

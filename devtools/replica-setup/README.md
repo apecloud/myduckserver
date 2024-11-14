@@ -25,7 +25,7 @@ bash replica_setup.sh --mysql_host <mysql_host> --mysql_port <mysql_port> --mysq
 - **`--mysql_port`**: The port on which the MySQL instance is listening connections.
 - **`--mysql_user`**: The MySQL user that has the appropriate privileges for replication.
 - **`--mysql_password`**: The password for the provided MySQL user.
-- ****`--myduck_port`**: The port on which MyDuck Server is listening connections.
+- **`--myduck_port`**: The port on which MyDuck Server is listening connections.
 
 ## Example
 
