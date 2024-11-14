@@ -27,7 +27,6 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
-	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
@@ -45,7 +44,6 @@ type rcvMsg struct {
 
 type LogicalReplicator struct {
 	primaryDns string
-	engine     *gms.Engine
 
 	running         bool
 	messageReceived bool
@@ -56,10 +54,9 @@ type LogicalReplicator struct {
 // NewLogicalReplicator creates a new logical replicator instance which connects to the primary and replication
 // databases using the connection strings provided. The connection to the replica is established immediately, and the
 // connection to the primary is established when StartReplication is called.
-func NewLogicalReplicator(primaryDns string, engine *gms.Engine) (*LogicalReplicator, error) {
+func NewLogicalReplicator(primaryDns string) (*LogicalReplicator, error) {
 	return &LogicalReplicator{
 		primaryDns: primaryDns,
-		engine:     engine,
 		mu:         &sync.Mutex{},
 	}, nil
 }
@@ -95,6 +92,7 @@ func (r *LogicalReplicator) CaughtUp(threshold int) (bool, error) {
 	}
 	r.mu.Unlock()
 
+	log.Printf("Checking replication lag with threshold %d\n", threshold)
 	conn, err := pgx.Connect(context.Background(), r.PrimaryDns())
 	if err != nil {
 		return false, err
@@ -201,7 +199,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 			_ = primaryConn.Close(context.Background())
 		}
 		// We always shut down here and only here, so we do the cleanup on thread exit in exactly one place
-		r.shutdown()
+		r.shutdown(sqlCtx)
 	}()
 
 	connErrCnt := 0
@@ -242,7 +240,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 		return nil
 	}
 
-	log.Println("Starting replicator")
+	log.Printf("Starting replicator: primaryDsn=%s, slotName=%s", r.PrimaryDns(), slotName)
 	r.mu.Lock()
 	r.running = true
 	r.messageReceived = false
@@ -367,10 +365,17 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 	}
 }
 
-func (r *LogicalReplicator) shutdown() {
+func (r *LogicalReplicator) shutdown(ctx *sql.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	log.Print("shutting down replicator")
+
+	// Rollback any open transaction
+	_, err := adapter.ExecCatalog(ctx, "ROLLBACK")
+	if err != nil && !strings.Contains(err.Error(), "no transaction is active") {
+		log.Printf("Failed to roll back transaction: %v", err)
+	}
+
 	r.running = false
 	close(r.stop)
 }
@@ -411,6 +416,7 @@ func (r *LogicalReplicator) replicateQuery(replicaCtx *sql.Context, query string
 // beginReplication starts a new replication connection to the primary server and returns it. The LSN provided is the
 // last one we have confirmed that we flushed to disk.
 func (r *LogicalReplicator) beginReplication(slotName string, lastFlushLsn pglogrepl.LSN) (*pgconn.PgConn, error) {
+	log.Printf("Connecting to primary for replication: %s", r.ReplicationDns())
 	conn, err := pgconn.Connect(context.Background(), r.ReplicationDns())
 	if err != nil {
 		return nil, err

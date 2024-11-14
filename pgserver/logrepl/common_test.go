@@ -51,6 +51,8 @@ func StartPostgresServer() (containerName string, dsn string, port int, err erro
 		"--name", containerName, // Give the container a name
 		"postgres:latest",         // Use the latest Postgres image
 		"-c", "wal_level=logical", // Enable logical replication
+		"-c", "max_wal_senders=30", // Set the maximum number of WAL senders
+		"-c", "wal_sender_timeout=10", // Set the WAL sender timeout
 	)
 
 	// Execute the Docker command

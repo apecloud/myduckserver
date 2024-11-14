@@ -35,8 +35,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// This is an example of how to implement a MySQL server.
-// After running the example, you may connect to it using the following:
+// After running the executable, you may connect to it using the following:
 //
 // > mysql --host=localhost --port=3306 --user=root
 //
@@ -46,12 +45,15 @@ var (
 	address       = "0.0.0.0"
 	port          = 3306
 	socket        string
-	postgresPort  = 5432
 	dataDirectory = "."
 	dbFileName    = "mysql.db"
 	logLevel      = int(logrus.InfoLevel)
 
 	replicaOptions replica.ReplicaOptions
+
+	postgresPort       = 5432
+	postgresPrimaryDsn string
+	postgresSlotName   = "myduck"
 )
 
 func init() {
@@ -60,8 +62,6 @@ func init() {
 	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
-
-	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
 
 	// The following options need to be set for MySQL Shell's utilities to work properly.
 
@@ -73,6 +73,12 @@ func init() {
 	flag.StringVar(&replicaOptions.ReportUser, "report-user", replicaOptions.ReportUser, "The account user name of the replica to be reported to the source during replica registration.")
 	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_password
 	flag.StringVar(&replicaOptions.ReportPassword, "report-password", replicaOptions.ReportPassword, "The account password of the replica to be reported to the source during replica registration.")
+
+	// The following options are used to configure the Postgres server.
+
+	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
+	flag.StringVar(&postgresPrimaryDsn, "pg-primary-dsn", postgresPrimaryDsn, "The DSN of the primary server for logical replication.")
+	flag.StringVar(&postgresSlotName, "pg-slot-name", postgresSlotName, "The name of the logical replication slot to use.")
 }
 
 func ensureSQLTranslate() {
@@ -145,6 +151,9 @@ func main() {
 		)
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to create Postgres-protocol server")
+		}
+		if postgresPrimaryDsn != "" && postgresSlotName != "" {
+			go pgServer.StartReplication(postgresPrimaryDsn, postgresSlotName)
 		}
 		go pgServer.Start()
 	}
