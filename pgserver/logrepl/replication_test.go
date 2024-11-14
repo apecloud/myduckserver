@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pgx/v5"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -505,7 +504,7 @@ var replicationTests = []ReplicationTest{
 }
 
 func TestReplication(t *testing.T) {
-	logrus.SetLevel(logrus.TraceLevel)
+	// logrus.SetLevel(logrus.TraceLevel)
 	RunReplicationScripts(t, replicationTests)
 }
 
