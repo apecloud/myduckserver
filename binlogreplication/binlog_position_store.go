@@ -32,7 +32,6 @@ import (
 )
 
 const binlogPositionDirectory = ".replica"
-const mysqlFlavor = "MySQL56"
 const defaultChannelName = ""
 
 // binlogPositionStore manages loading and saving data to the binlog position metadata table. This provides
@@ -47,7 +46,7 @@ type binlogPositionStore struct {
 // Currently only the default binlog channel ("") is supported.
 // If no position is stored, this method returns a zero mysql.Position and a nil error.
 // If any errors are encountered, a nil mysql.Position and an error are returned.
-func (store *binlogPositionStore) Load(ctx *sql.Context, engine *gms.Engine) (pos replication.Position, err error) {
+func (store *binlogPositionStore) Load(flavor string, ctx *sql.Context, engine *gms.Engine) (pos replication.Position, err error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
@@ -62,7 +61,7 @@ func (store *binlogPositionStore) Load(ctx *sql.Context, engine *gms.Engine) (po
 	// Strip off the "MySQL56/" prefix
 	positionString = strings.TrimPrefix(positionString, "MySQL56/")
 
-	return replication.ParsePosition(mysqlFlavor, positionString)
+	return replication.ParsePosition(flavor, positionString)
 }
 
 // Save persists the specified |position| to disk.

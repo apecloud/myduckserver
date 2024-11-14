@@ -280,6 +280,18 @@ func (d *myBinlogReplicaController) SetReplicationSourceOptions(ctx *sql.Context
 				return err
 			}
 			replicaSourceInfo.ConnectRetryCount = uint64(intValue)
+		case "SOURCE_LOG_FILE":
+			value, err := getOptionValueAsString(option)
+			if err != nil {
+				return err
+			}
+			replicaSourceInfo.SourceLogFile = value
+		case "SOURCE_LOG_POS":
+			intValue, err := getOptionValueAsInt(option)
+			if err != nil {
+				return err
+			}
+			replicaSourceInfo.SourceLogPos = uint64(intValue)
 		case "SOURCE_AUTO_POSITION":
 			intValue, err := getOptionValueAsInt(option)
 			if err != nil {
@@ -352,6 +364,8 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	copy.SourceUser = replicaSourceInfo.User
 	copy.SourceHost = replicaSourceInfo.Host
 	copy.SourcePort = uint(replicaSourceInfo.Port)
+	copy.SourceLogFile = replicaSourceInfo.SourceLogFile
+	copy.SourceLogPos = replicaSourceInfo.SourceLogPos
 	copy.SourceServerUuid = replicaSourceInfo.Uuid
 	copy.ConnectRetry = replicaSourceInfo.ConnectRetryInterval
 	copy.SourceRetryCount = replicaSourceInfo.ConnectRetryCount

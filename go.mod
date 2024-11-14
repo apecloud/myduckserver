@@ -7,10 +7,12 @@ require (
 	github.com/apache/arrow-go/v18 v18.0.0
 	github.com/cockroachdb/apd/v3 v3.2.1
 	github.com/cockroachdb/cockroachdb-parser v0.23.2
+	github.com/cockroachdb/errors v1.9.0
 	github.com/dolthub/doltgresql v0.13.0
 	github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2
 	github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9
 	github.com/go-sql-driver/mysql v1.8.1
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/jmoiron/sqlx v1.4.0
@@ -27,8 +29,8 @@ require (
 )
 
 replace (
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2 => github.com/apecloud/go-mysql-server v0.0.0-20241112031328-30cddba3eea7
-	github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9 => github.com/apecloud/dolt-vitess v0.0.0-20241112063127-f62e98a9936a
+	github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2 => github.com/apecloud/go-mysql-server v0.0.0-20241113072459-9ad423c065f8
+	github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9 => github.com/apecloud/dolt-vitess v0.0.0-20241113031931-99ad35228a58
 	github.com/marcboeker/go-duckdb v1.8.3 => github.com/apecloud/go-duckdb v0.0.0-20241113073916-47619770e595
 )
 
@@ -41,7 +43,6 @@ require (
 	github.com/biogo/store v0.0.0-20201120204734-aad293a2328f // indirect
 	github.com/blevesearch/snowballstem v0.9.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cockroachdb/errors v1.9.0 // indirect
 	github.com/cockroachdb/logtags v0.0.0-20211118104740-dabe8e521a4f // indirect
 	github.com/cockroachdb/redact v1.1.3 // indirect
 	github.com/dave/dst v0.27.2 // indirect
@@ -60,7 +61,6 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/flatbuffers v24.3.25+incompatible // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
