@@ -20,17 +20,17 @@ import (
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
-	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/marcboeker/go-duckdb"
 )
 
 type Handler interface {
 	// ComBind is called when a connection receives a request to bind a prepared statement to a set of values.
-	ComBind(ctx context.Context, c *mysql.Conn, query string, parsedQuery mysql.ParsedQuery, bindVars map[string]sqlparser.Expr) (mysql.BoundQuery, []pgproto3.FieldDescription, error)
+	ComBind(ctx context.Context, c *mysql.Conn, prepared PreparedStatementData, bindVars []string) ([]pgproto3.FieldDescription, error)
 	// ComExecuteBound is called when a connection receives a request to execute a prepared statement that has already bound to a set of values.
-	ComExecuteBound(ctx context.Context, conn *mysql.Conn, query string, boundQuery mysql.BoundQuery, callback func(*Result) error) error
+	ComExecuteBound(ctx context.Context, conn *mysql.Conn, portal PortalData, callback func(*Result) error) error
 	// ComPrepareParsed is called when a connection receives a prepared statement query that has already been parsed.
-	ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement) ([]pgproto3.FieldDescription, error)
+	ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement) (*duckdb.Stmt, []uint32, []pgproto3.FieldDescription, error)
 	// ComQuery is called when a connection receives a query. Note the contents of the query slice may change
 	// after the first call to callback. So the DoltgresHandler should not hang on to the byte slice.
 	ComQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, callback func(*Result) error) error

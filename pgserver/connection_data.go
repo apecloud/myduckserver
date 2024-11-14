@@ -18,10 +18,10 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
-	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/lib/pq/oid"
+	"github.com/marcboeker/go-duckdb"
 )
 
 // ErrorResponseSeverity represents the severity of an ErrorResponse message.
@@ -55,6 +55,7 @@ type ConvertedQuery struct {
 	String       string
 	AST          tree.Statement
 	StatementTag string
+	PgParsable   bool
 }
 
 // copyFromStdinState tracks the metadata for an import of data into a table using a COPY FROM STDIN statement. When
@@ -79,13 +80,14 @@ type PortalData struct {
 	Query        ConvertedQuery
 	IsEmptyQuery bool
 	Fields       []pgproto3.FieldDescription
-	BoundPlan    sql.Node
+	Stmt         *duckdb.Stmt
 }
 
 type PreparedStatementData struct {
 	Query        ConvertedQuery
 	ReturnFields []pgproto3.FieldDescription
 	BindVarTypes []uint32
+	Stmt         *duckdb.Stmt
 }
 
 // VitessTypeToObjectID returns a type, as defined by Vitess, into a type as defined by Postgres.

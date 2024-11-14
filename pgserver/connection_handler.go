@@ -27,13 +27,12 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/apecloud/myduckserver/backend"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
-	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
@@ -67,12 +66,12 @@ func init() {
 }
 
 // NewConnectionHandler returns a new ConnectionHandler for the connection provided
-func NewConnectionHandler(conn net.Conn, handler mysql.Handler, server *server.Server) *ConnectionHandler {
+func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engine, sm *server.SessionManager, connID uint32) *ConnectionHandler {
 	mysqlConn := &mysql.Conn{
 		Conn:        conn,
 		PrepareData: make(map[uint32]*mysql.PrepareData),
 	}
-	mysqlConn.ConnectionID = server.Listener.(*mysql.Listener).ConnectionID.Add(1)
+	mysqlConn.ConnectionID = connID
 
 	// Postgres has a two-stage procedure for prepared queries. First the query is parsed via a |Parse| message, and
 	// the result is stored in the |preparedStatements| map by the name provided. Then one or more |Bind| messages
@@ -84,8 +83,8 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, server *server.S
 	// TODO: possibly should define engine and session manager ourselves
 	//  instead of depending on the GetRunningServer method.
 	duckHandler := &DuckHandler{
-		e:                 server.Engine,
-		sm:                server.SessionManager(),
+		e:                 engine,
+		sm:                sm,
 		readTimeout:       0,     // cfg.ConnReadTimeout,
 		encodeLoggedQuery: false, // cfg.EncodeLoggedQuery,
 	}
@@ -364,9 +363,9 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 		return false, false, h.handleExecute(message)
 	case *pgproto3.Close:
 		if message.ObjectType == 'S' {
-			delete(h.preparedStatements, message.Name)
+			h.deletePreparedStatement(message.Name)
 		} else {
-			delete(h.portals, message.Name)
+			h.deletePortal(message.Name)
 		}
 		return false, false, h.send(&pgproto3.CloseComplete{})
 	case *pgproto3.CopyData:
@@ -402,8 +401,8 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	}
 
 	// A query message destroys the unnamed statement and the unnamed portal
-	delete(h.preparedStatements, "")
-	delete(h.portals, "")
+	h.deletePreparedStatement("")
+	h.deletePortal("")
 
 	// Certain statement types get handled directly by the handler instead of being passed to the engine
 	handled, endOfMessages, err = h.handleQueryOutsideEngine(query)
@@ -454,25 +453,38 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		return nil
 	}
 
-	fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
+	stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
 	if err != nil {
 		return err
 	}
 
-	// A valid Parse message must have ParameterObjectIDs if there are any binding variables.
+	if !query.PgParsable {
+		query.StatementTag = getStatementTag(stmt)
+	}
+
+	// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
+	// > A parameter data type can be left unspecified by setting it to zero,
+	// > or by making the array of parameter type OIDs shorter than the number of
+	// > parameter symbols ($n)used in the query string.
+	// > ...
+	// > Parameter data types can be specified by OID;
+	// > if not given, the parser attempts to infer the data types in the same way
+	// > as it would do for untyped literal string constants.
 	bindVarTypes := message.ParameterOIDs
-	// if len(bindVarTypes) == 0 {
-	// 	// NOTE: This is used for Prepared Statement Tests only.
-	// 	bindVarTypes, err = extractBindVarTypes(analyzedPlan)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// }
+	if len(bindVarTypes) < len(params) {
+		bindVarTypes = append(bindVarTypes, params[len(bindVarTypes):]...)
+	}
+	for i := range params {
+		if bindVarTypes[i] == 0 {
+			bindVarTypes[i] = params[i]
+		}
+	}
 
 	h.preparedStatements[message.Name] = PreparedStatementData{
 		Query:        query,
 		ReturnFields: fields,
 		BindVarTypes: bindVarTypes,
+		Stmt:         stmt,
 	}
 	return h.send(&pgproto3.ParseComplete{})
 }
@@ -532,20 +544,15 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 		return err
 	}
 
-	analyzedPlan, fields, err := h.duckHandler.ComBind(context.Background(), h.mysqlConn, preparedData.Query.String, preparedData.Query.AST, bindVars)
+	fields, err := h.duckHandler.ComBind(context.Background(), h.mysqlConn, preparedData, bindVars)
 	if err != nil {
 		return err
 	}
 
-	boundPlan, ok := analyzedPlan.(sql.Node)
-	if !ok {
-		return fmt.Errorf("expected a sql.Node, got %T", analyzedPlan)
-	}
-
 	h.portals[message.DestinationPortal] = PortalData{
-		Query:     preparedData.Query,
-		Fields:    fields,
-		BoundPlan: boundPlan,
+		Query:  preparedData.Query,
+		Fields: fields,
+		Stmt:   preparedData.Stmt,
 	}
 	return h.send(&pgproto3.BindComplete{})
 }
@@ -577,7 +584,7 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	rowsAffected := int32(0)
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, true)
-	err = h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, query.String, portalData.BoundPlan, callback)
+	err = h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, portalData, callback)
 	if err != nil {
 		return err
 	}
@@ -618,13 +625,9 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 		return false, true, fmt.Errorf("COPY DATA message received without a COPY FROM STDIN operation in progress")
 	}
 
-	// Grab a sql.Context and ensure the session has a transaction started, otherwise the copied data
-	// won't get committed correctly.
+	// Grab a sql.Context.
 	sqlCtx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		return false, false, err
-	}
-	if err = startTransaction(sqlCtx); err != nil {
 		return false, false, err
 	}
 
@@ -713,17 +716,6 @@ func (h *ConnectionHandler) handleCopyDone(_ *pgproto3.CopyDone) (stop bool, end
 		return false, false, err
 	}
 
-	// If we aren't in an explicit/user managed transaction, we need to commit the transaction
-	if !sqlCtx.GetIgnoreAutoCommit() {
-		txSession, ok := sqlCtx.Session.(sql.TransactionSession)
-		if !ok {
-			return false, false, fmt.Errorf("session does not implement sql.TransactionSession")
-		}
-		if err = txSession.CommitTransaction(sqlCtx, txSession.GetTransaction()); err != nil {
-			return false, false, err
-		}
-	}
-
 	h.copyFromStdinState = nil
 	// We send back endOfMessage=true, since the COPY DONE message ends the COPY DATA flow and the server is ready
 	// to accept the next query now.
@@ -754,56 +746,47 @@ func (h *ConnectionHandler) handleCopyFail(_ *pgproto3.CopyFail) (stop bool, end
 	return false, true, nil
 }
 
-// startTransaction checks to see if the current session has a transaction started yet or not, and if not,
-// creates a read/write transaction for the session to use. This is necessary for handling commands that alter
-// data without going through the GMS engine.
-func startTransaction(ctx *sql.Context) error {
-	session, ok := ctx.Session.(*backend.Session)
-	if !ok {
-		return fmt.Errorf("unexpected session type: %T", ctx.Session)
-	}
-	if session.GetTransaction() == nil {
-		if _, err := session.StartTransaction(ctx, sql.ReadWrite); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedStatements map[string]PreparedStatementData, query ConvertedQuery, conn net.Conn) error {
 	_, ok := preparedStatements[name]
 	if !ok {
 		return fmt.Errorf("prepared statement %s does not exist", name)
 	}
-	delete(preparedStatements, name)
+	h.deletePreparedStatement(name)
 
 	return h.send(&pgproto3.CommandComplete{
 		CommandTag: []byte(query.StatementTag),
 	})
 }
 
-// convertBindParameters handles the conversion from bind parameters to variable values.
-func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []int16, values [][]byte) (map[string]sqlparser.Expr, error) {
-	bindings := make(map[string]sqlparser.Expr, len(values))
-	// for i := range values {
-	// 	typ := types[i]
-	// 	var bindVarString string
-	// 	// We'll rely on a library to decode each format, which will deal with text and binary representations for us
-	// 	if err := h.pgTypeMap.Scan(typ, formatCodes[i], values[i], &bindVarString); err != nil {
-	// 		return nil, err
-	// 	}
+func (h *ConnectionHandler) deletePreparedStatement(name string) {
+	ps, ok := h.preparedStatements[name]
+	if ok {
+		delete(h.preparedStatements, name)
+		ps.Stmt.Close()
+	}
+}
 
-	// 	pgTyp, ok := pgtypes.OidToBuildInDoltgresType[typ]
-	// 	if !ok {
-	// 		return nil, fmt.Errorf("unhandled oid type: %v", typ)
-	// 	}
-	// 	v, err := pgTyp.IoInput(nil, bindVarString)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	bindings[fmt.Sprintf("v%d", i+1)] = sqlparser.InjectedExpr{Expression: pgexprs.NewUnsafeLiteral(v, pgTyp)}
-	// }
+func (h *ConnectionHandler) deletePortal(name string) {
+	p, ok := h.portals[name]
+	if ok {
+		delete(h.portals, name)
+		p.Stmt.Close()
+	}
+}
+
+// convertBindParameters handles the conversion from bind parameters to variable values.
+func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []int16, values [][]byte) ([]string, error) {
+	if len(types) != len(values) {
+		return nil, fmt.Errorf("number of values does not match number of parameters")
+	}
+	bindings := make([]string, len(values))
+	for i := range values {
+		typ := types[i]
+		// We'll rely on a library to decode each format, which will deal with text and binary representations for us
+		if err := h.pgTypeMap.Scan(typ, formatCodes[i], values[i], &bindings[i]); err != nil {
+			return nil, err
+		}
+	}
 	return bindings, nil
 }
 
@@ -811,6 +794,15 @@ func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []
 func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
+
+	// Get the accurate statement tag for the query
+	if !query.PgParsable && query.StatementTag != "SELECT" {
+		tag, err := h.duckHandler.getStatementTag(h.mysqlConn, query.String)
+		if err != nil {
+			return err
+		}
+		query.StatementTag = tag
+	}
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
 	err := h.duckHandler.ComQuery(context.Background(), h.mysqlConn, query.String, query.AST, callback)
@@ -830,6 +822,7 @@ func (h *ConnectionHandler) spoolRowsCallback(tag string, rows *int32, isExecute
 	// IsIUD returns whether the query is either an INSERT, UPDATE, or DELETE query.
 	isIUD := tag == "INSERT" || tag == "UPDATE" || tag == "DELETE"
 	return func(res *Result) error {
+		logrus.Tracef("spooling %d rows for tag %s", res.RowsAffected, tag)
 		if returnsRow(tag) {
 			// EXECUTE does not send RowDescription; instead it should be sent from DESCRIBE prior to it
 			if !isExecute {
@@ -1008,9 +1001,11 @@ func (h *ConnectionHandler) sendError(err error) {
 
 // convertQuery takes the given Postgres query, and converts it as an ast.ConvertedQuery that will work with the handler.
 func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
+	parsable := true
 	stmts, err := parser.Parse(query)
 	if err != nil {
 		// DuckDB syntax is not fully compatible with PostgreSQL, so we need to handle some queries differently.
+		parsable = false
 		stmts, _ = parser.Parse("SELECT 'SQL syntax is incompatible with PostgreSQL' AS error")
 	}
 
@@ -1021,12 +1016,19 @@ func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
 		return ConvertedQuery{String: query}, nil
 	}
 
-	query = sql.RemoveSpaceAndDelimiter(query, ';')
 	var stmtTag string
-	for i, c := range query {
-		if unicode.IsSpace(c) {
-			stmtTag = strings.ToUpper(query[:i])
-			break
+	if parsable {
+		stmtTag = stmts[0].AST.StatementTag()
+	} else {
+		// Guess the statement tag by looking for the first space in the query
+		// This is unreliable, but it's the best we can do for now.
+		// /* ... */ comments can break this.
+		query := sql.RemoveSpaceAndDelimiter(query, ';')
+		for i, c := range query {
+			if unicode.IsSpace(c) {
+				stmtTag = strings.ToUpper(query[:i])
+				break
+			}
 		}
 	}
 
@@ -1034,6 +1036,7 @@ func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
 		String:       query,
 		AST:          stmts[0].AST,
 		StatementTag: stmtTag,
+		PgParsable:   parsable,
 	}, nil
 }
 

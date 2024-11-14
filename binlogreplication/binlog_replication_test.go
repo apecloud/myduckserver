@@ -857,6 +857,7 @@ func startDuckSqlServer(dir string, persistentSystemVars map[string]string) (int
 	args := []string{"go", "run", ".",
 		fmt.Sprintf("--port=%v", duckPort),
 		fmt.Sprintf("--datadir=%s", dir),
+		fmt.Sprintf("--pg-port=-1"),
 		"--loglevel=6", // TRACE
 	}
 

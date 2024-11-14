@@ -27,15 +27,15 @@ import (
 	"github.com/apecloud/myduckserver/replica"
 	"github.com/apecloud/myduckserver/transpiler"
 	sqle "github.com/dolthub/go-mysql-server"
+	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/sirupsen/logrus"
-
+	"github.com/dolthub/vitess/go/mysql"
 	_ "github.com/marcboeker/go-duckdb"
+	"github.com/sirupsen/logrus"
 )
 
-// This is an example of how to implement a MySQL server.
-// After running the example, you may connect to it using the following:
+// After running the executable, you may connect to it using the following:
 //
 // > mysql --host=localhost --port=3306 --user=root
 //
@@ -45,12 +45,15 @@ var (
 	address       = "0.0.0.0"
 	port          = 3306
 	socket        string
-	postgresPort  = 5432
 	dataDirectory = "."
 	dbFileName    = "mysql.db"
 	logLevel      = int(logrus.InfoLevel)
 
 	replicaOptions replica.ReplicaOptions
+
+	postgresPort       = 5432
+	postgresPrimaryDsn string
+	postgresSlotName   = "myduck"
 )
 
 func init() {
@@ -59,8 +62,6 @@ func init() {
 	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
-
-	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
 
 	// The following options need to be set for MySQL Shell's utilities to work properly.
 
@@ -72,6 +73,12 @@ func init() {
 	flag.StringVar(&replicaOptions.ReportUser, "report-user", replicaOptions.ReportUser, "The account user name of the replica to be reported to the source during replica registration.")
 	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_password
 	flag.StringVar(&replicaOptions.ReportPassword, "report-password", replicaOptions.ReportPassword, "The account password of the replica to be reported to the source during replica registration.")
+
+	// The following options are used to configure the Postgres server.
+
+	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
+	flag.StringVar(&postgresPrimaryDsn, "pg-primary-dsn", postgresPrimaryDsn, "The DSN of the primary server for logical replication.")
+	flag.StringVar(&postgresSlotName, "pg-slot-name", postgresSlotName, "The name of the logical replication slot to use.")
 }
 
 func ensureSQLTranslate() {
@@ -119,20 +126,39 @@ func main() {
 		Address:  fmt.Sprintf("%s:%d", address, port),
 		Socket:   socket,
 	}
-	srv, err := server.NewServerWithHandler(config, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
+	myServer, err := server.NewServerWithHandler(config, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
 
 	if postgresPort > 0 {
-		pgServer, err := pgserver.NewServer(srv, address, postgresPort)
+		// Postgres tables are created in the `public` schema by default.
+		// Create the `public` schema if it doesn't exist.
+		_, err := pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
 		if err != nil {
-			panic(err)
+			logrus.WithError(err).Fatalln("Failed to create the `public` schema")
+		}
+
+		pgServer, err := pgserver.NewServer(
+			address, postgresPort,
+			func() *sql.Context {
+				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
+				return sql.NewContext(context.Background(), sql.WithSession(session))
+			},
+			pgserver.WithEngine(myServer.Engine),
+			pgserver.WithSessionManager(myServer.SessionManager()),
+			pgserver.WithConnID(&myServer.Listener.(*mysql.Listener).ConnectionID), // Shared connection ID counter
+		)
+		if err != nil {
+			logrus.WithError(err).Fatalln("Failed to create Postgres-protocol server")
+		}
+		if postgresPrimaryDsn != "" && postgresSlotName != "" {
+			go pgServer.StartReplication(postgresPrimaryDsn, postgresSlotName)
 		}
 		go pgServer.Start()
 	}
 
-	if err = srv.Start(); err != nil {
-		panic(err)
+	if err = myServer.Start(); err != nil {
+		logrus.WithError(err).Fatalln("Failed to start MySQL-protocol server")
 	}
 }

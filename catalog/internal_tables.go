@@ -77,6 +77,7 @@ func (it *InternalTable) SelectStmt() string {
 var InternalTables = struct {
 	PersistentVariable InternalTable
 	BinlogPosition     InternalTable
+	PgReplicationLSN   InternalTable
 	GlobalStatus       InternalTable
 }{
 	PersistentVariable: InternalTable{
@@ -93,6 +94,13 @@ var InternalTables = struct {
 		ValueColumns: []string{"position"},
 		DDL:          "channel TEXT PRIMARY KEY, position TEXT",
 	},
+	PgReplicationLSN: InternalTable{
+		Schema:       "main",
+		Name:         "pg_replication_lsn",
+		KeyColumns:   []string{"slot_name"},
+		ValueColumns: []string{"lsn"},
+		DDL:          "slot_name TEXT PRIMARY KEY, lsn TEXT",
+	},
 	GlobalStatus: InternalTable{
 		Schema:       "performance_schema",
 		Name:         "global_status",
@@ -108,5 +116,6 @@ var InternalTables = struct {
 var internalTables = []InternalTable{
 	InternalTables.PersistentVariable,
 	InternalTables.BinlogPosition,
+	InternalTables.PgReplicationLSN,
 	InternalTables.GlobalStatus,
 }
