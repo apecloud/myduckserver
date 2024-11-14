@@ -155,7 +155,7 @@ func (prov *DatabaseProvider) AllDatabases(ctx *sql.Context) []sql.Database {
 		}
 
 		switch schemaName {
-		case "information_schema", "pg_catalog", "__mysql_system__":
+		case "information_schema", "pg_catalog", "__sys__":
 			continue
 		}
 

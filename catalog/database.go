@@ -219,7 +219,7 @@ func (d *Database) extractViewDefinitions(ctx *sql.Context, schemaName string, v
 	query := `
 		SELECT DISTINCT view_name, sql
 		FROM duckdb_views()
-		WHERE schema_name = ?
+		WHERE schema_name = ? AND NOT internal
 	`
 	args := []interface{}{schemaName}
 
