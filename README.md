@@ -126,7 +126,7 @@ With MyDuck's powerful analytics capabilities, you can create an HTAP (Hybrid Tr
 ### Using MyDuck Server with DuckDB
 
 If you're already familiar with DuckDB, MyDuck Server offers similar capabilities for tasks like loading Parquet files and attaching existing DuckDB databases. 
-For detailed instructions, check out our [MyDuck Server guide with DuckDB](docs/tutorial/play-with-duck.md).
+For detailed instructions, check out our [MyDuck Server guide with DuckDB](docs/tutorial/use-with-duckdb).
 
 ## 💡 Contributing
 
