@@ -53,13 +53,6 @@ type LogicalReplicator struct {
 	messageReceived bool
 	stop            chan struct{}
 	mu              *sync.Mutex
-
-	ongoingBatchTxn atomic.Bool   // true if we're in a batched transaction
-	dirtyTxn        atomic.Bool   // true if we have uncommitted changes
-	dirtyStream     atomic.Bool   // true if the binlog stream does not end with a commit
-	deltaBufSize    atomic.Uint64 // size of the delta buffer in bytes
-	lastCommitTime  time.Time     // time of last commit
-	inTxnStmtID     atomic.Uint64 // statement ID within transaction
 }
 
 // NewLogicalReplicator creates a new logical replicator instance which connects to the primary and replication
@@ -179,10 +172,15 @@ type replicationState struct {
 	typeMap   *pgtype.Map
 	relations map[uint32]*pglogrepl.RelationMessageV2
 	schemas   map[uint32]sql.Schema
+	keys      map[uint32][]uint16 // relationID -> slice of key column indices
 	deltas    *delta.DeltaController
 
-	deltaBufSize   atomic.Uint64
-	lastCommitTime time.Time
+	deltaBufSize    atomic.Uint64 // size of the delta buffer in bytes
+	lastCommitTime  time.Time     // time of last commit
+	ongoingBatchTxn atomic.Bool   // true if we're in a batched transaction
+	dirtyTxn        atomic.Bool   // true if we have uncommitted changes
+	dirtyStream     atomic.Bool   // true if the binlog stream does not end with a commit
+	inTxnStmtID     atomic.Uint64 // statement ID within transaction
 }
 
 // StartReplication starts the replication process for the given slot name. This function blocks until replication is
@@ -200,8 +198,10 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 		replicaCtx:     sqlCtx,
 		slotName:       slotName,
 		lastWrittenLSN: lastWrittenLsn,
-		relations:      map[uint32]*pglogrepl.RelationMessageV2{},
 		typeMap:        pgtype.NewMap(),
+		relations:      map[uint32]*pglogrepl.RelationMessageV2{},
+		schemas:        map[uint32]sql.Schema{},
+		keys:           map[uint32][]uint16{},
 		deltas:         delta.NewController(),
 	}
 
@@ -420,17 +420,6 @@ func (r *LogicalReplicator) Stop() {
 	<-r.stop
 }
 
-// replicateQuery executes the query provided on the replica connection
-func (r *LogicalReplicator) replicateQuery(replicaCtx *sql.Context, query string) error {
-	log.Printf("replicating query: %s", query)
-	result, err := adapter.Exec(replicaCtx, query)
-	if err == nil {
-		affected, _ := result.RowsAffected()
-		log.Printf("Affected rows: %d", affected)
-	}
-	return err
-}
-
 // beginReplication starts a new replication connection to the primary server and returns it. The LSN provided is the
 // last one we have confirmed that we flushed to disk.
 func (r *LogicalReplicator) beginReplication(slotName string, lastFlushLsn pglogrepl.LSN) (*pgconn.PgConn, error) {
@@ -574,19 +563,33 @@ func (r *LogicalReplicator) processMessage(
 
 	switch logicalMsg := logicalMsg.(type) {
 	case *pglogrepl.RelationMessageV2:
+		// When a Relation message is received, commit any buffered ongoing batch transactions.
+		err := r.commitOngoingTxn(state, delta.DDLStmtFlushReason)
+		if err != nil {
+			return false, err
+		}
+
 		state.relations[logicalMsg.RelationID] = logicalMsg
+
 		schema := make(sql.Schema, len(logicalMsg.Columns))
+		var keys []uint16
 		for i, col := range logicalMsg.Columns {
 			pgType, err := pgtypes.NewPostgresType(col.DataType)
 			if err != nil {
 				return false, err
 			}
 			schema[i] = &sql.Column{
-				Name: col.Name,
-				Type: pgType,
+				Name:       col.Name,
+				Type:       pgType,
+				PrimaryKey: col.Flags == 1,
+			}
+			if col.Flags == 1 {
+				keys = append(keys, uint16(i))
 			}
 		}
 		state.schemas[logicalMsg.RelationID] = schema
+		state.keys[logicalMsg.RelationID] = keys
+
 	case *pglogrepl.BeginMessage:
 		// Indicates the beginning of a group of changes in a transaction.
 		// This is only sent for committed transactions. We won't get any events from rolled back transactions.
@@ -601,35 +604,31 @@ func (r *LogicalReplicator) processMessage(
 		state.currentTransactionLSN = logicalMsg.FinalLSN
 
 		// Start a new transaction or extend existing batch
-		extend, reason := r.mayExtendBatchTxn()
+		extend, reason := r.mayExtendBatchTxn(state)
 		if !extend {
-			err := r.commitOngoingTxn(state.replicaCtx, reason)
+			err := r.commitOngoingTxn(state, reason)
 			if err != nil {
 				return false, err
 			}
-			err = r.replicateQuery(state.replicaCtx, "BEGIN TRANSACTION")
+			_, err = adapter.GetCatalogTxn(state.replicaCtx, nil)
 			if err != nil {
 				return false, err
 			}
-			r.ongoingBatchTxn.Store(true)
+			state.ongoingBatchTxn.Store(true)
 		}
 
 	case *pglogrepl.CommitMessage:
 		log.Printf("CommitMessage: %v", logicalMsg)
 
-		// Record the LSN before we commit the transaction
-		log.Printf("Writing LSN %s\n", state.currentTransactionLSN)
-		err := r.writeWALPosition(state.replicaCtx, state.slotName, state.currentTransactionLSN)
-		if err != nil {
-			return false, err
+		extend, reason := r.mayExtendBatchTxn(state)
+		if !extend {
+			err = r.commitOngoingTxn(state, reason)
+			if err != nil {
+				return false, err
+			}
 		}
+		state.dirtyStream.Store(false)
 
-		err = r.replicateQuery(state.replicaCtx, "COMMIT")
-		if err != nil {
-			return false, err
-		}
-
-		state.lastWrittenLSN = state.currentTransactionLSN
 		state.processMessages = false
 
 		return true, nil
@@ -639,24 +638,14 @@ func (r *LogicalReplicator) processMessage(
 			return false, nil
 		}
 
-		rel, ok := state.relations[logicalMsg.RelationID]
-		if !ok {
-			log.Fatalf("unknown relation ID %d", logicalMsg.RelationID)
-		}
-
-		appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[logicalMsg.RelationID])
+		err = r.append(state, logicalMsg.RelationID, logicalMsg.Tuple.Columns, binlog.InsertRowEvent, false)
 		if err != nil {
 			return false, err
 		}
 
-		err = r.appendInsert(state, appender, logicalMsg, rel)
-		if err != nil {
-			return false, err
-		}
-
-		r.dirtyTxn.Store(true)
-		r.dirtyStream.Store(true)
-		r.inTxnStmtID.Add(1)
+		state.dirtyTxn.Store(true)
+		state.dirtyStream.Store(true)
+		state.inTxnStmtID.Add(1)
 
 	case *pglogrepl.UpdateMessageV2:
 		if !state.processMessages {
@@ -664,56 +653,53 @@ func (r *LogicalReplicator) processMessage(
 			return false, nil
 		}
 
-		rel, ok := state.relations[logicalMsg.RelationID]
-		if !ok {
-			log.Fatalf("unknown relation ID %d", logicalMsg.RelationID)
+		// Delete the old tuple
+		switch logicalMsg.OldTupleType {
+		case pglogrepl.UpdateMessageTupleTypeKey:
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, true)
+		case pglogrepl.UpdateMessageTupleTypeOld:
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, false)
+		default:
+			// No old tuple provided; it means the key columns are unchanged
 		}
-
-		appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[logicalMsg.RelationID])
 		if err != nil {
 			return false, err
 		}
 
-		// First delete old row
-		err = r.appendDelete(state, appender, logicalMsg.OldTuple.Columns, rel)
+		// Insert the new tuple
+		err = r.append(state, logicalMsg.RelationID, logicalMsg.NewTuple.Columns, binlog.InsertRowEvent, false)
 		if err != nil {
 			return false, err
 		}
 
-		// Then insert new row
-		err = r.appendInsertFromUpdate(state, appender, logicalMsg.NewTuple.Columns, rel)
-		if err != nil {
-			return false, err
-		}
-
-		r.dirtyTxn.Store(true)
-		r.dirtyStream.Store(true)
-		r.inTxnStmtID.Add(1)
+		state.dirtyTxn.Store(true)
+		state.dirtyStream.Store(true)
+		state.inTxnStmtID.Add(1)
 
 	case *pglogrepl.DeleteMessageV2:
 		if !state.processMessages {
 			log.Printf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
 			return false, nil
+			// Determine which columns to use based on OldTupleType
 		}
 
-		rel, ok := state.relations[logicalMsg.RelationID]
-		if !ok {
-			log.Fatalf("unknown relation ID %d", logicalMsg.RelationID)
+		switch logicalMsg.OldTupleType {
+		case pglogrepl.UpdateMessageTupleTypeKey:
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, true)
+		case pglogrepl.UpdateMessageTupleTypeOld:
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, false)
+		default:
+			// No old tuple provided; cannot perform delete
+			err = fmt.Errorf("DeleteMessage without OldTuple")
 		}
 
-		appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[logicalMsg.RelationID])
 		if err != nil {
 			return false, err
 		}
 
-		err = r.appendDelete(state, appender, logicalMsg.OldTuple.Columns, rel)
-		if err != nil {
-			return false, err
-		}
-
-		r.dirtyTxn.Store(true)
-		r.dirtyStream.Store(true)
-		r.inTxnStmtID.Add(1)
+		state.dirtyTxn.Store(true)
+		state.dirtyStream.Store(true)
+		state.inTxnStmtID.Add(1)
 
 	case *pglogrepl.TruncateMessageV2:
 		log.Printf("truncate for xid %d\n", logicalMsg.Xid)
@@ -756,7 +742,7 @@ func (r *LogicalReplicator) readWALPosition(ctx *sql.Context, slotName string) (
 
 // writeWALPosition writes the recorded WAL position to the WAL position table
 func (r *LogicalReplicator) writeWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
-	_, err := adapter.Exec(ctx, catalog.InternalTables.PgReplicationLSN.UpsertStmt(), slotName, lsn.String())
+	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgReplicationLSN.UpsertStmt(), slotName, lsn.String())
 	return err
 }
 
@@ -814,14 +800,14 @@ func encodeColumnData(mi *pgtype.Map, data interface{}, dataType uint32) (string
 }
 
 // mayExtendBatchTxn checks if we should extend the current batch transaction
-func (r *LogicalReplicator) mayExtendBatchTxn() (bool, delta.FlushReason) {
+func (r *LogicalReplicator) mayExtendBatchTxn(state *replicationState) (bool, delta.FlushReason) {
 	extend, reason := false, delta.UnknownFlushReason
-	if r.ongoingBatchTxn.Load() {
+	if state.ongoingBatchTxn.Load() {
 		extend = true
 		switch {
-		case time.Since(r.lastCommitTime) >= 200*time.Millisecond:
+		case time.Since(state.lastCommitTime) >= 200*time.Millisecond:
 			extend, reason = false, delta.TimeTickFlushReason
-		case r.deltaBufSize.Load() >= (128 << 20): // 128MB
+		case state.deltaBufSize.Load() >= (128 << 20): // 128MB
 			extend, reason = false, delta.MemoryLimitFlushReason
 		}
 	}
@@ -829,136 +815,115 @@ func (r *LogicalReplicator) mayExtendBatchTxn() (bool, delta.FlushReason) {
 }
 
 // commitOngoingTxn commits the current transaction
-func (r *LogicalReplicator) commitOngoingTxn(ctx *sql.Context, flushReason delta.FlushReason) error {
+func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReason delta.FlushReason) error {
+	tx := adapter.TryGetTxn(state.replicaCtx)
+	if tx == nil {
+		return nil
+	}
+
+	defer tx.Rollback()
+	defer adapter.CloseTxn(state.replicaCtx)
+
 	// Flush the delta buffer if too large
-	err := r.flushDeltaBuffer(ctx, flushReason)
+	err := r.flushDeltaBuffer(state, tx, flushReason)
 	if err != nil {
+		return err
+	}
+
+	log.Printf("Writing LSN %s\n", state.currentTransactionLSN)
+	if err = r.writeWALPosition(state.replicaCtx, state.slotName, state.currentTransactionLSN); err != nil {
 		return err
 	}
 
 	// Commit the transaction
-	err = r.replicateQuery(ctx, "COMMIT")
-	if err != nil {
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 
 	// Reset transaction state
-	r.ongoingBatchTxn.Store(false)
-	r.dirtyTxn.Store(false)
-	r.dirtyStream.Store(false)
-	r.inTxnStmtID.Store(0)
-	r.lastCommitTime = time.Now()
+	state.ongoingBatchTxn.Store(false)
+	state.dirtyTxn.Store(false)
+	state.dirtyStream.Store(false)
+	state.inTxnStmtID.Store(0)
+	state.lastCommitTime = time.Now()
 
-	return r.writeWALPosition(ctx, state.slotName, state.currentTransactionLSN)
+	state.lastWrittenLSN = state.currentTransactionLSN
+
+	return nil
 }
 
 // flushDeltaBuffer flushes the accumulated changes in the delta buffer
-func (r *LogicalReplicator) flushDeltaBuffer(ctx *sql.Context, reason delta.FlushReason) error {
-	tx, err := adapter.GetCatalogTxn(ctx, nil)
+func (r *LogicalReplicator) flushDeltaBuffer(state *replicationState, tx *stdsql.Tx, reason delta.FlushReason) error {
+	defer state.deltaBufSize.Store(0)
+
+	_, err := state.deltas.Flush(state.replicaCtx, tx, reason)
+	return err
+}
+
+func (r *LogicalReplicator) append(state *replicationState, relationID uint32, tuple []*pglogrepl.TupleDataColumn, eventType binlog.RowEventType, onlyKeys bool) error {
+	rel, ok := state.relations[relationID]
+	if !ok {
+		return fmt.Errorf("unknown relation ID %d", relationID)
+	}
+	appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[relationID])
 	if err != nil {
 		return err
 	}
 
-	defer r.deltaBufSize.Store(0)
-
-	return state.deltas.FlushBuffer(ctx, tx, reason)
-}
-
-func (r *LogicalReplicator) appendInsert(state *replicationState, appender *delta.DeltaAppender, msg *pglogrepl.InsertMessageV2, rel *pglogrepl.RelationMessageV2) error {
-	// ...existing code for setting transaction metadata...
-
-	pos := 0
-	for idx, col := range msg.Tuple.Columns {
-		if col.DataType == 'n' {
-			fields[idx].AppendNull()
-			continue
-		}
-
-		length, err := decodeAndAppend(state.typeMap, col.Data, rel.Columns[idx].DataType, fields[idx])
-		if err != nil {
-			return err
-		}
-		pos += length
-	}
-
-	r.deltaBufSize.Add(uint64(pos))
-	return nil
-}
-
-func (r *LogicalReplicator) appendDelete(state *replicationState, appender *delta.DeltaAppender, columns []pglogrepl.TupleDataColumn, rel *pglogrepl.RelationMessageV2) error {
 	fields := appender.Fields()
 	actions := appender.Action()
 	txnTags := appender.TxnTag()
+	txnServers := appender.TxnServer()
 	txnGroups := appender.TxnGroup()
 	txnSeqNumbers := appender.TxnSeqNumber()
 	txnStmtOrdinals := appender.TxnStmtOrdinal()
 
-	actions.Append(int8(binlog.DeleteRowEvent))
-	txnTags.Append(nil)
-	txnGroups.Append(nil)
+	actions.Append(int8(eventType))
+	txnTags.AppendNull()
+	txnServers.Append([]byte(""))
+	txnGroups.AppendNull()
 	txnSeqNumbers.Append(uint64(state.currentTransactionLSN))
-	txnStmtOrdinals.Append(r.inTxnStmtID.Load())
+	txnStmtOrdinals.Append(state.inTxnStmtID.Load())
 
-	pos := 0
-	for idx, col := range columns {
-		builder := fields[idx]
+	size := 0
+	idx := 0
 
-		if col.DataType == 'n' {
+	for i, metadata := range rel.Columns {
+		builder := fields[i]
+		var col *pglogrepl.TupleDataColumn
+		if onlyKeys {
+			if metadata.Flags != 1 { // not a key column
+				builder.AppendNull()
+				continue
+			}
+			col = tuple[idx]
+			idx++
+		} else {
+			col = tuple[i]
+		}
+		switch col.DataType {
+		case pglogrepl.TupleDataTypeNull:
 			builder.AppendNull()
-			continue
+		case pglogrepl.TupleDataTypeText, pglogrepl.TupleDataTypeBinary:
+			length, err := decodeToArrow(state.typeMap, metadata, col.Data, tupleDataFormat(col.DataType), builder)
+			if err != nil {
+				return err
+			}
+			size += length
+		default:
+			return fmt.Errorf("unsupported replication data format %d", col.DataType)
 		}
-
-		val, err := decodeTextColumnData(state.typeMap, col.Data, rel.Columns[idx].DataType)
-		if err != nil {
-			return err
-		}
-
-		length, err := writeValue(builder, val)
-		if err != nil {
-			return err
-		}
-		pos += length
 	}
 
-	r.deltaBufSize.Add(uint64(pos))
+	state.deltaBufSize.Add(uint64(size))
 	return nil
 }
 
-func (r *LogicalReplicator) appendInsertFromUpdate(state *replicationState, appender *delta.DeltaAppender, columns []pglogrepl.TupleDataColumn, rel *pglogrepl.RelationMessageV2) error {
-	fields := appender.Fields()
-	actions := appender.Action()
-	txnTags := appender.TxnTag()
-	txnGroups := appender.TxnGroup()
-	txnSeqNumbers := appender.TxnSeqNumber()
-	txnStmtOrdinals := appender.TxnStmtOrdinal()
-
-	actions.Append(int8(binlog.InsertRowEvent))
-	txnTags.Append(nil)
-	txnGroups.Append(nil)
-	txnSeqNumbers.Append(uint64(state.currentTransactionLSN))
-	txnStmtOrdinals.Append(r.inTxnStmtID.Load())
-
-	pos := 0
-	for idx, col := range columns {
-		builder := fields[idx]
-
-		if col.DataType == 'n' {
-			builder.AppendNull()
-			continue
-		}
-
-		val, err := decodeTextColumnData(state.typeMap, col.Data, rel.Columns[idx].DataType)
-		if err != nil {
-			return err
-		}
-
-		length, err := writeValue(builder, val)
-		if err != nil {
-			return err
-		}
-		pos += length
+func tupleDataFormat(dataType uint8) int16 {
+	switch dataType {
+	case pglogrepl.TupleDataTypeBinary:
+		return pgtype.BinaryFormatCode
+	default:
+		return pgtype.TextFormatCode
 	}
-
-	r.deltaBufSize.Add(uint64(pos))
-	return nil
 }

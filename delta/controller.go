@@ -139,6 +139,10 @@ func (c *DeltaController) updateTable(
 	buf *bytes.Buffer,
 	stats *FlushStats,
 ) error {
+	if tx == nil {
+		return fmt.Errorf("no active transaction")
+	}
+
 	buf.Reset()
 
 	schema := appender.BaseSchema() // schema of the base table

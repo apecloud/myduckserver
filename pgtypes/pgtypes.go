@@ -127,7 +127,7 @@ func PostgresTypeToArrowType(oid uint32) arrow.DataType {
 		return arrow.FixedWidthTypes.Boolean
 	case pgtype.ByteaOID:
 		return arrow.BinaryTypes.Binary
-	case pgtype.NameOID, pgtype.TextOID, pgtype.JSONOID, pgtype.XMLOID:
+	case pgtype.NameOID, pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.JSONOID, pgtype.XMLOID:
 		return arrow.BinaryTypes.String
 	case pgtype.Int8OID:
 		return arrow.PrimitiveTypes.Int64

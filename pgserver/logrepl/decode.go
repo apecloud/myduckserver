@@ -6,151 +6,180 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/decimal128"
-	"github.com/apache/arrow-go/v18/arrow/decimal256"
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// decodeAndAppend decodes Postgres text format data and appends directly to Arrow builder
-func decodeAndAppend(typeMap *pgtype.Map, data []byte, dataType uint32, builder array.Builder) (int, error) {
+// decodeToArrow decodes Postgres text format data and appends directly to Arrow builder
+func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageColumn, data []byte, format int16, builder array.Builder) (int, error) {
 	if data == nil {
 		builder.AppendNull()
 		return 0, nil
 	}
 
-	if dt, ok := typeMap.TypeForOID(dataType); ok {
-		format := pgtype.TextFormatCode
-		switch dataType {
-		case pgtype.BoolOID:
-			if b, ok := builder.(*array.BooleanBuilder); ok {
-				var v bool
-				if err := pgtype.BoolCodec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return 1, nil
-			}
+	dt, ok := typeMap.TypeForOID(columnType.DataType)
+	if !ok {
+		// Unknown type, store as string
+		if b, ok := builder.(*array.StringBuilder); ok {
+			b.Append(string(data))
+			return len(data), nil
+		}
+		return 0, fmt.Errorf("column %s: unsupported type conversion for OID %d to %T", columnType.Name, columnType.DataType, builder)
+	}
 
-		case pgtype.Int2OID:
-			if b, ok := builder.(*array.Int16Builder); ok {
-				var v int16
-				if err := pgtype.Int2Codec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return 2, nil
+	oid := dt.OID
+	switch oid {
+	case pgtype.BoolOID:
+		if b, ok := builder.(*array.BooleanBuilder); ok {
+			var v bool
+			var codec pgtype.BoolCodec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
 			}
-
-		case pgtype.Int4OID:
-			if b, ok := builder.(*array.Int32Builder); ok {
-				var v int32
-				if err := pgtype.Int4Codec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return 4, nil
-			}
-
-		case pgtype.Int8OID:
-			if b, ok := builder.(*array.Int64Builder); ok {
-				var v int64
-				if err := pgtype.Int8Codec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return 8, nil
-			}
-
-		case pgtype.Float4OID:
-			if b, ok := builder.(*array.Float32Builder); ok {
-				var v float32
-				if err := pgtype.Float4Codec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return 4, nil
-			}
-
-		case pgtype.Float8OID:
-			if b, ok := builder.(*array.Float64Builder); ok {
-				var v float64
-				if err := pgtype.Float8Codec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return 8, nil
-			}
-
-		case pgtype.TimestampOID, pgtype.TimestamptzOID:
-			if b, ok := builder.(*array.TimestampBuilder); ok {
-				var v time.Time
-				if err := pgtype.TimestamptzCodec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return 8, nil
-			}
-
-		case pgtype.DateOID:
-			if b, ok := builder.(*array.Date32Builder); ok {
-				var v time.Time
-				if err := pgtype.DateCodec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(arrow.Date32FromTime(v))
-				return 4, nil
-			}
-
-		case pgtype.NumericOID:
-			if b, ok := builder.(*array.StringBuilder); ok {
-				var v pgtype.Numeric
-				if err := pgtype.NumericCodec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v.String())
-				return len(data), nil
-			}
-
-		case pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.NameOID:
-			if b, ok := builder.(*array.StringBuilder); ok {
-				var v string
-				if err := pgtype.TextCodec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return len(v), nil
-			}
-
-		case pgtype.ByteaOID:
-			if b, ok := builder.(*array.BinaryBuilder); ok {
-				var v []byte
-				if err := pgtype.ByteaCodec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
-					return 0, err
-				}
-				b.Append(v)
-				return len(v), nil
-			}
+			b.Append(v)
+			return 1, nil
 		}
 
-		// Fallback to interface{} for unsupported types
-		var v interface{}
-		if err := dt.Codec.PlanScan(typeMap, dataType, format, &v).Scan(data, &v); err != nil {
+	case pgtype.Int2OID:
+		if b, ok := builder.(*array.Int16Builder); ok {
+			var v int16
+			var codec pgtype.Int2Codec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return 2, nil
+		}
+
+	case pgtype.Int4OID:
+		if b, ok := builder.(*array.Int32Builder); ok {
+			var v int32
+			var codec pgtype.Int4Codec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return 4, nil
+		}
+
+	case pgtype.Int8OID:
+		if b, ok := builder.(*array.Int64Builder); ok {
+			var v int64
+			var codec pgtype.Int8Codec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return 8, nil
+		}
+
+	case pgtype.Float4OID:
+		if b, ok := builder.(*array.Float32Builder); ok {
+			var v float32
+			var codec pgtype.Float4Codec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return 4, nil
+		}
+
+	case pgtype.Float8OID:
+		if b, ok := builder.(*array.Float64Builder); ok {
+			var v float64
+			var codec pgtype.Float8Codec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return 8, nil
+		}
+
+	case pgtype.TimestampOID:
+		if b, ok := builder.(*array.TimestampBuilder); ok {
+			var v pgtype.Timestamp
+			codec := pgtype.TimestampCodec{ScanLocation: time.UTC}
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.AppendTime(v.Time)
+			return 8, nil
+		}
+
+	case pgtype.TimestamptzOID:
+		if b, ok := builder.(*array.TimestampBuilder); ok {
+			var v pgtype.Timestamptz
+			codec := pgtype.TimestamptzCodec{ScanLocation: time.UTC}
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.AppendTime(v.Time)
+			return 8, nil
+		}
+
+	case pgtype.DateOID:
+		if b, ok := builder.(*array.Date32Builder); ok {
+			var v pgtype.Date
+			var codec pgtype.DateCodec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(arrow.Date32FromTime(v.Time))
+			return 4, nil
+		}
+
+	case pgtype.NumericOID:
+		// TODO(fan): write small decimal as Decimal128
+		if b, ok := builder.(*array.StringBuilder); ok {
+			var v pgtype.Text
+			var codec pgtype.NumericCodec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.AppendString(v.String)
+			return len(data), nil
+		}
+
+	case pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.NameOID:
+		var buf [32]byte // Stack-allocated buffer for small string
+		v := pgtype.PreallocBytes(buf[:])
+		var codec pgtype.TextCodec
+		if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 			return 0, err
 		}
-		return writeValue(builder, v)
-	}
+		switch b := builder.(type) {
+		case *array.StringBuilder:
+			b.BinaryBuilder.Append(v)
+			return len(v), nil
+		case *array.BinaryBuilder:
+			b.Append(v)
+			return len(v), nil
+		}
 
-	// Unknown type, store as string
-	if b, ok := builder.(*array.StringBuilder); ok {
-		b.Append(string(data))
-		return len(data), nil
+	case pgtype.ByteaOID:
+		if b, ok := builder.(*array.BinaryBuilder); ok {
+			var buf [32]byte // Stack-allocated buffer for small byte array
+			v := pgtype.PreallocBytes(buf[:])
+			var codec pgtype.ByteaCodec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return len(v), nil
+		}
 	}
+	// TODO(fan): add support for other types
 
-	return 0, fmt.Errorf("unsupported type conversion for OID %d to %T", dataType, builder)
+	// Fallback
+	v, err := dt.Codec.DecodeValue(typeMap, oid, format, data)
+	if err != nil {
+		return 0, err
+	}
+	return writeValue(builder, v)
 }
 
 // Keep writeValue as a fallback for handling Go values from pgtype codec
-func writeValue(builder array.Builder, val interface{}) (int, error) {
+func writeValue(builder array.Builder, val any) (int, error) {
 	switch b := builder.(type) {
 	case *array.BooleanBuilder:
 		if v, ok := val.(bool); ok {
@@ -218,29 +247,14 @@ func writeValue(builder array.Builder, val interface{}) (int, error) {
 			return len(v), nil
 		}
 	case *array.TimestampBuilder:
-		if v, ok := val.(time.Time); ok {
-			b.Append(v)
+		if v, ok := val.(pgtype.Timestamp); ok {
+			b.AppendTime(v.Time)
 			return 8, nil
-		}
-	case *array.Date32Builder:
-		if v, ok := val.(time.Time); ok {
-			b.Append(arrow.Date32FromTime(v))
-			return 4, nil
 		}
 	case *array.DurationBuilder:
 		if v, ok := val.(time.Duration); ok {
 			b.Append(arrow.Duration(v))
 			return 8, nil
-		}
-	case *array.Decimal128Builder:
-		if v, ok := val.(decimal128.Num); ok {
-			b.Append(v)
-			return 16, nil
-		}
-	case *array.Decimal256Builder:
-		if v, ok := val.(decimal256.Num); ok {
-			b.Append(v)
-			return 32, nil
 		}
 	}
 	return 0, fmt.Errorf("unsupported type conversion: %T -> %T", val, builder)
