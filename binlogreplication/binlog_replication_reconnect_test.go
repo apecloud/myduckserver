@@ -119,7 +119,10 @@ func testInitialReplicaStatus(t *testing.T) {
 	require.Equal(t, "Yes", status["Replica_SQL_Running"])
 
 	// Unsupported fields
-	require.Equal(t, "INVALID", status["Source_Log_File"])
+	gtidEnabled := getGtidEnabled()
+	if gtidEnabled {
+		require.Equal(t, "INVALID", status["Source_Log_File"])
+	}
 	require.Equal(t, "Ignored", status["Source_SSL_Allowed"])
 	require.Equal(t, "None", status["Until_Condition"])
 	require.Equal(t, "0", status["SQL_Delay"])

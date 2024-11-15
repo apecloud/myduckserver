@@ -43,10 +43,25 @@ jobs:
       run: go build -v
     
     - name: Test packages
-      run: go test -v -cover ./charset ./transpiler ./backend ./harness
+      run: |
+        go test -v -cover ./charset ./transpiler ./backend ./harness | tee packages.log
+        cat packages.log | grep -e "^--- " | sed 's/--- //g' | awk 'BEGIN {count=1} {printf "%d. %s\n", count++, $0}'
+        cat packages.log | grep -q "FAIL" && exit 1 || exit 0
 
     - name: Test Query Engine
-      run: go test -v -cover --timeout 600s .
+      run: |
+        go test -v -cover --timeout 600s . | tee query.log
+        cat query.log | grep -e "^--- " | sed 's/--- //g' | awk 'BEGIN {count=1} {printf "%d. %s\n", count++, $0}'
+        cat query.log | grep -q "FAIL" && exit 1 || exit 0
 
-    - name: Test Binlog Replication
-      run: go test -v -p 1 --timeout 360s ./binlogreplication
+    - name: Test Binlog Replication With GTID Enabled
+      run: |
+        GTID_ENABLED=true go test -v -p 1 --timeout 600s ./binlogreplication | tee replication.log
+        cat replication.log | grep -e "^--- " | sed 's/--- //g' | awk 'BEGIN {count=1} {printf "%d. %s\n", count++, $0}'
+        cat replication.log | grep -q "FAIL" && exit 1 || exit 0
+
+    - name: Test Binlog Replication With GTID Disabled
+      run: |
+        GTID_ENABLED=false go test -v -p 1 --timeout 600s ./binlogreplication | tee replication.log
+        cat replication.log | grep -e "^--- " | sed 's/--- //g' | awk 'BEGIN {count=1} {printf "%d. %s\n", count++, $0}'
+        cat replication.log | grep -q "FAIL" && exit 1 || exit 0

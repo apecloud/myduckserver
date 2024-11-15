@@ -18,20 +18,27 @@ else
 fi
 
 # Use the EXECUTED_GTID_SET variable from the previous steps
-if [ ! -z "$EXECUTED_GTID_SET" ]; then
+if [ $GTID_MODE == "ON" ] && [ ! -z "$EXECUTED_GTID_SET" ]; then
   mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
 SET GLOBAL gtid_purged = "${EXECUTED_GTID_SET}";
 EOF
 fi
 
 # Connect to MySQL and execute the replication configuration commands
+REPLICATION_CMD="CHANGE REPLICATION SOURCE TO \
+  SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}', \
+  SOURCE_PORT=${MYSQL_PORT}, \
+  SOURCE_USER='${MYSQL_USER}', \
+  SOURCE_PASSWORD='${MYSQL_PASSWORD}'"
+
+if [ $GTID_MODE == "OFF" ]; then
+  REPLICATION_CMD="${REPLICATION_CMD}, \
+  SOURCE_LOG_FILE='${BINLOG_FILE}', \
+  SOURCE_LOG_POS=${BINLOG_POS}"
+fi
+
 mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
-CHANGE REPLICATION SOURCE TO
-  SOURCE_HOST='${MYSQL_HOST_FOR_REPLICA}',
-  SOURCE_PORT=${MYSQL_PORT},
-  SOURCE_USER='${MYSQL_USER}',
-  SOURCE_PASSWORD='${MYSQL_PASSWORD}'
-;
+${REPLICATION_CMD};
 START REPLICA;
 EOF
 
