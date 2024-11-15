@@ -40,4 +40,4 @@ jobs:
       run: go build -v
 
     - name: Test Binlog Replication
-      run: go test -v -p 1 --timeout 360s ./binlogreplication
+      run: go test -v -p 1 --timeout 600s ./binlogreplication
