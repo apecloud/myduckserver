@@ -149,7 +149,7 @@ func (c *DeltaController) updateTable(
 	record := appender.Build()
 	defer record.Release()
 
-	fmt.Println("record:", record)
+	// fmt.Println("record:", record)
 
 	// TODO(fan): Switch to zero-copy Arrow ingestion once this PR is merged:
 	//   https://github.com/marcboeker/go-duckdb/pull/283

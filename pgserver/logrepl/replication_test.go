@@ -504,7 +504,7 @@ var replicationTests = []ReplicationTest{
 }
 
 func TestReplication(t *testing.T) {
-	// logrus.SetLevel(logrus.TraceLevel)
+	// logrus.SetLevel(logrus.DebugLevel)
 	RunReplicationScripts(t, replicationTests)
 }
 
@@ -544,14 +544,14 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	require.NoError(t, logrepl.CreatePublication(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
-	for i, script := range scripts {
-		if i == 5 {
-			RunReplicationScript(t, dsn, script)
-		}
-	}
-	// for _, script := range scripts {
-	// 	RunReplicationScript(t, dsn, script)
+	// for i, script := range scripts {
+	// 	if i == 0 {
+	// 		RunReplicationScript(t, dsn, script)
+	// 	}
 	// }
+	for _, script := range scripts {
+		RunReplicationScript(t, dsn, script)
+	}
 }
 
 const slotName = "myduck_slot"

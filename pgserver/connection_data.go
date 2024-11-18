@@ -81,6 +81,7 @@ type PortalData struct {
 	IsEmptyQuery bool
 	Fields       []pgproto3.FieldDescription
 	Stmt         *duckdb.Stmt
+	Vars         []any
 }
 
 type PreparedStatementData struct {

@@ -553,6 +553,7 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 		Query:  preparedData.Query,
 		Fields: fields,
 		Stmt:   preparedData.Stmt,
+		Vars:   bindVars,
 	}
 	return h.send(&pgproto3.BindComplete{})
 }
@@ -775,11 +776,11 @@ func (h *ConnectionHandler) deletePortal(name string) {
 }
 
 // convertBindParameters handles the conversion from bind parameters to variable values.
-func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []int16, values [][]byte) ([]string, error) {
+func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []int16, values [][]byte) ([]any, error) {
 	if len(types) != len(values) {
 		return nil, fmt.Errorf("number of values does not match number of parameters")
 	}
-	bindings := make([]string, len(values))
+	bindings := make([]pgtype.Text, len(values))
 	for i := range values {
 		typ := types[i]
 		// We'll rely on a library to decode each format, which will deal with text and binary representations for us
@@ -787,7 +788,12 @@ func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []
 			return nil, err
 		}
 	}
-	return bindings, nil
+
+	vars := make([]any, len(bindings))
+	for i, b := range bindings {
+		vars[i] = b.String
+	}
+	return vars, nil
 }
 
 // query runs the given query and sends a CommandComplete message to the client

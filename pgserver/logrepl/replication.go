@@ -158,9 +158,13 @@ type replicationState struct {
 	// SendStandbyStatusUpdate after every message we get.
 	lastReceivedLSN pglogrepl.LSN
 
-	// currentTransactionLSN is the LSN of the current transaction we are processing. This becomes the lastWrittenLSN
-	// when we get a CommitMessage
+	// currentTransactionLSN is the LSN of the current transaction we are processing.
+	// This becomes the lastCommitLSN when we get a CommitMessage.
 	currentTransactionLSN pglogrepl.LSN
+
+	// lastCommitLSN is the LSN of the last commit message we received.
+	// This becomes the lastWrittenLSN when we commit the transaction to the database.
+	lastCommitLSN pglogrepl.LSN
 
 	// inStream tracks the state of the replication stream. When we receive a StreamStartMessage, we set inStream to
 	// true, and then back to false when we receive a StreamStopMessage.
@@ -358,7 +362,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 					return fmt.Errorf("ParsePrimaryKeepaliveMessage failed: %w", err)
 				}
 
-				r.logger.Debugln("Primary Keepalive Message =>", "ServerWALEnd:", pkm.ServerWALEnd, "ServerTime:", pkm.ServerTime, "ReplyRequested:", pkm.ReplyRequested)
+				r.logger.Traceln("Primary Keepalive Message =>", "ServerWALEnd:", pkm.ServerWALEnd, "ServerTime:", pkm.ServerTime, "ReplyRequested:", pkm.ReplyRequested)
 				state.lastReceivedLSN = pkm.ServerWALEnd
 
 				if pkm.ReplyRequested {
@@ -573,7 +577,11 @@ func (r *LogicalReplicator) processMessage(
 	}
 
 	r.logger.Debugf("XLogData (%T) => WALStart %s ServerWALEnd %s ServerTime %s", logicalMsg, xld.WALStart, xld.ServerWALEnd, xld.ServerTime)
-	state.lastReceivedLSN = xld.ServerWALEnd
+
+	// Update the last received LSN
+	if xld.ServerWALEnd > state.lastReceivedLSN {
+		state.lastReceivedLSN = xld.ServerWALEnd
+	}
 
 	switch logicalMsg := logicalMsg.(type) {
 	case *pglogrepl.RelationMessageV2:
@@ -633,6 +641,8 @@ func (r *LogicalReplicator) processMessage(
 
 	case *pglogrepl.CommitMessage:
 		r.logger.Debugf("CommitMessage: %v", logicalMsg)
+
+		state.lastCommitLSN = logicalMsg.CommitLSN
 
 		extend, reason := r.mayExtendBatchTxn(state)
 		if !extend {
@@ -869,7 +879,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	state.inTxnStmtID.Store(0)
 	state.lastCommitTime = time.Now()
 
-	state.lastWrittenLSN = state.currentTransactionLSN
+	state.lastWrittenLSN = state.lastCommitLSN
 
 	return nil
 }

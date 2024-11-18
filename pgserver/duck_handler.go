@@ -81,7 +81,7 @@ type DuckHandler struct {
 var _ Handler = &DuckHandler{}
 
 // ComBind implements the Handler interface.
-func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared PreparedStatementData, bindVars []string) ([]pgproto3.FieldDescription, error) {
+func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared PreparedStatementData, bindVars []any) ([]pgproto3.FieldDescription, error) {
 	vars := make([]driver.NamedValue, len(bindVars))
 	for i, v := range bindVars {
 		vars[i] = driver.NamedValue{
@@ -101,7 +101,7 @@ func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared Prepa
 
 // ComExecuteBound implements the Handler interface.
 func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, portal PortalData, callback func(*Result) error) error {
-	err := h.doQuery(ctx, conn, portal.Query.String, portal.Query.AST, portal.Stmt, h.executeBoundPlan, callback)
+	err := h.doQuery(ctx, conn, portal.Query.String, portal.Query.AST, portal.Stmt, portal.Vars, h.executeBoundPlan, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -214,7 +214,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 
 // ComQuery implements the Handler interface.
 func (h *DuckHandler) ComQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, callback func(*Result) error) error {
-	err := h.doQuery(ctx, c, query, parsed, nil, h.executeQuery, callback)
+	err := h.doQuery(ctx, c, query, parsed, nil, nil, h.executeQuery, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -291,7 +291,7 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 
 var queryLoggingRegex = regexp.MustCompile(`[\r\n\t ]+`)
 
-func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, queryExec QueryExecutor, callback func(*Result) error) error {
+func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, queryExec QueryExecutor, callback func(*Result) error) error {
 	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
 	if err != nil {
 		return err
@@ -327,7 +327,7 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 		}
 	}()
 
-	schema, rowIter, qFlags, err := queryExec(sqlCtx, query, parsed, stmt)
+	schema, rowIter, qFlags, err := queryExec(sqlCtx, query, parsed, stmt, vars)
 	if err != nil {
 		if printErrorStackTraces {
 			fmt.Printf("error running query: %+v\n", err)
@@ -379,11 +379,11 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 
 // QueryExecutor is a function that executes a query and returns the result as a schema and iterator. Either of
 // |parsed| or |analyzed| can be nil depending on the use case
-type QueryExecutor func(ctx *sql.Context, query string, parsed tree.Statement, stmt *duckdb.Stmt) (sql.Schema, sql.RowIter, *sql.QueryFlags, error)
+type QueryExecutor func(ctx *sql.Context, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error)
 
 // executeQuery is a QueryExecutor that calls QueryWithBindings on the given engine using the given query and parsed
 // statement, which may be nil.
-func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.Statement, stmt *duckdb.Stmt) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
+func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.Statement, _ *duckdb.Stmt, _ []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
 	// return h.e.QueryWithBindings(ctx, query, parsed, nil, nil)
 
 	sql.IncrementStatusVariable(ctx, "Questions", 1)
@@ -439,54 +439,91 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 
 // executeBoundPlan is a QueryExecutor that calls QueryWithBindings on the given engine using the given query and parsed
 // statement, which may be nil.
-func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.Statement, stmt *duckdb.Stmt) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
+func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.Statement, stmt *duckdb.Stmt, vars []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
 	// return h.e.PrepQueryPlanForExecution(ctx, query, plan, nil)
 
-	tmprows, err1 := adapter.Query(ctx, query)
-	if err1 != nil {
-		return nil, nil, nil, err1
-	}
-	for tmprows.Next() {
-		columns, _ := tmprows.Columns()
-		result := make([]any, len(columns))
-		pointers := make([]any, len(columns))
-		for i := range result {
-			pointers[i] = &result[i]
-		}
-		tmprows.Scan(pointers...)
-		fmt.Printf("row:%+v\n", result)
-	}
-	tmprows.Close()
+	// TODO(fan): Currently, the result of executing the bound query is occasionally incorrect.
+	//   For example, for the "concurrent writes" test in the "TestReplication" test case,
+	//   this approach returns [[2 x] [4 i]] instead of [[2 three] [4 five]].
+	//   However, `x` and `i` never appear in the data.
+	//   The reason is not clear and needs further investigation.
+	//   Therefore, we fall back to the unbound query execution for now.
+	//
+	// var (
+	// 	schema sql.Schema
+	// 	iter   sql.RowIter
+	// 	rows   driver.Rows
+	// 	result driver.Result
+	// 	err    error
+	// )
+	// switch stmt.StatementType() {
+	// case duckdb.DUCKDB_STATEMENT_TYPE_SELECT,
+	// 	duckdb.DUCKDB_STATEMENT_TYPE_RELATION,
+	// 	duckdb.DUCKDB_STATEMENT_TYPE_CALL,
+	// 	duckdb.DUCKDB_STATEMENT_TYPE_PRAGMA,
+	// 	duckdb.DUCKDB_STATEMENT_TYPE_EXPLAIN:
+	// 	rows, err = stmt.QueryBound(ctx)
+	// 	if err != nil {
+	// 		break
+	// 	}
+	// 	schema, err = pgtypes.InferDriverSchema(rows)
+	// 	if err != nil {
+	// 		rows.Close()
+	// 		break
+	// 	}
+	// 	iter, err = NewDriverRowIter(rows, schema)
+	// 	if err != nil {
+	// 		rows.Close()
+	// 		break
+	// 	}
+	// default:
+	// 	result, err = stmt.ExecBound(ctx)
+	// 	if err != nil {
+	// 		break
+	// 	}
+	// 	affected, _ := result.RowsAffected()
+	// 	insertId, _ := result.LastInsertId()
+	// 	schema = types.OkResultSchema
+	// 	iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{
+	// 		RowsAffected: uint64(affected),
+	// 		InsertID:     uint64(insertId),
+	// 	}))
+	// }
+	// if err != nil {
+	// 	return nil, nil, nil, err
+	// }
 
 	var (
-		schema sql.Schema
-		iter   sql.RowIter
-		rows   driver.Rows
-		result driver.Result
-		err    error
+		stmtType = stmt.StatementType()
+		schema   sql.Schema
+		iter     sql.RowIter
+		rows     *stdsql.Rows
+		result   stdsql.Result
+		err      error
 	)
-	switch stmt.StatementType() {
+
+	switch stmtType {
 	case duckdb.DUCKDB_STATEMENT_TYPE_SELECT,
 		duckdb.DUCKDB_STATEMENT_TYPE_RELATION,
 		duckdb.DUCKDB_STATEMENT_TYPE_CALL,
 		duckdb.DUCKDB_STATEMENT_TYPE_PRAGMA,
 		duckdb.DUCKDB_STATEMENT_TYPE_EXPLAIN:
-		rows, err = stmt.QueryBound(ctx)
+		rows, err = adapter.QueryCatalog(ctx, query, vars...)
 		if err != nil {
 			break
 		}
-		schema, err = pgtypes.InferDriverSchema(rows)
+		schema, err = pgtypes.InferSchema(rows)
 		if err != nil {
 			rows.Close()
 			break
 		}
-		iter, err = NewDriverRowIter(rows, schema)
+		iter, err = backend.NewSQLRowIter(rows, schema)
 		if err != nil {
 			rows.Close()
 			break
 		}
 	default:
-		result, err = stmt.ExecBound(ctx)
+		result, err = adapter.ExecCatalog(ctx, query, vars...)
 		if err != nil {
 			break
 		}
@@ -497,6 +534,9 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 			RowsAffected: uint64(affected),
 			InsertID:     uint64(insertId),
 		}))
+	}
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	return schema, iter, nil, nil
@@ -756,7 +796,6 @@ func rowToBytes(ctx *sql.Context, s sql.Schema, row sql.Row) ([][]byte, error) {
 		// should not happen
 		return nil, fmt.Errorf("received empty schema")
 	}
-	fmt.Printf("row: %+v\n", row)
 	o := make([][]byte, len(row))
 	for i, v := range row {
 		if v == nil {
