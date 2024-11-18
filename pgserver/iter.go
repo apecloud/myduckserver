@@ -2,7 +2,6 @@ package pgserver
 
 import (
 	"database/sql/driver"
-	"fmt"
 	"io"
 	"strings"
 
@@ -45,8 +44,6 @@ func (iter *DriverRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		}
 		return nil, err
 	}
-
-  
 
 	// Prune or fill the values to match the schema
 	width := len(iter.schema) // the desired width
