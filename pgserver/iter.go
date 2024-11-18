@@ -46,7 +46,7 @@ func (iter *DriverRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		return nil, err
 	}
 
-	fmt.Printf("DriverRowIter.Next: buffer=%+v\n", iter.buffer)
+  
 
 	// Prune or fill the values to match the schema
 	width := len(iter.schema) // the desired width
