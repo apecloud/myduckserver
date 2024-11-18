@@ -625,6 +625,9 @@ func resultForOkIter(ctx *sql.Context, iter sql.RowIter) (*Result, error) {
 // resultForEmptyIter ensures that an expected empty iterator returns no rows.
 func resultForEmptyIter(ctx *sql.Context, iter sql.RowIter) (*Result, error) {
 	defer trace.StartRegion(ctx, "DuckHandler.resultForEmptyIter").End()
+	if iter == nil {
+		return &Result{Fields: nil}, nil
+	}
 	if _, err := iter.Next(ctx); err != io.EOF {
 		return nil, fmt.Errorf("result schema iterator returned more than zero rows")
 	}

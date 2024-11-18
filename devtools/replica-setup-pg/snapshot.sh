@@ -13,7 +13,13 @@ if [[ ! -f "$PG_DUMP" ]]; then
 fi
 
 # Read the file and match CREATE SCHEMA, CREATE TABLE and COPY statements
-SQLS=$(grep -Pzo 'CREATE SCHEMA [^;]+;\n|CREATE TABLE [^;]+;\n|COPY [^\\]+\\\.\n' "$PG_DUMP")
+SQLS=$(grep -Pzo 'CREATE DATABASE [^;]+;\n|\\connect [^\n]+\n|CREATE SCHEMA [^;]+;\n|CREATE TABLE [^;]+;\n|COPY [^\\]+\\\.\n' "$PG_DUMP")
+
+# Exclude "LOCALE_PROVIDER = '*' LOCALE = '*'" from CREATE DATABASE
+SQLS=$(echo "$SQLS" | sed 's/LOCALE_PROVIDER = [^ ;]*//g')
+SQLS=$(echo "$SQLS" | sed 's/LOCALE = [^ ;]*//g')
+
+echo "$SQLS"
 
 # Execute the matched SQL statements using psql
 psql -h $MYDUCK_HOST -p $MYDUCK_PORT -U $MYDUCK_USER -d $MYDUCK_DB -v ON_ERROR_STOP=1 << EOF

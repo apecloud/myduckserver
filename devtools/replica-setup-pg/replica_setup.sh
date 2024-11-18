@@ -62,13 +62,10 @@ if [[ -z $MYDUCK_DB ]]; then
     usage
 fi
 
-# Step 1: Check if psql exists, if not, install it
+# Step 1: Check if psql exists
 if ! command -v psql &> /dev/null; then
-    echo "psql not found, attempting to install..."
-    bash install_psql.sh
-    check_command "psql installation"
-else
-    echo "psql is already installed."
+    echo "Error: psql is not installed."
+    exit 1
 fi
 
 # Step 2: Check if replication has already been started

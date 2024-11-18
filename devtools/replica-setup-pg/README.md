@@ -21,13 +21,13 @@ bash replica_setup.sh --pg_dump /path/to/pg_dump
 
 ### Parameters
 
-- **`--pg_dump`**: The path to the PostgreSQL dump file.
+- **`--pg_dump`**: The path to the PostgreSQL dump file. The `--create` tag is recommended when creating the dump file.
 - **`--myduck_port`**: The port on which MyDuck Server is listening connections.
 
 ## Example
 
 ```bash
-bash replica_setup.sh --pg_dump ../../backup.sql
+bash replica_setup.sh --pg_dump pg_dump.sql
 ```
 
-This command sets up MyDuck Server as a replica of the PostgreSQL instance running at `192.168.1.100` on port `3306` with the user `root` and password `mypassword`.
+This command sets up MyDuck Server as a replica of the PostgreSQL instance running at `192.168.1.100` on port `5432` with the user `root` and password `mypassword`.
