@@ -579,7 +579,8 @@ func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema, mode QueryMode) [
 		if pgType, ok := c.Type.(pgtypes.PostgresType); ok {
 			oid = pgType.PG.OID
 			if mode == SimpleQueryMode {
-				// In simple Query mode, the format of retrieved values is always text, except ...
+				// https://www.postgresql.org/docs/current/protocol-flow.html
+				// > In simple Query mode, the format of retrieved values is always text, except ...
 				format = pgtype.TextFormatCode
 			} else {
 				format = pgType.PG.Codec.PreferredFormat()
