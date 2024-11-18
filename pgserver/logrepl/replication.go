@@ -255,9 +255,9 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 		// The StatusUpdate message wants us to respond with the current position in the WAL + 1:
 		// https://www.postgresql.org/docs/current/protocol-replication.html
 		err := pglogrepl.SendStandbyStatusUpdate(context.Background(), primaryConn, pglogrepl.StandbyStatusUpdate{
-			WALWritePosition: state.lastWrittenLSN + 1,
+			WALWritePosition: state.lastReceivedLSN + 1,
 			WALFlushPosition: state.lastWrittenLSN + 1,
-			WALApplyPosition: state.lastReceivedLSN + 1,
+			WALApplyPosition: state.lastWrittenLSN + 1,
 		})
 		if err != nil {
 			return handleErrWithRetry(err, false)
@@ -862,8 +862,8 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 		return err
 	}
 
-	r.logger.Debugf("Writing LSN %s\n", state.currentTransactionLSN)
-	if err = r.writeWALPosition(state.replicaCtx, state.slotName, state.currentTransactionLSN); err != nil {
+	r.logger.Debugf("Writing LSN %s\n", state.lastCommitLSN)
+	if err = r.writeWALPosition(state.replicaCtx, state.slotName, state.lastCommitLSN); err != nil {
 		return err
 	}
 
