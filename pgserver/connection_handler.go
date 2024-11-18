@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -503,7 +504,14 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 			return fmt.Errorf("prepared statement %s does not exist", message.Name)
 		}
 
-		fields = preparedStatementData.ReturnFields
+		// https://www.postgresql.org/docs/current/protocol-flow.html
+		// > Note that since Bind has not yet been issued, the formats to be used for returned columns are not yet known to the backend;
+		// > the format code fields in the RowDescription message will be zeroes in this case.
+		fields = slices.Clone(preparedStatementData.ReturnFields)
+		for i := range fields {
+			fields[i].Format = 0
+		}
+
 		bindvarTypes = preparedStatementData.BindVarTypes
 		tag = preparedStatementData.Query.StatementTag
 	} else {
@@ -826,9 +834,6 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
 	err := h.duckHandler.ComQuery(context.Background(), h.mysqlConn, query.String, query.AST, callback)
 	if err != nil {
-		if strings.HasPrefix(err.Error(), "syntax error at position") {
-			return fmt.Errorf("This statement is not yet supported")
-		}
 		return err
 	}
 
@@ -841,10 +846,11 @@ func (h *ConnectionHandler) spoolRowsCallback(tag string, rows *int32, isExecute
 	// IsIUD returns whether the query is either an INSERT, UPDATE, or DELETE query.
 	isIUD := tag == "INSERT" || tag == "UPDATE" || tag == "DELETE"
 	return func(res *Result) error {
-		logrus.Tracef("spooling %d rows for tag %s", res.RowsAffected, tag)
+		logrus.Tracef("spooling %d rows for tag %s (execute = %v)", res.RowsAffected, tag, isExecute)
 		if returnsRow(tag) {
 			// EXECUTE does not send RowDescription; instead it should be sent from DESCRIBE prior to it
 			if !isExecute {
+				logrus.Tracef("sending RowDescription %+v for tag %s", res.Fields, tag)
 				if err := h.send(&pgproto3.RowDescription{
 					Fields: res.Fields,
 				}); err != nil {
@@ -852,6 +858,7 @@ func (h *ConnectionHandler) spoolRowsCallback(tag string, rows *int32, isExecute
 				}
 			}
 
+			logrus.Tracef("sending Rows %+v for tag %s", res.Rows, tag)
 			for _, row := range res.Rows {
 				if err := h.send(&pgproto3.DataRow{
 					Values: row.val,
