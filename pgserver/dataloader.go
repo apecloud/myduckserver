@@ -3,6 +3,7 @@ package pgserver
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -49,19 +50,20 @@ var ErrCopyAborted = fmt.Errorf("COPY operation aborted")
 type CsvDataLoader struct {
 	ctx      *sql.Context
 	cancel   context.CancelFunc
-	schema   *string
+	schema   string
 	table    sql.InsertableTable
 	columns  tree.NameList
 	options  *tree.CopyOptions
 	pipePath string
 	pipe     *os.File
+	errPipe  *os.File // for error handling
 	rowCount chan int64
 	err      atomic.Pointer[error]
 }
 
 var _ DataLoader = (*CsvDataLoader)(nil)
 
-func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema *string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
+func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
 	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
 	dataDir := duckBuilder.Provider().DataDir()
 
@@ -95,7 +97,9 @@ func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema *string,
 	// Execute the DuckDB COPY statement in a goroutine.
 	sql := loader.buildSQL()
 	loader.ctx.GetLogger().Trace(sql)
-	go loader.executeCopy(sql)
+	go loader.executeCopy(sql, pipePath)
+
+	// TODO(fan): If the reader fails to open the pipe, the writer will block forever.
 
 	// Open the pipe for writing.
 	// This operation will block until the reader opens the pipe for reading.
@@ -103,6 +107,12 @@ func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema *string,
 	if err != nil {
 		return nil, err
 	}
+
+	// If the COPY operation failed to start, close the pipe and return the error.
+	if loader.errPipe != nil {
+		return nil, errors.Join(*loader.err.Load(), pipe.Close(), loader.errPipe.Close())
+	}
+
 	loader.pipe = pipe
 
 	return loader, nil
@@ -114,8 +124,8 @@ func (loader *CsvDataLoader) buildSQL() string {
 	b.Grow(256)
 
 	b.WriteString("COPY ")
-	if loader.schema != nil {
-		b.WriteString(*loader.schema)
+	if loader.schema != "" {
+		b.WriteString(loader.schema)
 		b.WriteString(".")
 	}
 	b.WriteString(loader.table.Name())
@@ -161,12 +171,14 @@ func (loader *CsvDataLoader) buildSQL() string {
 	return b.String()
 }
 
-func (loader *CsvDataLoader) executeCopy(sql string) {
+func (loader *CsvDataLoader) executeCopy(sql string, pipePath string) {
 	defer close(loader.rowCount)
 	result, err := adapter.Exec(loader.ctx, sql)
 	if err != nil {
 		loader.ctx.GetLogger().Error(err)
 		loader.err.Store(&err)
+		// Open the pipe once to unblock the writer
+		loader.errPipe, _ = os.OpenFile(pipePath, os.O_RDONLY, 0600)
 		return
 	}
 

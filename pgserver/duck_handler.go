@@ -433,6 +433,9 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
 	return schema, iter, nil, nil
 }
