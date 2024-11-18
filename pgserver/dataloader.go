@@ -49,6 +49,7 @@ var ErrCopyAborted = fmt.Errorf("COPY operation aborted")
 type CsvDataLoader struct {
 	ctx      *sql.Context
 	cancel   context.CancelFunc
+	schema   *string
 	table    sql.InsertableTable
 	columns  tree.NameList
 	options  *tree.CopyOptions
@@ -60,7 +61,7 @@ type CsvDataLoader struct {
 
 var _ DataLoader = (*CsvDataLoader)(nil)
 
-func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
+func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema *string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
 	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
 	dataDir := duckBuilder.Provider().DataDir()
 
@@ -83,6 +84,7 @@ func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, table sql.Inser
 	loader := &CsvDataLoader{
 		ctx:      sqlCtx,
 		cancel:   cancel,
+		schema:   schema,
 		table:    table,
 		columns:  columns,
 		options:  options,
@@ -112,6 +114,10 @@ func (loader *CsvDataLoader) buildSQL() string {
 	b.Grow(256)
 
 	b.WriteString("COPY ")
+	if loader.schema != nil {
+		b.WriteString(*loader.schema)
+		b.WriteString(".")
+	}
 	b.WriteString(loader.table.Name())
 
 	if len(loader.columns) > 0 {
@@ -122,12 +128,12 @@ func (loader *CsvDataLoader) buildSQL() string {
 
 	b.WriteString(" FROM '")
 	b.WriteString(loader.pipePath)
-	b.WriteString("' (AUTO_DETECT false,")
+	b.WriteString("' (AUTO_DETECT false")
 
 	options := loader.options
 
 	if options.HasHeader && options.Header {
-		b.WriteString(" HEADER")
+		b.WriteString(", HEADER")
 	}
 
 	if options.Delimiter != nil {

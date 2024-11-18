@@ -28,8 +28,8 @@ check_server_params() {
     # Check for each parameter and validate their values
     binlog_format=$(echo "$result" | grep -i "binlog_format" | awk '{print $2}')
     enforce_gtid_consistency=$(echo "$result" | grep -i "enforce_gtid_consistency" | awk '{print $2}')
-    gtid_mode=$(echo "$result" | grep -i "gtid_mode" | awk '{print $2}')
-    gtid_strict_mode=$(echo "$result" | grep -i "gtid_strict_mode" | awk '{print $2}')
+    gtid_mode=$(echo "$result" | grep -i "gtid_mode" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+    gtid_strict_mode=$(echo "$result" | grep -i "gtid_strict_mode" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
     log_bin=$(echo "$result" | grep -i "log_bin" | awk '{print $2}')
 
     # Validate binlog_format
@@ -39,24 +39,15 @@ check_server_params() {
     fi
 
     # MariaDB use gtid_strict_mode instead of gtid_mode
-    if [[ -z "$gtid_strict_mode" ]]; then
-        # Validate enforce_gtid_consistency (for MySQL)
-        if [[ "$enforce_gtid_consistency" != "ON" ]]; then
-            echo "Error: enforce_gtid_consistency is not set to 'ON', it is set to '$enforce_gtid_consistency'."
-            return 1
-        fi
+    if [[ "$gtid_strict_mode" == "OFF" || (-z "$gtid_strict_mode" && "${gtid_mode}" =~ ^OFF) ]]; then
+        GTID_MODE="OFF"
+        echo "GTID_MODE: $GTID_MODE"
+    fi
 
-        # Validate gtid_mode (for MySQL)
-        if [[ "$gtid_mode" != "ON" ]]; then
-            echo "Error: gtid_mode is not set to 'ON', it is set to '$gtid_mode'."
-            return 1
-        fi
-    else
-        # Validate gtid_strict_mode (for MariaDB)
-        if [[ "$gtid_strict_mode" != "ON" ]]; then
-            echo "Error: gtid_strict_mode is not set to 'ON', it is set to '$gtid_strict_mode'."
-            return 1
-        fi
+    # If gtid_strict_mode is empty, check gtid_mode. If it's not OFF, then enforce_gtid_consistency must be ON
+    if [[ -z "$gtid_strict_mode" && $GTID_MODE == "ON" && "$enforce_gtid_consistency" != "ON" ]]; then
+        echo "Error: gtid_mode is not set to 'OFF', it is set to '$gtid_mode'. enforce_gtid_consistency must be 'ON'."
+        return 1
     fi
 
     # Validate log_bin

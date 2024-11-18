@@ -36,18 +36,39 @@ echo "Thread count set to: $THREAD_COUNT"
 
 echo "Copying data from MySQL to MyDuck..."
 # Run mysqlsh command and capture the output
-output=$(mysqlsh -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M --ignore-version true)
+output=$(mysqlsh --host=${MYSQL_HOST} --port=${MYSQL_PORT} --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M --ignore-version true)
 
-# Extract the EXECUTED_GTID_SET using grep and awk
-EXECUTED_GTID_SET=$(echo "$output" | grep -i "EXECUTED_GTID_SET" | awk '{print $2}')
+if [[ $GTID_MODE == "ON" ]]; then
+    # Extract the EXECUTED_GTID_SET from this output:
+    #   Executed_GTID_set: 369107a6-a0a5-11ef-a255-0242ac110008:1-10
+    EXECUTED_GTID_SET=$(echo "$output" | grep -i "EXECUTED_GTID_SET" | awk '{print $2}')
 
-# Check if EXECUTED_GTID_SET is empty
-if [ -z "$EXECUTED_GTID_SET" ]; then
-  echo "EXECUTED_GTID_SET is empty, exiting."
-  exit 1
+    # Check if EXECUTED_GTID_SET is empty
+    if [ -z "$EXECUTED_GTID_SET" ]; then
+        echo "EXECUTED_GTID_SET is empty, exiting."
+        exit 1
+    fi
+
+    # If not empty, print the extracted GTID set
+    echo "EXECUTED_GTID_SET: $EXECUTED_GTID_SET"
+else
+    # Extract the BINLOG_FILE and BINLOG_POS from this output:
+    #   Binlog_file: binlog.000002
+    #   Binlog_position: 3763
+    #   Executed_GTID_set: ''
+    BINLOG_FILE=$(echo "$output" | grep -i "Binlog_file" | awk '{print $2}')
+    BINLOG_POS=$(echo "$output" | grep -i "Binlog_position" | awk '{print $2}')
+
+    # Check if BINLOG_FILE and BINLOG_POS are empty
+    if [ -z "$BINLOG_FILE" ] || [ -z "$BINLOG_POS" ]; then
+        echo "BINLOG_FILE or BINLOG_POS is empty, exiting."
+        exit 1
+    fi
+
+    # If not empty, print the extracted BINLOG_FILE and BINLOG_POS
+    echo "BINLOG_FILE: $BINLOG_FILE"
+    echo "BINLOG_POS: $BINLOG_POS"
 fi
 
-# If not empty, print the extracted GTID set
-echo "EXECUTED_GTID_SET: $EXECUTED_GTID_SET"
 
 echo "Snapshot completed successfully."

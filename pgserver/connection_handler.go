@@ -656,8 +656,20 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 
 		switch copyFrom.Options.CopyFormat {
 		case tree.CopyFormatText:
+			copyFrom.Options.Delimiter = tree.NewStrVal("\t")
+			// Remove trailing backslash, comma and newline characters from the data
+			if bytes.HasSuffix(message.Data, []byte{'\n'}) {
+				message.Data = message.Data[:len(message.Data)-1]
+			}
+			if bytes.HasSuffix(message.Data, []byte{'\r'}) {
+				message.Data = message.Data[:len(message.Data)-1]
+			}
+			if bytes.HasSuffix(message.Data, []byte{'\\', '.'}) {
+				message.Data = message.Data[:len(message.Data)-2]
+			}
+			fallthrough
 		case tree.CopyFormatCSV:
-			dataLoader, err = NewCsvDataLoader(sqlCtx, h.duckHandler, insertableTable, copyFrom.Columns, &copyFrom.Options)
+			dataLoader, err = NewCsvDataLoader(sqlCtx, h.duckHandler, &schemaName, insertableTable, copyFrom.Columns, &copyFrom.Options)
 		case tree.CopyFormatBinary:
 			err = fmt.Errorf("BINARY format is not supported for COPY FROM")
 		default:

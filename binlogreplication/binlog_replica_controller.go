@@ -280,6 +280,18 @@ func (d *myBinlogReplicaController) SetReplicationSourceOptions(ctx *sql.Context
 				return err
 			}
 			replicaSourceInfo.ConnectRetryCount = uint64(intValue)
+		case "SOURCE_LOG_FILE":
+			value, err := getOptionValueAsString(option)
+			if err != nil {
+				return err
+			}
+			replicaSourceInfo.SourceLogFile = value
+		case "SOURCE_LOG_POS":
+			intValue, err := getOptionValueAsInt(option)
+			if err != nil {
+				return err
+			}
+			replicaSourceInfo.SourceLogPos = uint64(intValue)
 		case "SOURCE_AUTO_POSITION":
 			intValue, err := getOptionValueAsInt(option)
 			if err != nil {
@@ -333,6 +345,14 @@ func (d *myBinlogReplicaController) SetReplicationFilterOptions(_ *sql.Context, 
 	return nil
 }
 
+func changeSourceLogFileToInvalidIfEmpty(status *binlogreplication.ReplicaStatus) {
+	// As the original design of go-mysql-server, the source log file should be "INVALID" if GTID_MODE is ON.
+	// An empty string of source log file means GTID_MODE is ON, and we should set it to "INVALID" here.
+	if status.SourceLogFile == "" {
+		status.SourceLogFile = "INVALID"
+	}
+}
+
 // GetReplicaStatus implements the BinlogReplicaController interface
 func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogreplication.ReplicaStatus, error) {
 	replicaSourceInfo, err := loadReplicationConfiguration(ctx, d.engine.Analyzer.Catalog.MySQLDb)
@@ -346,12 +366,15 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	var copy = d.status
 
 	if replicaSourceInfo == nil {
+		changeSourceLogFileToInvalidIfEmpty(&copy)
 		return &copy, nil
 	}
 
 	copy.SourceUser = replicaSourceInfo.User
 	copy.SourceHost = replicaSourceInfo.Host
 	copy.SourcePort = uint(replicaSourceInfo.Port)
+	copy.SourceLogFile = replicaSourceInfo.SourceLogFile
+	copy.SourceLogPos = replicaSourceInfo.SourceLogPos
 	copy.SourceServerUuid = replicaSourceInfo.Uuid
 	copy.ConnectRetry = replicaSourceInfo.ConnectRetryInterval
 	copy.SourceRetryCount = replicaSourceInfo.ConnectRetryCount
@@ -363,6 +386,7 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 		copy.RetrievedGtidSet = copy.ExecutedGtidSet
 	}
 
+	changeSourceLogFileToInvalidIfEmpty(&copy)
 	return &copy, nil
 }
 

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -52,6 +53,9 @@ const (
 	ERNetReadError      = 1158
 	ERFatalReplicaError = 13117
 )
+
+// Match any strings starting with "ON" (case insensitive)
+var gtidModeIsOnRegex = regexp.MustCompile(`(?i)^ON$`)
 
 // binlogReplicaApplier represents the process that applies updates from a binlog connection.
 //
@@ -116,6 +120,30 @@ func (a *binlogReplicaApplier) IsRunning() bool {
 	return a.running.Load()
 }
 
+// This function will connect to the MySQL server and check the GTID_MODE.
+func connAndCheckGtidModeEnabled(ctx *sql.Context, params mysql.ConnParams) (bool, error) {
+	conn, err := mysql.Connect(ctx, &params)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+
+	var qr *sqltypes.Result
+	qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_MODE", 1, true)
+	if err != nil {
+		// Maybe it's a MariaDB server, try to get the GTID_STRICT_MODE instead
+		qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_STRICT_MODE", 1, true)
+		if err != nil {
+			return false, fmt.Errorf("error checking GTID_MODE: %v", err)
+		}
+	}
+	if len(qr.Rows) == 0 {
+		return false, fmt.Errorf("no rows returned when checking GTID_MODE")
+	}
+	gtidMode := string(qr.Rows[0][0].Raw())
+	return gtidModeIsOnRegex.MatchString(gtidMode), nil
+}
+
 // connectAndStartReplicationEventStream connects to the configured MySQL replication source, including pausing
 // and retrying if errors are encountered.
 func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Context) (*mysql.Conn, error) {
@@ -130,6 +158,8 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 
 	var conn *mysql.Conn
 	var err error
+	gtidModeEnabled := false
+	flavorName := ""
 	for connectionAttempts := uint64(0); ; connectionAttempts++ {
 		replicaSourceInfo, err := loadReplicationConfiguration(ctx, a.engine.Analyzer.Catalog.MySQLDb)
 
@@ -156,6 +186,18 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 			Pass:             replicaSourceInfo.Password,
 			ConnectTimeoutMs: 4_000,
 		}
+
+		gtidModeEnabled, err = connAndCheckGtidModeEnabled(ctx, connParams)
+		if err != nil && connectionAttempts >= maxConnectionAttempts {
+			return nil, err
+		}
+
+		if !gtidModeEnabled {
+			flavorName = replication.FilePosFlavorID
+		} else {
+			flavorName = replication.Mysql56FlavorID
+		}
+		connParams.Flavor = flavorName
 
 		conn, err = mysql.Connect(ctx, &connParams)
 		if err != nil {
@@ -184,7 +226,7 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 
 	// Request binlog events to start
 	// TODO: This should also have retry logic
-	err = a.startReplicationEventStream(ctx, conn)
+	err = a.startReplicationEventStream(ctx, conn, gtidModeEnabled, flavorName)
 	if err != nil {
 		return nil, err
 	}
@@ -196,17 +238,10 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 	return conn, nil
 }
 
-// startReplicationEventStream sends a request over |conn|, the connection to the MySQL source server, to begin
-// sending binlog events.
-func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, conn *mysql.Conn) error {
-	serverId, err := loadReplicaServerId()
+func (a *binlogReplicaApplier) loadGtidPosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
+	position, err := positionStore.Load(flavorName, ctx, a.engine)
 	if err != nil {
-		return err
-	}
-
-	position, err := positionStore.Load(ctx, a.engine)
-	if err != nil {
-		return err
+		return replication.Position{}, err
 	}
 
 	if position.IsZero() {
@@ -227,9 +262,9 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 				gtidPurged = gtidPurged[1:]
 			}
 
-			purged, err := replication.ParsePosition(mysqlFlavor, gtidPurged)
+			purged, err := replication.ParsePosition(flavorName, gtidPurged)
 			if err != nil {
-				return err
+				return replication.Position{}, err
 			}
 			position = purged
 		}
@@ -248,11 +283,57 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 		position = replication.Position{GTIDSet: gtid.GTIDSet()}
 	}
 
+	return position, nil
+}
+
+// another method like "initializedGtidPosition" to get the current log file based position
+func (a *binlogReplicaApplier) loadLogFilePosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
+	position, err := positionStore.Load(flavorName, ctx, a.engine)
+	if err != nil {
+		return replication.Position{}, err
+	}
+
+	if position.IsZero() {
+		replicaSourceInfo, err := loadReplicationConfiguration(ctx, a.engine.Analyzer.Catalog.MySQLDb)
+		if err != nil {
+			return replication.Position{}, err
+		}
+		filePosGtid := replication.FilePosGTID{
+			File: replicaSourceInfo.SourceLogFile,
+			Pos:  uint32(replicaSourceInfo.SourceLogPos),
+		}
+		position = replication.Position{GTIDSet: filePosGtid}
+	}
+
+	return position, nil
+}
+
+// startReplicationEventStream sends a request over |conn|, the connection to the MySQL source server, to begin
+// sending binlog events.
+func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, conn *mysql.Conn, gtidModeEnabled bool, flavorName string) error {
+	serverId, err := loadReplicaServerId()
+	if err != nil {
+		return err
+	}
+
+	var position replication.Position
+	if gtidModeEnabled {
+		position, err = a.loadGtidPosition(ctx, positionStore, flavorName)
+		if err != nil {
+			return err
+		}
+		if err := sql.SystemVariables.AssignValues(map[string]interface{}{"gtid_executed": position.GTIDSet.String()}); err != nil {
+			ctx.GetLogger().Errorf("unable to set @@GLOBAL.gtid_executed: %s", err.Error())
+		}
+	} else {
+		position, err = a.loadLogFilePosition(ctx, positionStore, flavorName)
+		if err != nil {
+			return err
+		}
+	}
+
 	a.currentPosition = position
 	a.pendingPosition = position
-	if err := sql.SystemVariables.AssignValues(map[string]interface{}{"gtid_executed": a.currentPosition.GTIDSet.String()}); err != nil {
-		ctx.GetLogger().Errorf("unable to set @@GLOBAL.gtid_executed: %s", err.Error())
-	}
 
 	// Clear out the format description in case we're reconnecting, so that we don't use the old format description
 	// to interpret any event messages before we receive the new format description from the new stream.

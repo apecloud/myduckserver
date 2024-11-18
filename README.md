@@ -22,6 +22,9 @@ With MyDuck Server, you can:
 MyDuck Server isn't here to replace MySQL — it's here to help MySQL users do more with their data. This open-source project gives you a convenient way to integrate high-speed analytics into your MySQL workflow, all while embracing the flexibility and efficiency of DuckDB.
 
 ## ✨ Key Features
+<h1 style="display: flex; align-items: center;">
+    <img width="5000" alt="duck under dolphin" style="margin-right: 0.2em" src="logo/myduck-arch.png">
+</h1>
 
 - **Blazing Fast OLAP with DuckDB**: MyDuck stores data in DuckDB, an OLAP-optimized database known for lightning-fast analytical queries. With DuckDB, MyDuck executes queries up to 1000x faster than traditional MySQL setups, enabling complex analytics that were impractical with MySQL alone.
 
