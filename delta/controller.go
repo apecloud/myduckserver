@@ -149,7 +149,7 @@ func (c *DeltaController) updateTable(
 	record := appender.Build()
 	defer record.Release()
 
-	// fmt.Println("record:", record)
+	fmt.Println("record:", record)
 
 	// TODO(fan): Switch to zero-copy Arrow ingestion once this PR is merged:
 	//   https://github.com/marcboeker/go-duckdb/pull/283
@@ -284,6 +284,25 @@ func (c *DeltaController) updateTable(
 		return err
 	}
 	stats.Deletions += affected
+
+	// For debugging:
+	//
+	// rows, err := tx.QueryContext(ctx, "SELECT * FROM "+qualifiedTableName)
+	// if err != nil {
+	// 	return err
+	// }
+	// defer rows.Close()
+	// row := make([]any, len(schema))
+	// pointers := make([]any, len(row))
+	// for i := range row {
+	// 	pointers[i] = &row[i]
+	// }
+	// for rows.Next() {
+	// 	if err := rows.Scan(pointers...); err != nil {
+	// 		return err
+	// 	}
+	// 	fmt.Printf("row:%+v\n", row)
+	// }
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
 		log.WithFields(logrus.Fields{

@@ -442,6 +442,22 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.Statement, stmt *duckdb.Stmt) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
 	// return h.e.PrepQueryPlanForExecution(ctx, query, plan, nil)
 
+	tmprows, err1 := adapter.Query(ctx, query)
+	if err1 != nil {
+		return nil, nil, nil, err1
+	}
+	for tmprows.Next() {
+		columns, _ := tmprows.Columns()
+		result := make([]any, len(columns))
+		pointers := make([]any, len(columns))
+		for i := range result {
+			pointers[i] = &result[i]
+		}
+		tmprows.Scan(pointers...)
+		fmt.Printf("row:%+v\n", result)
+	}
+	tmprows.Close()
+
 	var (
 		schema sql.Schema
 		iter   sql.RowIter
@@ -740,6 +756,7 @@ func rowToBytes(ctx *sql.Context, s sql.Schema, row sql.Row) ([][]byte, error) {
 		// should not happen
 		return nil, fmt.Errorf("received empty schema")
 	}
+	fmt.Printf("row: %+v\n", row)
 	o := make([][]byte, len(row))
 	for i, v := range row {
 		if v == nil {

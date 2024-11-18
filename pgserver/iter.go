@@ -2,6 +2,7 @@ package pgserver
 
 import (
 	"database/sql/driver"
+	"fmt"
 	"io"
 	"strings"
 
@@ -31,7 +32,7 @@ func NewDriverRowIter(rows driver.Rows, schema sql.Schema) (*DriverRowIter, erro
 		}
 		sb.WriteString(col.Type.String())
 	}
-	logrus.Debugf("New DriverRowIter: columns=%v, schema=[%s]", columns, sb.String())
+	logrus.Debugf("New DriverRowIter: columns=%v, schema=[%s]\n", columns, sb.String())
 
 	return &DriverRowIter{rows, columns, schema, buf, row}, nil
 }
@@ -44,6 +45,8 @@ func (iter *DriverRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		}
 		return nil, err
 	}
+
+	fmt.Printf("DriverRowIter.Next: buffer=%+v\n", iter.buffer)
 
 	// Prune or fill the values to match the schema
 	width := len(iter.schema) // the desired width

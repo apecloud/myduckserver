@@ -167,6 +167,23 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 			b.Append(v)
 			return len(v), nil
 		}
+
+	case pgtype.UUIDOID:
+		var v pgtype.UUID
+		var codec pgtype.UUIDCodec
+		if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+			return 0, err
+		}
+		switch b := builder.(type) {
+		case *array.FixedSizeBinaryBuilder:
+			b.Append(v.Bytes[:])
+			return 16, nil
+		case *array.StringBuilder:
+			var buf [36]byte
+			codec.PlanEncode(typeMap, oid, pgtype.TextFormatCode, &v).Encode(&v, buf[:0])
+			b.BinaryBuilder.Append(buf[:])
+			return 36, nil
+		}
 	}
 	// TODO(fan): add support for other types
 

@@ -19,7 +19,6 @@ import (
 	stdsql "database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"strings"
 	"sync"
@@ -37,6 +36,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/sirupsen/logrus"
 )
 
 const outputPlugin = "pgoutput"
@@ -53,6 +53,8 @@ type LogicalReplicator struct {
 	messageReceived bool
 	stop            chan struct{}
 	mu              *sync.Mutex
+
+	logger *logrus.Entry
 }
 
 // NewLogicalReplicator creates a new logical replicator instance which connects to the primary and replication
@@ -62,6 +64,10 @@ func NewLogicalReplicator(primaryDns string) (*LogicalReplicator, error) {
 	return &LogicalReplicator{
 		primaryDns: primaryDns,
 		mu:         &sync.Mutex{},
+		logger: logrus.WithFields(logrus.Fields{
+			"component": "replicator",
+			"protocol":  "pg",
+		}),
 	}, nil
 }
 
@@ -96,7 +102,7 @@ func (r *LogicalReplicator) CaughtUp(threshold int) (bool, error) {
 	}
 	r.mu.Unlock()
 
-	log.Printf("Checking replication lag with threshold %d\n", threshold)
+	r.logger.Debugf("Checking replication lag with threshold %d\n", threshold)
 	conn, err := pgx.Connect(context.Background(), r.PrimaryDns())
 	if err != nil {
 		return false, err
@@ -119,10 +125,10 @@ func (r *LogicalReplicator) CaughtUp(threshold int) (bool, error) {
 		row := rows[0]
 		lag, ok := row.(pgtype.Numeric)
 		if ok && lag.Valid {
-			log.Printf("Current replication lag: %v", row)
+			r.logger.Debugf("Current replication lag: %v", row)
 			return int(math.Abs(float64(lag.Int.Int64()))) < threshold, nil
 		} else {
-			log.Printf("Replication lag unknown: %v", row)
+			r.logger.Debugf("Replication lag unknown: %v", row)
 		}
 	}
 
@@ -217,7 +223,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 			_ = primaryConn.Close(context.Background())
 		}
 		// We always shut down here and only here, so we do the cleanup on thread exit in exactly one place
-		r.shutdown(sqlCtx)
+		r.shutdown(sqlCtx, state)
 	}()
 
 	connErrCnt := 0
@@ -227,7 +233,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 				connErrCnt++
 			}
 			if connErrCnt < maxConsecutiveFailures {
-				log.Printf("Error: %v. Retrying", err)
+				r.logger.Debugf("Error: %v. Retrying", err)
 				if primaryConn != nil {
 					_ = primaryConn.Close(context.Background())
 				}
@@ -253,17 +259,20 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 			return handleErrWithRetry(err, false)
 		}
 
-		log.Printf("Sent Standby status message with WALWritePosition = %s, WALApplyPosition = %s\n", state.lastWrittenLSN+1, state.lastReceivedLSN+1)
+		r.logger.Debugf("Sent Standby status message with WALWritePosition = %s, WALApplyPosition = %s\n", state.lastWrittenLSN+1, state.lastReceivedLSN+1)
 		nextStandbyMessageDeadline = time.Now().Add(standbyMessageTimeout)
 		return nil
 	}
 
-	log.Printf("Starting replicator: primaryDsn=%s, slotName=%s", r.PrimaryDns(), slotName)
+	r.logger.Debugf("Starting replicator: primaryDsn=%s, slotName=%s", r.PrimaryDns(), slotName)
 	r.mu.Lock()
 	r.running = true
 	r.messageReceived = false
 	r.stop = make(chan struct{})
 	r.mu.Unlock()
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		err := func() error {
@@ -314,6 +323,9 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 				return nil
 			case msgAndErr = <-receiveMsgChan:
 				cancel()
+			case <-ticker.C:
+				cancel()
+				return r.commitOngoingTxnIfClean(state, delta.TimeTickFlushReason)
 			}
 
 			if msgAndErr.err != nil {
@@ -335,7 +347,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 
 			msg, ok := rawMsg.(*pgproto3.CopyData)
 			if !ok {
-				log.Printf("Received unexpected message: %T\n", rawMsg)
+				r.logger.Debugf("Received unexpected message: %T\n", rawMsg)
 				return nil
 			}
 
@@ -343,10 +355,10 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 			case pglogrepl.PrimaryKeepaliveMessageByteID:
 				pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(msg.Data[1:])
 				if err != nil {
-					log.Fatalln("ParsePrimaryKeepaliveMessage failed:", err)
+					return fmt.Errorf("ParsePrimaryKeepaliveMessage failed: %w", err)
 				}
 
-				log.Println("Primary Keepalive Message =>", "ServerWALEnd:", pkm.ServerWALEnd, "ServerTime:", pkm.ServerTime, "ReplyRequested:", pkm.ReplyRequested)
+				r.logger.Debugln("Primary Keepalive Message =>", "ServerWALEnd:", pkm.ServerWALEnd, "ServerTime:", pkm.ServerTime, "ReplyRequested:", pkm.ReplyRequested)
 				state.lastReceivedLSN = pkm.ServerWALEnd
 
 				if pkm.ReplyRequested {
@@ -367,7 +379,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 
 				return sendStandbyStatusUpdate(state)
 			default:
-				log.Printf("Received unexpected message: %T\n", rawMsg)
+				r.logger.Debugf("Received unexpected message: %T\n", rawMsg)
 			}
 
 			return nil
@@ -377,21 +389,23 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 			if errors.Is(err, errShutdownRequested) {
 				return nil
 			}
-			log.Println("Error during replication:", err)
+			r.logger.Errorln("Error during replication:", err)
 			return err
 		}
 	}
 }
 
-func (r *LogicalReplicator) shutdown(ctx *sql.Context) {
+func (r *LogicalReplicator) shutdown(ctx *sql.Context, state *replicationState) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	log.Print("shutting down replicator")
+	r.logger.Info("shutting down replicator")
+
+	r.commitOngoingTxnIfClean(state, delta.OnCloseFlushReason)
 
 	// Rollback any open transaction
 	_, err := adapter.ExecCatalog(ctx, "ROLLBACK")
 	if err != nil && !strings.Contains(err.Error(), "no transaction is active") {
-		log.Printf("Failed to roll back transaction: %v", err)
+		r.logger.Debugf("Failed to roll back transaction: %v", err)
 	}
 
 	r.running = false
@@ -414,7 +428,7 @@ func (r *LogicalReplicator) Stop() {
 	}
 	r.mu.Unlock()
 
-	log.Print("stopping replication...")
+	r.logger.Info("stopping replication...")
 	r.stop <- struct{}{}
 	// wait for the channel to be closed, acknowledging that the replicator has stopped
 	<-r.stop
@@ -423,7 +437,7 @@ func (r *LogicalReplicator) Stop() {
 // beginReplication starts a new replication connection to the primary server and returns it. The LSN provided is the
 // last one we have confirmed that we flushed to disk.
 func (r *LogicalReplicator) beginReplication(slotName string, lastFlushLsn pglogrepl.LSN) (*pgconn.PgConn, error) {
-	log.Printf("Connecting to primary for replication: %s", r.ReplicationDns())
+	r.logger.Debugf("Connecting to primary for replication: %s", r.ReplicationDns())
 	conn, err := pgconn.Connect(context.Background(), r.ReplicationDns())
 	if err != nil {
 		return nil, err
@@ -442,14 +456,14 @@ func (r *LogicalReplicator) beginReplication(slotName string, lastFlushLsn pglog
 	// not rewind to previous entries that we've already confirmed to the primary that we flushed. We still pass an LSN
 	// for the edge case where we have flushed an entry to disk, but crashed before the primary received confirmation.
 	// In that edge case, we want to "skip" entries (from the primary's perspective) that we have already flushed to disk.
-	log.Printf("Starting logical replication on slot %s at WAL location %s", slotName, lastFlushLsn+1)
+	r.logger.Debugf("Starting logical replication on slot %s at WAL location %s", slotName, lastFlushLsn+1)
 	err = pglogrepl.StartReplication(context.Background(), conn, slotName, lastFlushLsn+1, pglogrepl.StartReplicationOptions{
 		PluginArgs: pluginArguments,
 	})
 	if err != nil {
 		return nil, err
 	}
-	log.Println("Logical replication started on slot", slotName)
+	r.logger.Infoln("Logical replication started on slot", slotName)
 
 	return conn, nil
 }
@@ -536,7 +550,7 @@ func (r *LogicalReplicator) CreateReplicationSlotIfNecessary(slotName string) er
 			}
 		}
 
-		log.Println("Created replication slot:", slotName)
+		r.logger.Infoln("Created replication slot:", slotName)
 	}
 
 	return nil
@@ -558,7 +572,7 @@ func (r *LogicalReplicator) processMessage(
 		return false, err
 	}
 
-	log.Printf("XLogData (%T) => WALStart %s ServerWALEnd %s ServerTime %s", logicalMsg, xld.WALStart, xld.ServerWALEnd, xld.ServerTime)
+	r.logger.Debugf("XLogData (%T) => WALStart %s ServerWALEnd %s ServerTime %s", logicalMsg, xld.WALStart, xld.ServerWALEnd, xld.ServerTime)
 	state.lastReceivedLSN = xld.ServerWALEnd
 
 	switch logicalMsg := logicalMsg.(type) {
@@ -595,7 +609,7 @@ func (r *LogicalReplicator) processMessage(
 		// This is only sent for committed transactions. We won't get any events from rolled back transactions.
 
 		if state.lastWrittenLSN > logicalMsg.FinalLSN {
-			log.Printf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, logicalMsg.FinalLSN)
+			r.logger.Debugf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, logicalMsg.FinalLSN)
 			state.processMessages = false
 			return false, nil
 		}
@@ -618,7 +632,7 @@ func (r *LogicalReplicator) processMessage(
 		}
 
 	case *pglogrepl.CommitMessage:
-		log.Printf("CommitMessage: %v", logicalMsg)
+		r.logger.Debugf("CommitMessage: %v", logicalMsg)
 
 		extend, reason := r.mayExtendBatchTxn(state)
 		if !extend {
@@ -628,13 +642,14 @@ func (r *LogicalReplicator) processMessage(
 			}
 		}
 		state.dirtyStream.Store(false)
+		state.inTxnStmtID.Store(0)
 
 		state.processMessages = false
 
 		return true, nil
 	case *pglogrepl.InsertMessageV2:
 		if !state.processMessages {
-			log.Printf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
+			r.logger.Debugf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
 			return false, nil
 		}
 
@@ -649,7 +664,7 @@ func (r *LogicalReplicator) processMessage(
 
 	case *pglogrepl.UpdateMessageV2:
 		if !state.processMessages {
-			log.Printf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
+			r.logger.Debugf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
 			return false, nil
 		}
 
@@ -678,7 +693,7 @@ func (r *LogicalReplicator) processMessage(
 
 	case *pglogrepl.DeleteMessageV2:
 		if !state.processMessages {
-			log.Printf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
+			r.logger.Debugf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
 			return false, nil
 			// Determine which columns to use based on OldTupleType
 		}
@@ -702,25 +717,25 @@ func (r *LogicalReplicator) processMessage(
 		state.inTxnStmtID.Add(1)
 
 	case *pglogrepl.TruncateMessageV2:
-		log.Printf("truncate for xid %d\n", logicalMsg.Xid)
+		r.logger.Debugf("truncate for xid %d\n", logicalMsg.Xid)
 	case *pglogrepl.TypeMessageV2:
-		log.Printf("typeMessage for xid %d\n", logicalMsg.Xid)
+		r.logger.Debugf("typeMessage for xid %d\n", logicalMsg.Xid)
 	case *pglogrepl.OriginMessage:
-		log.Printf("originMessage for xid %s\n", logicalMsg.Name)
+		r.logger.Debugf("originMessage for xid %s\n", logicalMsg.Name)
 	case *pglogrepl.LogicalDecodingMessageV2:
-		log.Printf("Logical decoding message: %q, %q, %d", logicalMsg.Prefix, logicalMsg.Content, logicalMsg.Xid)
+		r.logger.Debugf("Logical decoding message: %q, %q, %d", logicalMsg.Prefix, logicalMsg.Content, logicalMsg.Xid)
 	case *pglogrepl.StreamStartMessageV2:
 		state.inStream = true
-		log.Printf("Stream start message: xid %d, first segment? %d", logicalMsg.Xid, logicalMsg.FirstSegment)
+		r.logger.Debugf("Stream start message: xid %d, first segment? %d", logicalMsg.Xid, logicalMsg.FirstSegment)
 	case *pglogrepl.StreamStopMessageV2:
 		state.inStream = false
-		log.Printf("Stream stop message")
+		r.logger.Debugf("Stream stop message")
 	case *pglogrepl.StreamCommitMessageV2:
-		log.Printf("Stream commit message: xid %d", logicalMsg.Xid)
+		r.logger.Debugf("Stream commit message: xid %d", logicalMsg.Xid)
 	case *pglogrepl.StreamAbortMessageV2:
-		log.Printf("Stream abort message: xid %d", logicalMsg.Xid)
+		r.logger.Debugf("Stream abort message: xid %d", logicalMsg.Xid)
 	default:
-		log.Printf("Unknown message type in pgoutput stream: %T", logicalMsg)
+		r.logger.Debugf("Unknown message type in pgoutput stream: %T", logicalMsg)
 	}
 
 	return false, nil
@@ -814,6 +829,13 @@ func (r *LogicalReplicator) mayExtendBatchTxn(state *replicationState) (bool, de
 	return extend, reason
 }
 
+func (r *LogicalReplicator) commitOngoingTxnIfClean(state *replicationState, reason delta.FlushReason) error {
+	if state.dirtyTxn.Load() && !state.dirtyStream.Load() {
+		return r.commitOngoingTxn(state, reason)
+	}
+	return nil
+}
+
 // commitOngoingTxn commits the current transaction
 func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReason delta.FlushReason) error {
 	tx := adapter.TryGetTxn(state.replicaCtx)
@@ -830,7 +852,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 		return err
 	}
 
-	log.Printf("Writing LSN %s\n", state.currentTransactionLSN)
+	r.logger.Debugf("Writing LSN %s\n", state.currentTransactionLSN)
 	if err = r.writeWALPosition(state.replicaCtx, state.slotName, state.currentTransactionLSN); err != nil {
 		return err
 	}

@@ -544,18 +544,17 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	require.NoError(t, logrepl.CreatePublication(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
-	// for i, script := range scripts {
-	// 	if i == 4 {
-	// 		RunReplicationScript(t, dsn, script)
-	// 	}
-	// }
-	for _, script := range scripts {
-		RunReplicationScript(t, dsn, script)
+	for i, script := range scripts {
+		if i == 5 {
+			RunReplicationScript(t, dsn, script)
+		}
 	}
+	// for _, script := range scripts {
+	// 	RunReplicationScript(t, dsn, script)
+	// }
 }
 
 const slotName = "myduck_slot"
-const localPostgresPort = 5432
 
 // RunReplicationScript runs the given ReplicationTest.
 func RunReplicationScript(t *testing.T, dsn string, script ReplicationTest) {

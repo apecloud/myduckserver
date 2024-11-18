@@ -155,7 +155,10 @@ func PostgresTypeToArrowType(oid uint32) arrow.DataType {
 	case pgtype.NumericOID: // TODO: Use Decimal128Type for precision <= 38
 		return arrow.BinaryTypes.String
 	case pgtype.UUIDOID:
-		return &arrow.FixedSizeBinaryType{ByteWidth: 16}
+		// TODO(fan): Currently, DuckDB does not support BLOB -> UUID conversion,
+		//   so we use a string type for UUIDs.
+		// return &arrow.FixedSizeBinaryType{ByteWidth: 16}
+		return arrow.BinaryTypes.String
 	default:
 		return arrow.BinaryTypes.Binary // fall back for unknown types
 	}

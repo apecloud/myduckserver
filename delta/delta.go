@@ -27,7 +27,7 @@ type DeltaAppender struct {
 //	https://mariadb.com/kb/en/gtid/
 //	https://dev.mysql.com/doc/refman/9.0/en/replication-gtids-concepts.html
 func newDeltaAppender(schema sql.Schema) (*DeltaAppender, error) {
-	augmented := make(sql.Schema, 0, len(schema)+5)
+	augmented := make(sql.Schema, 0, len(schema)+6)
 	augmented = append(augmented, &sql.Column{
 		Name: "action", // delete = 0, update = 1, insert = 2
 		Type: types.Int8,
@@ -73,7 +73,7 @@ func (a *DeltaAppender) Schema() sql.Schema {
 }
 
 func (a *DeltaAppender) BaseSchema() sql.Schema {
-	return a.schema[5:]
+	return a.schema[6:]
 }
 
 func (a *DeltaAppender) Action() *array.Int8Builder {
