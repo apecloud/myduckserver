@@ -805,13 +805,16 @@ func (h *DuckHandler) resultForDefaultIter(ctx *sql.Context, schema sql.Schema, 
 }
 
 func rowToBytes(ctx *sql.Context, s sql.Schema, fields []pgproto3.FieldDescription, row sql.Row) ([][]byte, error) {
-	fmt.Printf("rowToBytes: %+v\n", row)
-	types := make([]sql.Type, len(s))
-	for i, c := range s {
-		types[i] = c.Type
+	if logger := ctx.GetLogger(); logger.Logger.Level >= logrus.TraceLevel {
+		logger = logger.WithField("func", rowToBytes)
+		logger.Tracef("row: %+v\n", row)
+		types := make([]sql.Type, len(s))
+		for i, c := range s {
+			types[i] = c.Type
+		}
+		logger.Tracef("types: %+v\n", types)
+		logger.Tracef("fields: %+v\n", fields)
 	}
-	fmt.Printf("types: %+v\n", types)
-	fmt.Printf("fields: %+v\n", fields)
 	if len(row) == 0 {
 		return nil, nil
 	}
