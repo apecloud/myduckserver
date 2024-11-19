@@ -95,7 +95,7 @@ WORKDIR /home/admin
 # Copy the compiled Go binary from the builder stage
 COPY --from=builder /myduckserver /usr/local/bin/myduckserver
 COPY --chown=admin:admin --chmod=755 docker/*.sh .
-COPY --chown=admin:admin --chmod=755 devtools/replica-setup ./replica-setup
+COPY --chown=admin:admin --chmod=755 devtools/replica-setup-mysql ./replica-setup-mysql
 
 # ENV LC_CTYPE="en_US.UTF-8"
 # ENV LANG="en_US.UTF-8"

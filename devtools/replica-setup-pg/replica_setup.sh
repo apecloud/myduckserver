@@ -1,26 +1,34 @@
 #!/bin/bash
 
 usage() {
-    echo "Usage: $0 --pg_dump /path/to/pg_dump [--myduck_db <database>] [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>] [--myduck_in_docker <true|false>]"
+    echo "Usage: $0 --pg_host <host> --pg_port <port> --pg_user <user> --pg_password <password> [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>] [--myduck_in_docker <true|false>]"
     exit 1
 }
 
-MYDUCK_DB=${MYDUCK_DB:-mysql}
 MYDUCK_HOST=${MYDUCK_HOST:-127.0.0.1}
-MYDUCK_PORT=${MYDUCK_PORT:-5432}
+MYDUCK_PORT=${MYDUCK_PORT:-3306}
 MYDUCK_USER=${MYDUCK_USER:-root}
 MYDUCK_PASSWORD=${MYDUCK_PASSWORD:-}
 MYDUCK_SERVER_ID=${MYDUCK_SERVER_ID:-2}
 MYDUCK_IN_DOCKER=${MYDUCK_IN_DOCKER:-false}
+GTID_MODE="ON"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --pg_dump)
-            PG_DUMP="$2"
+        --pg_host)
+            PG_HOST="$2"
             shift 2
             ;;
-        --myduck_db)
-            MYDUCK_DB="$2"
+        --pg_port)
+            PG_PORT="$2"
+            shift 2
+            ;;
+        --pg_user)
+            PG_USER="$2"
+            shift 2
+            ;;
+        --pg_password)
+            PG_PASSWORD="$2"
             shift 2
             ;;
         --myduck_host)
@@ -57,43 +65,35 @@ done
 source checker.sh
 
 # Check if all parameters are set
-if [[ -z $MYDUCK_DB ]]; then
-    echo "Error: Missing required parameter --myduck_db."
+if [[ -z "$PG_HOST" || -z "$PG_PORT" || -z "$PG_USER" ]]; then
+    echo "Error: Missing required PG connection variables: PG_HOST, PG_PORT, PG_USER."
     usage
 fi
 
-# Step 1: Check if psql exists, if not, install it
-if ! command -v psql &> /dev/null; then
-    echo "psql not found, attempting to install..."
-    bash install_psql.sh
-    check_command "psql installation"
-else
-    echo "psql is already installed."
-fi
-
-# Step 2: Check if replication has already been started
-#echo "Checking if replication has already been started..."
-#check_if_myduck_has_replica
-#if [[ $? -ne 0 ]]; then
-#    echo "Replication has already been started. Exiting."
-#    exit 1
-#fi
+# Step 3: Check PG configuration
+echo "Checking PG configuration..."
+# TODO(neo.zty): add check for PG configuration
+check_command "PG configuration check"
 
 # Step 3: Prepare MyDuck Server for replication
-#echo "Preparing MyDuck Server for replication..."
-#source prepare.sh
-#check_command "preparing MyDuck Server for replication"
+echo "Preparing MyDuck Server for replication..."
+# TODO(neo.zty): add prepare for MyDuck Server for replication
+check_command "preparing MyDuck Server for replication"
 
-# Step 4: Establish replication
-#echo "Starting replication..."
-#source start_replication.sh
-#check_command "starting replication"
+echo "Checking if source PG server is empty..."
+check_if_source_pg_is_empty
+SOURCE_IS_EMPTY=$?
 
-# Step 5: Load the existing data from pg_dump file
-if [[ -n "$PG_DUMP" ]]; then
-    echo "Loading the snapshot from pg_dump to MyDuck Server..."
+# Step 5: Copy the existing data if the PG instance is not empty
+if [[ $SOURCE_IS_EMPTY -ne 0 ]]; then
+    echo "Copying a snapshot of the PG instance to MyDuck Server..."
     source snapshot.sh
-    check_command "loading a snapshot from pg_dump"
+    check_command "copying a snapshot of the PG instance"
 else
-    echo "No pg_dump file specified. Skipping snapshot."
+    echo "This PG instance is empty. Skipping snapshot."
 fi
+
+# Step 6: Establish replication
+echo "Starting replication..."
+source start_replication.sh
+check_command "starting replication"

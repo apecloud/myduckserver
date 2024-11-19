@@ -2,7 +2,7 @@
 
 export DATA_PATH="${HOME}/data"
 export LOG_PATH="${HOME}/log"
-export REPLICA_SETUP_PATH="${HOME}/replica-setup"
+export REPLICA_SETUP_PATH="${HOME}/replica-setup-mysql"
 export PID_FILE="${LOG_PATH}/myduck.pid"
 
 # Function to run replica setup
