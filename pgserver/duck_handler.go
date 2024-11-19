@@ -290,7 +290,7 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 		}
 		defer s.Close()
 		stmt := s.(*duckdb.Stmt)
-		tag = getStatementTag(stmt)
+		tag = GetStatementTag(stmt)
 		return nil
 	})
 	return tag, err

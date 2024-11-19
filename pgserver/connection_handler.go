@@ -27,7 +27,6 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
@@ -53,6 +52,8 @@ type ConnectionHandler struct {
 	// copyFromStdinState is set when this connection is in the COPY FROM STDIN mode, meaning it is waiting on
 	// COPY DATA messages from the client to import data into tables.
 	copyFromStdinState *copyFromStdinState
+
+	logger *logrus.Entry
 }
 
 // Set this env var to disable panic handling in the connection, which is useful when debugging a panic
@@ -98,6 +99,10 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 		duckHandler:        duckHandler,
 		backend:            pgproto3.NewBackend(conn, conn),
 		pgTypeMap:          pgtype.NewMap(),
+		logger: logrus.WithFields(logrus.Fields{
+			"connectionID": connID,
+			"protocol":     "pg",
+		}),
 	}
 }
 
@@ -461,7 +466,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	}
 
 	if !query.PgParsable {
-		query.StatementTag = getStatementTag(stmt)
+		query.StatementTag = GetStatementTag(stmt)
 	}
 
 	// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
@@ -819,15 +824,18 @@ func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []
 
 // query runs the given query and sends a CommandComplete message to the client
 func (h *ConnectionHandler) query(query ConvertedQuery) error {
+	h.logger.Tracef("running query %v", query)
+
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
 
 	// Get the accurate statement tag for the query
-	if !query.PgParsable && query.StatementTag != "SELECT" {
+	if !query.PgParsable && !IsWellKnownStatementTag(query.StatementTag) {
 		tag, err := h.duckHandler.getStatementTag(h.mysqlConn, query.String)
 		if err != nil {
 			return err
 		}
+		h.logger.Tracef("getting statement tag for query %v via preparing in DuckDB: %s", query, tag)
 		query.StatementTag = tag
 	}
 
@@ -1046,16 +1054,7 @@ func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
 	if parsable {
 		stmtTag = stmts[0].AST.StatementTag()
 	} else {
-		// Guess the statement tag by looking for the first space in the query
-		// This is unreliable, but it's the best we can do for now.
-		// /* ... */ comments can break this.
-		query := sql.RemoveSpaceAndDelimiter(query, ';')
-		for i, c := range query {
-			if unicode.IsSpace(c) {
-				stmtTag = strings.ToUpper(query[:i])
-				break
-			}
-		}
+		stmtTag = GuessStatementTag(query)
 	}
 
 	return ConvertedQuery{
