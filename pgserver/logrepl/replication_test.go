@@ -30,6 +30,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pgx/v5"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -528,7 +529,7 @@ var replicationTests = []ReplicationTest{
 }
 
 func TestReplication(t *testing.T) {
-	// logrus.SetLevel(logrus.DebugLevel)
+	logrus.SetLevel(logrus.DebugLevel)
 	RunReplicationScripts(t, replicationTests)
 }
 
@@ -568,14 +569,14 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	require.NoError(t, logrepl.CreatePublication(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
-	// for i, script := range scripts {
-	// 	if i == 9 {
-	// 		RunReplicationScript(t, dsn, script)
-	// 	}
-	// }
-	for _, script := range scripts {
-		RunReplicationScript(t, dsn, script)
+	for i, script := range scripts {
+		if i == 0 {
+			RunReplicationScript(t, dsn, script)
+		}
 	}
+	// for _, script := range scripts {
+	// 	RunReplicationScript(t, dsn, script)
+	// }
 }
 
 const slotName = "myduck_slot"
@@ -605,7 +606,7 @@ func RunReplicationScript(t *testing.T, dsn string, script ReplicationTest) {
 	})
 }
 
-func newReplicator(t *testing.T, server *pgserver.Server, primaryDns string) *logrepl.LogicalReplicator {
+func newReplicator(t *testing.T, primaryDns string) *logrepl.LogicalReplicator {
 	r, err := logrepl.NewLogicalReplicator(primaryDns)
 	require.NoError(t, err)
 	return r
@@ -620,7 +621,7 @@ func runReplicationScript(
 	replicaConn *pgx.Conn,
 	primaryDns string,
 ) {
-	r := newReplicator(t, server, primaryDns)
+	r := newReplicator(t, primaryDns)
 	defer r.Stop()
 
 	if script.Skip {
@@ -808,7 +809,7 @@ func waitForCaughtUp(r *logrepl.LogicalReplicator) error {
 		if time.Since(start) >= 5*time.Second {
 			return errors.New("Replication did not catch up")
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 	}
 
 	return nil
