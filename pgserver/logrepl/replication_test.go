@@ -501,6 +501,30 @@ var replicationTests = []ReplicationTest{
 			},
 		},
 	},
+	{
+		Name: "Create table automatically",
+		SetUpScript: []string{
+			dropReplicationSlot,
+			createReplicationSlot,
+			startReplication,
+			"/* replica */ drop table if exists public.test",
+			"drop table if exists public.test",
+			"CREATE TABLE public.test (id INT primary key, name varchar(10))",
+			"INSERT INTO public.test VALUES (1, 'one')",
+			"INSERT INTO public.test VALUES (2, 'two'), (3, 'six')",
+			"UPDATE public.test SET name = 'three' WHERE id = 3",
+			"DELETE FROM public.test WHERE id = 1 or id = 2",
+			waitForCatchup,
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query: "/* replica */ SELECT * FROM public.test order by id",
+				Expected: []sql.Row{
+					{int32(3), "three"},
+				},
+			},
+		},
+	},
 }
 
 func TestReplication(t *testing.T) {

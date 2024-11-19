@@ -587,9 +587,11 @@ func (r *LogicalReplicator) processMessage(
 	switch logicalMsg := logicalMsg.(type) {
 	case *pglogrepl.RelationMessageV2:
 		// When a Relation message is received, commit any buffered ongoing batch transactions.
-		err := r.commitOngoingTxn(state, delta.DDLStmtFlushReason)
-		if err != nil {
-			return false, err
+		if state.dirtyTxn.Load() {
+			err := r.commitOngoingTxn(state, delta.DDLStmtFlushReason)
+			if err != nil {
+				return false, err
+			}
 		}
 
 		state.relations[logicalMsg.RelationID] = logicalMsg
@@ -612,6 +614,13 @@ func (r *LogicalReplicator) processMessage(
 		}
 		state.schemas[logicalMsg.RelationID] = schema
 		state.keys[logicalMsg.RelationID] = keys
+
+		// Create the table if it doesn't exist
+		if ddl, err := generateCreateTableStmt(logicalMsg); err != nil {
+			return false, err
+		} else if _, err := adapter.ExecCatalog(state.replicaCtx, ddl); err != nil {
+			return false, err
+		}
 
 	case *pglogrepl.BeginMessage:
 		// Indicates the beginning of a group of changes in a transaction.

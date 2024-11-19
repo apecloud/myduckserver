@@ -85,6 +85,41 @@ var DuckdbTypeToPostgresOID = map[duckdb.Type]uint32{
 	duckdb.TYPE_VARINT:       pgtype.NumericOID,
 }
 
+var PostgresOIDToDuckDBTypeName = map[uint32]string{
+	pgtype.BoolOID:        "BOOLEAN",
+	pgtype.ByteaOID:       "BLOB",
+	pgtype.Int2OID:        "SMALLINT",
+	pgtype.Int4OID:        "INTEGER",
+	pgtype.Int8OID:        "BIGINT",
+	pgtype.Float4OID:      "FLOAT",
+	pgtype.Float8OID:      "DOUBLE",
+	pgtype.NumericOID:     "DECIMAL",
+	pgtype.TextOID:        "VARCHAR",
+	pgtype.VarcharOID:     "VARCHAR",
+	pgtype.BPCharOID:      "VARCHAR",
+	pgtype.DateOID:        "DATE",
+	pgtype.TimeOID:        "TIME",
+	pgtype.TimetzOID:      "TIMETZ",
+	pgtype.TimestampOID:   "TIMESTAMP",
+	pgtype.TimestamptzOID: "TIMESTAMPTZ",
+	pgtype.IntervalOID:    "INTERVAL",
+	pgtype.UUIDOID:        "UUID",
+	pgtype.BitOID:         "BIT",
+	pgtype.VarbitOID:      "BIT",
+	pgtype.JSONOID:        "JSON",
+	pgtype.JSONBOID:       "JSON",
+	pgtype.OIDOID:         "UBIGINT",
+	pgtype.RecordOID:      "STRUCT",
+	pgtype.BoolArrayOID:   "BOOLEAN[]",
+	pgtype.Int2ArrayOID:   "SMALLINT[]",
+	pgtype.Int4ArrayOID:   "INTEGER[]",
+	pgtype.Int8ArrayOID:   "BIGINT[]",
+	pgtype.Float4ArrayOID: "FLOAT[]",
+	pgtype.Float8ArrayOID: "DOUBLE[]",
+	pgtype.TextArrayOID:   "VARCHAR[]",
+	// ...additional mappings as needed...
+}
+
 var PostgresTypeSizes = map[uint32]int32{
 	pgtype.BoolOID:        1,  // bool
 	pgtype.ByteaOID:       -1, // bytea
