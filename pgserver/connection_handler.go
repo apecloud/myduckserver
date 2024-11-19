@@ -390,6 +390,16 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 // expected as part of this query, in which case the server will send a READY FOR QUERY message back to the client so
 // that it can send its next query.
 func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages bool, err error) {
+	// usql use ";" to test if the connection is alive. If we don't handle it, this will return an error. So we need to
+	// manually handle it here.
+	if message.String == ";" {
+		err := h.send(makeCommandComplete("", 0))
+		if err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+
 	handled, err := h.handledPSQLCommands(message.String)
 	if handled || err != nil {
 		return true, err
