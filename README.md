@@ -115,10 +115,7 @@ docker run \
   --privileged \
   --workdir=/home/admin \
   --env=SETUP_MODE=REPLICA \
-  --env=MYSQL_HOST=<mysql_host> \
-  --env=MYSQL_PORT=<mysql_port> \
-  --env=MYSQL_USER=<mysql_user> \
-  --env=MYSQL_PASSWORD=<mysql_password> \
+  --env=SOURCE_DSN="<postgresql|mysql>://<user>:<password>@<host>:<port>/<dbname>"
   --detach=true \
   apecloud/myduckserver:latest
 ```

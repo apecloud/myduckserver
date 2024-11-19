@@ -16,19 +16,19 @@ GTID_MODE="ON"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --mysql_host)
-            MYSQL_HOST="$2"
+            SOURCE_HOST="$2"
             shift 2
             ;;
         --mysql_port)
-            MYSQL_PORT="$2"
+            SOURCE_PORT="$2"
             shift 2
             ;;
         --mysql_user)
-            MYSQL_USER="$2"
+            SOURCE_USER="$2"
             shift 2
             ;;
         --mysql_password)
-            MYSQL_PASSWORD="$2"
+            SOURCE_PASSWORD="$2"
             shift 2
             ;;
         --myduck_host)
@@ -65,8 +65,8 @@ done
 source checker.sh
 
 # Check if all parameters are set
-if [[ -z "$MYSQL_HOST" || -z "$MYSQL_PORT" || -z "$MYSQL_USER" ]]; then
-    echo "Error: Missing required MySQL connection variables: MYSQL_HOST, MYSQL_PORT, MYSQL_USER."
+if [[ -z "$SOURCE_PORT" || -z "$SOURCE_PORT" || -z "$SOURCE_PORT" ]]; then
+    echo "Error: Missing required MySQL connection variables: SOURCE_HOST, SOURCE_PORT, SOURCE_USER."
     usage
 fi
 

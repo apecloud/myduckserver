@@ -2,17 +2,93 @@
 
 export DATA_PATH="${HOME}/data"
 export LOG_PATH="${HOME}/log"
-export REPLICA_SETUP_PATH="${HOME}/replica-setup-mysql"
+export MYSQL_REPLICA_SETUP_PATH="${HOME}/replica-setup-mysql"
+export POSTGRES_REPLICA_SETUP_PATH="${HOME}/replica-setup-postgres"
 export PID_FILE="${LOG_PATH}/myduck.pid"
+
+parse_dsn() {
+    local dsn="$SOURCE_DSN"
+
+    # Initialize variables
+    SOURCE_TYPE=""
+    SOURCE_USER=""
+    SOURCE_PASSWORD=""
+    SOURCE_HOST=""
+    SOURCE_PORT=""
+    SOURCE_DATABASE=""
+
+    # Detect type
+    if [[ "$dsn" =~ ^postgresql:// ]]; then
+        SOURCE_TYPE="POSTGRES"
+        # Strip the prefix
+        dsn="${dsn#postgresql://}"
+    elif [[ "$dsn" =~ ^mysql:// ]]; then
+        SOURCE_TYPE="MYSQL"
+        # Strip the prefix
+        dsn="${dsn#mysql://}"
+    else
+        echo "Error: Unsupported DSN format"
+        return 1
+    fi
+
+    # Extract credentials and host/port/dbname
+    if [[ "$dsn" =~ ^([^:@]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?(/(.+))?$ ]]; then
+        SOURCE_USER="${BASH_REMATCH[1]}"
+        SOURCE_PASSWORD="${BASH_REMATCH[3]}"
+        SOURCE_HOST="${BASH_REMATCH[4]}"
+        SOURCE_PORT="${BASH_REMATCH[6]}"
+        SOURCE_DATABASE="${BASH_REMATCH[8]}"
+    else
+        echo "Error: Failed to parse DSN"
+        return 1
+    fi
+
+    # Handle empty SOURCE_DATABASE
+    if [[ -z "$SOURCE_DATABASE" ]]; then
+        if [[ "$SOURCE_TYPE" == "POSTGRES" ]]; then
+            SOURCE_DATABASE="postgres"
+        elif [[ "$SOURCE_TYPE" == "MYSQL" ]]; then
+            SOURCE_DATABASE="mysql"
+        fi
+    fi
+
+    # Debugging (Optional: Comment out in production)
+    echo "SOURCE_TYPE=$SOURCE_TYPE"
+    echo "SOURCE_USER=$SOURCE_USER"
+    echo "SOURCE_PASSWORD=$SOURCE_PASSWORD"
+    echo "SOURCE_HOST=$SOURCE_HOST"
+    echo "SOURCE_PORT=$SOURCE_PORT"
+    echo "SOURCE_DATABASE=$SOURCE_DATABASE"
+}
+
+# Example Usage
+parse_dsn "postgresql://user:password@localhost:5432"
+parse_dsn "mysql://user:password@127.0.0.1:3306"
+parse_dsn "mysql://user:password@127.0.0.1"
+parse_dsn "postgresql://user:password@localhost"
 
 # Function to run replica setup
 run_replica_setup() {
-    if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_PORT" ] || [ -z "$MYSQL_USER" ]; then
-        echo "Error: Missing required MySQL connection variables for replica setup."
-        exit 1
-    fi
-    echo "Creating replica with MySQL server at $MYSQL_HOST:$MYSQL_PORT..."
-    cd "$REPLICA_SETUP_PATH" || { echo "Error: Could not change directory to ${REPLICA_SETUP_PATH}"; exit 1; }
+    case "$SOURCE_TYPE" in
+        MYSQL)
+            echo "Creating replica with MySQL server at $SOURCE_DSN..."
+            cd "$MYSQL_REPLICA_SETUP_PATH" || {
+                echo "Error: Could not change directory to ${MYSQL_REPLICA_SETUP_PATH}";
+                exit 1;
+            }
+            ;;
+        POSTGRES)
+            echo "Creating replica with Postgres server at $SOURCE_DSN..."
+            cd "$POSTGRES_REPLICA_SETUP_PATH" || {
+                echo "Error: Could not change directory to ${POSTGRES_REPLICA_SETUP_PATH}";
+                exit 1;
+            }
+            ;;
+        *)
+            echo "Error: Invalid SOURCE_TYPE value. Valid options are: MYSQL, POSTGRES."
+            exit 1
+            ;;
+    esac
 
     # Run replica_setup.sh and check for errors
     if bash replica_setup.sh; then
@@ -81,8 +157,9 @@ check_process_alive() {
 
 # Handle the setup_mode
 setup() {
-    mkdir -p "${DATA_PATH}"
-    mkdir -p "${LOG_PATH}"
+    # Ensure required directories exist
+    mkdir -p "${DATA_PATH}" "${LOG_PATH}"
+
     case "$SETUP_MODE" in
         "" | "SERVER")
             echo "Starting MyDuck Server in SERVER mode..."
@@ -91,9 +168,23 @@ setup() {
 
         "REPLICA")
             echo "Starting MyDuck Server and running replica setup in REPLICA mode..."
-            run_server_in_background
-            wait_for_my_duck_server_ready
-            run_replica_setup
+
+            case "$SOURCE_TYPE" in
+                MYSQL)
+                    run_server_in_background
+                    wait_for_my_duck_server_ready
+                    run_replica_setup
+                    ;;
+                POSTGRES)
+                    run_replica_setup
+                    run_server_in_background
+                    wait_for_my_duck_server_ready
+                    ;;
+                *)
+                    echo "Error: Invalid SOURCE_TYPE value. Valid options are: MYSQL, POSTGRES."
+                    exit 1
+                    ;;
+            esac
             ;;
 
         *)

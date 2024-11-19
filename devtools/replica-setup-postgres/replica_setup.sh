@@ -1,7 +1,7 @@
 #!/bin/bash
 
 usage() {
-    echo "Usage: $0 --pg_host <host> --pg_port <port> --pg_user <user> --pg_password <password> [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>] [--myduck_in_docker <true|false>]"
+    echo "Usage: $0 --postgres_host <host> --postgres_port <port> --postgres_user <user> --postgres_password <password> [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>] [--myduck_in_docker <true|false>]"
     exit 1
 }
 
@@ -15,20 +15,20 @@ GTID_MODE="ON"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --pg_host)
-            PG_HOST="$2"
+        --postgres_host)
+            SOURCE_HOST="$2"
             shift 2
             ;;
-        --pg_port)
-            PG_PORT="$2"
+        --postgres_port)
+            SOURCE_PORT="$2"
             shift 2
             ;;
-        --pg_user)
-            PG_USER="$2"
+        --postgres_user)
+            SOURCE_USER="$2"
             shift 2
             ;;
-        --pg_password)
-            PG_PASSWORD="$2"
+        --postgres_password)
+            SOURCE_PASSWORD="$2"
             shift 2
             ;;
         --myduck_host)
@@ -65,32 +65,28 @@ done
 source checker.sh
 
 # Check if all parameters are set
-if [[ -z "$PG_HOST" || -z "$PG_PORT" || -z "$PG_USER" ]]; then
-    echo "Error: Missing required PG connection variables: PG_HOST, PG_PORT, PG_USER."
+if [[ -z "$SOURCE_HOST" || -z "$SOURCE_PORT" || -z "$SOURCE_USER" ]]; then
+    echo "Error: Missing required Postgres connection variables: SOURCE_HOST, SOURCE_PORT, SOURCE_USER."
     usage
 fi
 
-# Step 3: Check PG configuration
-echo "Checking PG configuration..."
-# TODO(neo.zty): add check for PG configuration
-check_command "PG configuration check"
+# Step 3: Check Postgres configuration
+echo "Checking Postgres configuration..."
+# TODO(neo.zty): add check for Postgres configuration
+check_command "Postgres configuration check"
 
 # Step 3: Prepare MyDuck Server for replication
 echo "Preparing MyDuck Server for replication..."
 # TODO(neo.zty): add prepare for MyDuck Server for replication
 check_command "preparing MyDuck Server for replication"
 
-echo "Checking if source PG server is empty..."
-check_if_source_pg_is_empty
-SOURCE_IS_EMPTY=$?
-
-# Step 5: Copy the existing data if the PG instance is not empty
+# Step 5: Copy the existing data if the Postgres instance is not empty
 if [[ $SOURCE_IS_EMPTY -ne 0 ]]; then
-    echo "Copying a snapshot of the PG instance to MyDuck Server..."
+    echo "Copying a snapshot of the Postgres instance to MyDuck Server..."
     source snapshot.sh
-    check_command "copying a snapshot of the PG instance"
+    check_command "copying a snapshot of the Postgres instance"
 else
-    echo "This PG instance is empty. Skipping snapshot."
+    echo "This Postgres instance is empty. Skipping snapshot."
 fi
 
 # Step 6: Establish replication
