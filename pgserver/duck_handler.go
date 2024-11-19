@@ -69,6 +69,13 @@ type Row struct {
 
 const rowsBatch = 128
 
+type QueryMode bool
+
+const (
+	SimpleQueryMode   QueryMode = false
+	ExtendedQueryMode QueryMode = true
+)
+
 // DuckHandler is a handler uses DuckDB and the SQLe engine directly
 // running Postgres specific queries.
 type DuckHandler struct {
@@ -101,7 +108,7 @@ func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared Prepa
 
 // ComExecuteBound implements the Handler interface.
 func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, portal PortalData, callback func(*Result) error) error {
-	err := h.doQuery(ctx, conn, portal.Query.String, portal.Query.AST, portal.Stmt, portal.Vars, h.executeBoundPlan, callback)
+	err := h.doQuery(ctx, conn, portal.Query.String, portal.Query.AST, portal.Stmt, portal.Vars, ExtendedQueryMode, h.executeBoundPlan, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -193,7 +200,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		if err != nil {
 			break
 		}
-		fields = schemaToFieldDescriptions(sqlCtx, schema)
+		fields = schemaToFieldDescriptions(sqlCtx, schema, ExtendedQueryMode)
 	default:
 		// For other statements, we just return the "affected rows" field.
 		fields = []pgproto3.FieldDescription{
@@ -214,7 +221,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 
 // ComQuery implements the Handler interface.
 func (h *DuckHandler) ComQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, callback func(*Result) error) error {
-	err := h.doQuery(ctx, c, query, parsed, nil, nil, h.executeQuery, callback)
+	err := h.doQuery(ctx, c, query, parsed, nil, nil, SimpleQueryMode, h.executeQuery, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -283,7 +290,7 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 		}
 		defer s.Close()
 		stmt := s.(*duckdb.Stmt)
-		tag = getStatementTag(stmt)
+		tag = GetStatementTag(stmt)
 		return nil
 	})
 	return tag, err
@@ -291,7 +298,7 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 
 var queryLoggingRegex = regexp.MustCompile(`[\r\n\t ]+`)
 
-func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, queryExec QueryExecutor, callback func(*Result) error) error {
+func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, mode QueryMode, queryExec QueryExecutor, callback func(*Result) error) error {
 	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
 	if err != nil {
 		return err
@@ -351,10 +358,10 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 	} else if schema == nil {
 		r, err = resultForEmptyIter(sqlCtx, rowIter)
 	} else if analyzer.FlagIsSet(qFlags, sql.QFlagMax1Row) {
-		resultFields := schemaToFieldDescriptions(sqlCtx, schema)
+		resultFields := schemaToFieldDescriptions(sqlCtx, schema, mode)
 		r, err = resultForMax1RowIter(sqlCtx, schema, rowIter, resultFields)
 	} else {
-		resultFields := schemaToFieldDescriptions(sqlCtx, schema)
+		resultFields := schemaToFieldDescriptions(sqlCtx, schema, mode)
 		r, processedAtLeastOneBatch, err = h.resultForDefaultIter(sqlCtx, schema, rowIter, callback, resultFields)
 	}
 	if err != nil {
@@ -418,7 +425,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		}))
 
 	default:
-		rows, err = adapter.Query(ctx, query)
+		rows, err = adapter.QueryCatalog(ctx, query)
 		if err != nil {
 			break
 		}
@@ -562,7 +569,7 @@ func (h *DuckHandler) maybeReleaseAllLocks(c *mysql.Conn) {
 	}
 }
 
-func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema) []pgproto3.FieldDescription {
+func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema, mode QueryMode) []pgproto3.FieldDescription {
 	fields := make([]pgproto3.FieldDescription, len(s))
 	for i, c := range s {
 		var oid uint32
@@ -571,7 +578,13 @@ func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema) []pgproto3.FieldD
 		var err error
 		if pgType, ok := c.Type.(pgtypes.PostgresType); ok {
 			oid = pgType.PG.OID
-			format = pgType.PG.Codec.PreferredFormat()
+			if mode == SimpleQueryMode {
+				// https://www.postgresql.org/docs/current/protocol-flow.html
+				// > In simple Query mode, the format of retrieved values is always text, except ...
+				format = pgtype.TextFormatCode
+			} else {
+				format = pgType.PG.Codec.PreferredFormat()
+			}
 			size = int16(pgType.Size)
 		} else {
 			oid, err = VitessTypeToObjectID(c.Type.Type())
@@ -651,7 +664,7 @@ func resultForMax1RowIter(ctx *sql.Context, schema sql.Schema, iter sql.RowIter,
 		return nil, err
 	}
 
-	outputRow, err := rowToBytes(ctx, schema, row)
+	outputRow, err := rowToBytes(ctx, schema, resultFields, row)
 	if err != nil {
 		return nil, err
 	}
@@ -752,12 +765,12 @@ func (h *DuckHandler) resultForDefaultIter(ctx *sql.Context, schema sql.Schema, 
 					continue
 				}
 
-				outputRow, err := rowToBytes(ctx, schema, row)
+				outputRow, err := rowToBytes(ctx, schema, resultFields, row)
 				if err != nil {
 					return err
 				}
 
-				ctx.GetLogger().Tracef("spooling result row %s", outputRow)
+				ctx.GetLogger().Tracef("spooling result row %+v", outputRow)
 				r.Rows = append(r.Rows, Row{outputRow})
 				r.RowsAffected++
 			case <-timer.C:
@@ -791,7 +804,17 @@ func (h *DuckHandler) resultForDefaultIter(ctx *sql.Context, schema sql.Schema, 
 	return
 }
 
-func rowToBytes(ctx *sql.Context, s sql.Schema, row sql.Row) ([][]byte, error) {
+func rowToBytes(ctx *sql.Context, s sql.Schema, fields []pgproto3.FieldDescription, row sql.Row) ([][]byte, error) {
+	if logger := ctx.GetLogger(); logger.Logger.Level >= logrus.TraceLevel {
+		logger = logger.WithField("func", rowToBytes)
+		logger.Tracef("row: %+v\n", row)
+		types := make([]sql.Type, len(s))
+		for i, c := range s {
+			types[i] = c.Type
+		}
+		logger.Tracef("types: %+v\n", types)
+		logger.Tracef("fields: %+v\n", fields)
+	}
 	if len(row) == 0 {
 		return nil, nil
 	}
@@ -807,8 +830,8 @@ func rowToBytes(ctx *sql.Context, s sql.Schema, row sql.Row) ([][]byte, error) {
 		}
 
 		// TODO(fan): Preallocate the buffer
-		if pgType, ok := s[i].Type.(pgtypes.PostgresType); ok {
-			bytes, err := pgType.Encode(v, []byte{})
+		if _, ok := s[i].Type.(pgtypes.PostgresType); ok {
+			bytes, err := pgtypes.DefaultTypeMap.Encode(fields[i].DataTypeOID, fields[i].Format, v, nil)
 			if err != nil {
 				return nil, err
 			}

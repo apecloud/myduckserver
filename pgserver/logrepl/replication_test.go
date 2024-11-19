@@ -545,7 +545,7 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	time.Sleep(500 * time.Millisecond)
 
 	// for i, script := range scripts {
-	// 	if i == 0 {
+	// 	if i == 9 {
 	// 		RunReplicationScript(t, dsn, script)
 	// 	}
 	// }

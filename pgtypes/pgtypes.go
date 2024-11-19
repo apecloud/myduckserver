@@ -88,22 +88,23 @@ var DuckdbTypeToPostgresOID = map[duckdb.Type]uint32{
 var PostgresTypeSizes = map[uint32]int32{
 	pgtype.BoolOID:        1,  // bool
 	pgtype.ByteaOID:       -1, // bytea
-	pgtype.NameOID:        -1, // name
+	pgtype.NameOID:        64, // name
 	pgtype.Int8OID:        8,  // int8
 	pgtype.Int2OID:        2,  // int2
 	pgtype.Int4OID:        4,  // int4
 	pgtype.TextOID:        -1, // text
 	pgtype.OIDOID:         4,  // oid
-	pgtype.TIDOID:         8,  // tid
-	pgtype.XIDOID:         -1, // xid
-	pgtype.CIDOID:         -1, // cid
+	pgtype.TIDOID:         6,  // tid
+	pgtype.XIDOID:         4,  // xid
+	pgtype.CIDOID:         4,  // cid
 	pgtype.JSONOID:        -1, // json
 	pgtype.XMLOID:         -1, // xml
 	pgtype.PointOID:       8,  // point
 	pgtype.Float4OID:      4,  // float4
 	pgtype.Float8OID:      8,  // float8
-	pgtype.UnknownOID:     -1, // unknown
-	pgtype.MacaddrOID:     -1, // macaddr
+	pgtype.UnknownOID:     -2, // unknown
+	pgtype.MacaddrOID:     6,  // macaddr
+	pgtype.Macaddr8OID:    8,  // macaddr8
 	pgtype.InetOID:        -1, // inet
 	pgtype.BoolArrayOID:   -1, // bool[]
 	pgtype.ByteaArrayOID:  -1, // bytea[]
@@ -115,8 +116,10 @@ var PostgresTypeSizes = map[uint32]int32{
 	pgtype.VarcharOID:     -1, // varchar
 	pgtype.DateOID:        4,  // date
 	pgtype.TimeOID:        8,  // time
+	pgtype.TimetzOID:      12, // timetz
 	pgtype.TimestampOID:   8,  // timestamp
 	pgtype.TimestamptzOID: 8,  // timestamptz
+	pgtype.IntervalOID:    16, // interval
 	pgtype.NumericOID:     -1, // numeric
 	pgtype.UUIDOID:        16, // uuid
 }
@@ -182,11 +185,16 @@ func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 		}
 		nullable, _ := t.Nullable()
 
+		size := int32(-1)
+		if s, ok := PostgresTypeSizes[pgType.OID]; ok {
+			size = s
+		}
+
 		schema[i] = &sql.Column{
 			Name: t.Name(),
 			Type: PostgresType{
 				PG:   pgType,
-				Size: PostgresTypeSizes[pgType.OID],
+				Size: size,
 			},
 			Nullable: nullable,
 		}
@@ -216,11 +224,16 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 			nullable, _ = colNullable.ColumnTypeNullable(i)
 		}
 
+		size := int32(-1)
+		if s, ok := PostgresTypeSizes[pgType.OID]; ok {
+			size = s
+		}
+
 		schema[i] = &sql.Column{
 			Name: colName,
 			Type: PostgresType{
 				PG:   pgType,
-				Size: PostgresTypeSizes[pgType.OID],
+				Size: size,
 			},
 			Nullable: nullable,
 		}
@@ -239,9 +252,13 @@ func NewPostgresType(oid uint32) (PostgresType, error) {
 	if !ok {
 		return PostgresType{}, fmt.Errorf("unsupported type OID %d", oid)
 	}
+	size := int32(-1)
+	if s, ok := PostgresTypeSizes[oid]; ok {
+		size = s
+	}
 	return PostgresType{
 		PG:   t,
-		Size: PostgresTypeSizes[oid],
+		Size: size,
 	}, nil
 }
 

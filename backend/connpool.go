@@ -17,6 +17,7 @@ import (
 	"context"
 	stdsql "database/sql"
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/apecloud/myduckserver/catalog"
@@ -156,7 +157,7 @@ func (p *ConnectionPool) Close() error {
 	})
 	var lastErr error
 	for _, tx := range txns {
-		if err := tx.Rollback(); err != nil {
+		if err := tx.Rollback(); err != nil && !strings.Contains(err.Error(), "no transaction is active") {
 			logrus.WithError(err).Warn("Failed to rollback transaction")
 			lastErr = err
 		}

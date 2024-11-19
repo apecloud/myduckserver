@@ -207,6 +207,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 	state := &replicationState{
 		replicaCtx:     sqlCtx,
 		slotName:       slotName,
+		lastCommitLSN:  lastWrittenLsn,
 		lastWrittenLSN: lastWrittenLsn,
 		typeMap:        pgtype.NewMap(),
 		relations:      map[uint32]*pglogrepl.RelationMessageV2{},
@@ -263,7 +264,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 			return handleErrWithRetry(err, false)
 		}
 
-		r.logger.Debugf("Sent Standby status message with WALWritePosition = %s, WALApplyPosition = %s\n", state.lastWrittenLSN+1, state.lastReceivedLSN+1)
+		r.logger.Debugf("Sent Standby status message with WALWritePosition = %s, WALApplyPosition = %s\n", state.lastReceivedLSN+1, state.lastWrittenLSN+1)
 		nextStandbyMessageDeadline = time.Now().Add(standbyMessageTimeout)
 		return nil
 	}

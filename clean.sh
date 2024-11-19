@@ -1,3 +1,3 @@
 #!/bin/bash
 
-rm -f mysql.db mysql.db.wal mysql.bin .replica/*
+rm -f *.db *.db.wal *.bin .replica/*
