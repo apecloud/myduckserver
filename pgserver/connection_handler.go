@@ -252,17 +252,39 @@ func (h *ConnectionHandler) handleStartup() (bool, error) {
 
 // sendClientStartupMessages sends introductory messages to the client and returns any error
 func (h *ConnectionHandler) sendClientStartupMessages() error {
-	if err := h.send(&pgproto3.ParameterStatus{
-		Name:  "server_version",
-		Value: "15.0",
-	}); err != nil {
-		return err
+	parameters := []struct {
+		Name  string
+		Value string
+	}{
+		// These are mock parameter status messages that are sent to the client
+		// to simulate a real PostgreSQL connection. Some clients may expect these
+		// to be sent, like pgpool, which will not work without them. Because
+		// if the paramter status message list sent by this server differs from
+		// the list of the other real PostgreSQL servers, pgpool can not establish
+		// a connection to this server.
+		{"in_hot_standby", "off"},
+		{"integer_datetimes", "on"},
+		{"TimeZone", "Etc/UTC"},
+		{"IntervalStyle", "postgres"},
+		{"is_superuser", "on"},
+		{"application_name", "psql"},
+		{"default_transaction_read_only", "off"},
+		{"scram_iterations", "4096"},
+		{"DateStyle", "ISO, MDY"},
+		{"standard_conforming_strings", "postgres"},
+		{"session_authorization", "postgres"},
+		{"client_encoding", "UTF8"},
+		{"server_version", "15.0"},
+		{"server_encoding", "UTF8"},
 	}
-	if err := h.send(&pgproto3.ParameterStatus{
-		Name:  "client_encoding",
-		Value: "UTF8",
-	}); err != nil {
-		return err
+
+	for _, param := range parameters {
+		if err := h.send(&pgproto3.ParameterStatus{
+			Name:  param.Name,
+			Value: param.Value,
+		}); err != nil {
+			return err
+		}
 	}
 	return h.send(&pgproto3.BackendKeyData{
 		ProcessID: processID,
