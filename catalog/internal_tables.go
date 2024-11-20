@@ -77,19 +77,7 @@ func (it *InternalTable) SelectStmt() string {
 func (it *InternalTable) SelectAllStmt() string {
 	var b strings.Builder
 	b.Grow(128)
-	b.WriteString("SELECT ")
-	b.WriteString(it.KeyColumns[0])
-	for _, c := range it.KeyColumns[1:] {
-		b.WriteString(", ")
-		b.WriteString(c)
-	}
-	b.WriteString(", ")
-	b.WriteString(it.ValueColumns[0])
-	for _, c := range it.ValueColumns[1:] {
-		b.WriteString(", ")
-		b.WriteString(c)
-	}
-	b.WriteString(" FROM ")
+	b.WriteString("SELECT * FROM ")
 	b.WriteString(it.Schema)
 	b.WriteByte('.')
 	b.WriteString(it.Name)

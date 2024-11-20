@@ -459,7 +459,7 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	}
 
 	// Certain queries are handled directly by the handler instead of being passed to the engine
-	handled, err = h.handledPGcatalogQueries(message.String)
+	handled, err = h.handlePgCatalogQueries(message.String)
 	if handled || err != nil {
 		return true, err
 	}
@@ -542,7 +542,7 @@ func (h *ConnectionHandler) queryPGSetting(name string) (string, error) {
 
 // TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
 // Remove this once we add the views for 'pg_catalog'.
-func (h *ConnectionHandler) handledPGcatalogQueries(statement string) (bool, error) {
+func (h *ConnectionHandler) handlePgCatalogQueries(statement string) (bool, error) {
 	lower := strings.ToLower(statement)
 	if pgIsInRecoveryRegex.MatchString(lower) {
 		isInRecovery, err := h.isInRecovery()
