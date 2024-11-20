@@ -1044,7 +1044,11 @@ func (h *ConnectionHandler) sendError(err error) {
 }
 
 // convertQuery takes the given Postgres query, and converts it as an ast.ConvertedQuery that will work with the handler.
-func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
+func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifier) (ConvertedQuery, error) {
+	for _, modifier := range modifiers {
+		query = modifier(query)
+	}
+
 	parsable := true
 	stmts, err := parser.Parse(query)
 	if err != nil {
