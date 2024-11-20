@@ -2,11 +2,23 @@
 
 export DATA_PATH="${HOME}/data"
 export LOG_PATH="${HOME}/log"
-export REPLICA_SETUP_PATH="${HOME}/replica-setup"
+export REPLICA_SETUP_PATH="${HOME}/replica-setup-mysql"
 export PID_FILE="${LOG_PATH}/myduck.pid"
 
+if [ -n "$PGSQL_PRIMARY_DSN" ]; then
+    export PGSQL_PRIMARY_DSN_ARG="-pg-primary-dsn $PGSQL_PRIMARY_DSN"
+fi
+
+if [ -n "$PGSQL_SLOT_NAME" ]; then
+    export PGSQL_SLOT_NAME_ARG="-pg-slot-name $PGSQL_SLOT_NAME"
+fi
+
+if [ -n "$LOG_LEVEL" ]; then
+    export LOG_LEVEL="-loglevel $LOG_LEVEL"
+fi
+
 # Function to run replica setup
-run_replica_setup() {
+run_mysql_replica_setup() {
     if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_PORT" ] || [ -z "$MYSQL_USER" ]; then
         echo "Error: Missing required MySQL connection variables for replica setup."
         exit 1
@@ -25,13 +37,13 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver >> "${LOG_PATH}"/server.log 2>&1 &
+      nohup myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
 run_server_in_foreground() {
     cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-    myduckserver
+    myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL
 }
 
 wait_for_my_duck_server_ready() {
@@ -89,11 +101,18 @@ setup() {
             run_server_in_foreground
             ;;
 
-        "REPLICA")
-            echo "Starting MyDuck Server and running replica setup in REPLICA mode..."
+        "MYSQL_REPLICA")
+            echo "Starting MyDuck Server and running replica setup in MySQL REPLICA mode..."
             run_server_in_background
             wait_for_my_duck_server_ready
-            run_replica_setup
+            run_mysql_replica_setup
+            ;;
+
+        "PGSQL_REPLICA")
+            echo "Starting MyDuck Server and running replica setup in PGSQL REPLICA mode..."
+            run_server_in_background
+            wait_for_my_duck_server_ready
+            # TODO: run pgsql replica setup
             ;;
 
         *)
@@ -105,7 +124,7 @@ setup() {
 
 setup
 
-while [[ "$SETUP_MODE" == "REPLICA" ]]; do
+while [[ "$SETUP_MODE" == "MYSQL_REPLICA" ]]; do
     # Check if the processes have started
     check_process_alive "$PID_FILE" "MyDuck Server"
     MY_DUCK_SERVER_STATUS=$?

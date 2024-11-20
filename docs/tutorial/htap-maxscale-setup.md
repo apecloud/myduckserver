@@ -13,7 +13,7 @@ This a tutorial to build an HTAP service based on MySQL, MyDuck Server, and Mari
 Go the root path of this project and run the following commands:
 
 ```sh
-cd devtools/htap-setup/maxscale
+cd devtools/htap-setup-mysql/maxscale
 docker-compose up
 ```
 

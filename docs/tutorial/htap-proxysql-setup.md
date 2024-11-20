@@ -14,7 +14,7 @@ This is a tutorial to build an HTAP service based on MySQL, MyDuck Server, and P
 Go the root path of this project and run the following commands:
 
 ```
-cd devtools/htap-setup/proxysql
+cd devtools/htap-setup-mysql/proxysql
 docker-compose up
 ```
 
