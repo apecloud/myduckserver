@@ -840,9 +840,12 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	}
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
-	err := h.duckHandler.ComQuery(context.Background(), h.mysqlConn, query.String, query.AST, callback)
-	if err != nil {
-		return err
+	if query.SubscriptionConfig != nil {
+		return executeCreateSubscriptionSQL(h, query.SubscriptionConfig)
+	} else {
+		if err := h.duckHandler.ComQuery(context.Background(), h.mysqlConn, query.String, query.AST, callback); err != nil {
+			return fmt.Errorf("fallback query execution failed: %w", err)
+		}
 	}
 
 	return h.send(makeCommandComplete(query.StatementTag, rowsAffected))
@@ -1036,6 +1039,17 @@ func (h *ConnectionHandler) sendError(err error) {
 // convertQuery takes the given Postgres query, and converts it as an ast.ConvertedQuery that will work with the handler.
 func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
 	parsable := true
+
+	// Check if the query is a subscription query, and if so, parse it as a subscription query.
+	subscriptionConfig, err := parseSubscriptionSQL(query)
+	if subscriptionConfig != nil && err == nil {
+		return ConvertedQuery{
+			String:             query,
+			PgParsable:         true,
+			SubscriptionConfig: subscriptionConfig,
+		}, nil
+	}
+
 	stmts, err := parser.Parse(query)
 	if err != nil {
 		// DuckDB syntax is not fully compatible with PostgreSQL, so we need to handle some queries differently.
