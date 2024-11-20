@@ -19,14 +19,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	stdsql "database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strings"
+
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/catalog"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
@@ -58,6 +64,18 @@ type ConnectionHandler struct {
 
 // Set this env var to disable panic handling in the connection, which is useful when debugging a panic
 const disablePanicHandlingEnvVar = "DOLT_PGSQL_PANIC"
+
+// precompile a regex to match "select pg_catalog.pg_is_in_recovery();"
+var pgIsInRecoveryRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.pg_is_in_recovery\(\s*\)\s*;?\s*$`)
+
+// precompile a regex to match "select pg_catalog.pg_current_wal_lsn();" or "select pg_catalog.pg_last_wal_replay_lsn();"
+var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current_wal_lsn|pg_last_wal_replay_lsn)\(\s*\)\s*;?\s*$`)
+
+// precompile a regex to match "select pg_catalog.current_setting('xxx');".
+var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog.current_setting\(\s*['"]([^'"]+)['"]\s*\)\s*;?\s*$`)
+
+// precompile a regex to match any "from pg_catalog.xxx" in the query.
+var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.`)
 
 // HandlePanics determines whether panics should be handled in the connection handler. See |disablePanicHandlingEnvVar|.
 var HandlePanics = true
@@ -260,6 +278,12 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 	if !dbSpecified {
 		db = h.mysqlConn.User
 	}
+	if db == "postgres" {
+		if provider, ok := h.duckHandler.e.Analyzer.Catalog.DbProvider.(*catalog.DatabaseProvider); ok {
+			db = provider.CatalogName()
+		}
+	}
+
 	useStmt := fmt.Sprintf("USE %s;", db)
 	setStmt := fmt.Sprintf("SET database TO %s;", db)
 	parsed, err := parser.ParseOne(setStmt)
@@ -412,6 +436,12 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 		return true, err
 	}
 
+	// Certain queries are handled directly by the handler instead of being passed to the engine
+	handled, err = h.handledPGcatalogQueries(message.String)
+	if handled || err != nil {
+		return true, err
+	}
+
 	query, err := h.convertQuery(message.String)
 	if err != nil {
 		return true, err
@@ -428,6 +458,107 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	}
 
 	return true, h.query(query)
+}
+
+// isInRecovery will get the count of
+func (h *ConnectionHandler) isInRecovery() (string, error) {
+	// Grab a sql.Context.
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return "f", err
+	}
+	var count int
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.CountAllStmt()).Scan(&count); err != nil {
+		return "f", err
+	}
+
+	if count == 0 {
+		return "f", nil
+	} else {
+		return "t", nil
+	}
+}
+
+// readOneWALPositionStr reads one of the recorded WAL position from the WAL position table
+func (h *ConnectionHandler) readOneWALPositionStr() (string, error) {
+	// Grab a sql.Context.
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return "0/0", err
+	}
+	var slotName string
+	var lsn string
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.SelectAllStmt()).Scan(&slotName, &lsn); err != nil {
+		if errors.Is(err, stdsql.ErrNoRows) {
+			// if no lsn is stored, return 0
+			return "0/0", nil
+		}
+		return "0/0", err
+	}
+
+	return lsn, nil
+}
+
+// queryPGSetting will query the pg_catalog.pg_setting table to see if the setting is set
+func (h *ConnectionHandler) queryPGSetting(name string) (string, error) {
+	// Grab a sql.Context.
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return "", err
+	}
+	var setting string
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PGCurrentSetting.SelectStmt(), name).Scan(&setting); err != nil {
+		if errors.Is(err, stdsql.ErrNoRows) {
+			// if no this setting is found, return ""
+			return "", nil
+		}
+		return "", err
+	}
+
+	return setting, nil
+}
+
+// TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
+// Remove this once we add the views for 'pg_catalog'.
+func (h *ConnectionHandler) handledPGcatalogQueries(statement string) (bool, error) {
+	lower := strings.ToLower(statement)
+	if pgIsInRecoveryRegex.MatchString(lower) {
+		isInRecovery, err := h.isInRecovery()
+		if err != nil {
+			return false, err
+		}
+		return true, h.query(ConvertedQuery{
+			String:       fmt.Sprintf(`SELECT '%s' AS "pg_is_in_recovery";`, isInRecovery),
+			StatementTag: "SELECT",
+		})
+	}
+	if matches := pgWALLSNRegex.FindStringSubmatch(lower); len(matches) == 2 {
+		lsnStr, err := h.readOneWALPositionStr()
+		if err != nil {
+			return false, err
+		}
+		return true, h.query(ConvertedQuery{
+			String:       fmt.Sprintf(`SELECT '%s' AS "%s";`, lsnStr, matches[1]),
+			StatementTag: "SELECT",
+		})
+	}
+	if matches := currentSettingRegex.FindStringSubmatch(lower); len(matches) == 2 {
+		setting, err := h.queryPGSetting(matches[1])
+		if err != nil {
+			return false, err
+		}
+		return true, h.query(ConvertedQuery{
+			String:       fmt.Sprintf(`SELECT '%s' AS "current_setting";`, setting),
+			StatementTag: "SELECT",
+		})
+	}
+	if pgCatalogRegex.MatchString(lower) {
+		return true, h.query(ConvertedQuery{
+			String:       pgCatalogRegex.ReplaceAllString(lower, " FROM __sys__."),
+			StatementTag: "SELECT",
+		})
+	}
+	return false, nil
 }
 
 // handleQueryOutsideEngine handles any queries that should be handled by the handler directly, rather than being
