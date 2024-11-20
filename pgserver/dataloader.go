@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
@@ -64,18 +62,10 @@ type CsvDataLoader struct {
 var _ DataLoader = (*CsvDataLoader)(nil)
 
 func NewCsvDataLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
-	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
-	dataDir := duckBuilder.Provider().DataDir()
-
 	// Create the FIFO pipe
-	pipeDir := filepath.Join(dataDir, "pipes", "pg-copy-from")
-	if err := os.MkdirAll(pipeDir, 0755); err != nil {
-		return nil, err
-	}
-	pipeName := strconv.Itoa(int(ctx.ID())) + ".pipe"
-	pipePath := filepath.Join(pipeDir, pipeName)
-	ctx.GetLogger().Traceln("Creating FIFO pipe for COPY FROM operation:", pipePath)
-	if err := syscall.Mkfifo(pipePath, 0600); err != nil {
+	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
+	pipePath, err := duckBuilder.CreatePipe(ctx, "pg-copy-from")
+	if err != nil {
 		return nil, err
 	}
 

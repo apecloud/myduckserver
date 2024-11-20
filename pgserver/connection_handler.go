@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1144,6 +1145,11 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 	}
 	ctx.SetLogger(ctx.GetLogger().WithField("query", query.String))
 
+	// Create cancelable context
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ctx = ctx.WithContext(childCtx)
+
 	table, err := ValidateCopyTo(copyTo, ctx)
 	if err != nil {
 		return err
@@ -1153,35 +1159,45 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 	if copyTo.Statement != nil {
 		stmt = copyTo.Statement.String()
 	}
-	dataWriter, err := NewDataWriter(ctx, h.duckHandler, table, copyTo.Table, copyTo.Columns, stmt, &copyTo.Options)
+	writer, err := NewDataWriter(
+		ctx, h.duckHandler,
+		copyTo.Table.Schema(), table, copyTo.Columns,
+		stmt,
+		&copyTo.Options,
+	)
 	if err != nil {
 		return err
 	}
-	defer dataWriter.Cancel()
+	defer writer.Close()
 
 	// Send CopyOutResponse to the client
+	ctx.GetLogger().Debug("sending CopyOutResponse to the client")
 	copyOutResponse := &pgproto3.CopyOutResponse{
-		OverallFormat: 0, // 0 for text format
+		OverallFormat:     0,           // 0 for text format
+		ColumnFormatCodes: []uint16{0}, // 0 for text format
 	}
 	if err := h.send(copyOutResponse); err != nil {
 		return err
 	}
 
-	// Create a channel to receive the result from the goroutine
-	type copyResult struct {
-		rowCount int
-		err      error
-	}
-	done := make(chan copyResult, 1)
-
-	pipe, ch, err := dataWriter.Start()
+	pipePath, ch, err := writer.Start()
 	if err != nil {
 		return err
 	}
+
 	var sendErr atomic.Value
 	go func() {
+		// Open the pipe for reading.
+		ctx.GetLogger().Tracef("Opening FIFO pipe for reading: %s", pipePath)
+		pipe, err := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
+		if err != nil {
+			sendErr.Store(fmt.Errorf("failed to open pipe for reading: %w", err))
+			cancel()
+			return
+		}
 		defer pipe.Close()
-		defer close(done)
+
+		ctx.GetLogger().Debug("Copying data from the pipe to the client")
 		buf := make([]byte, 1<<20) // 1MB buffer
 		for {
 			n, err := pipe.Read(buf)
@@ -1189,8 +1205,10 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 				copyData := &pgproto3.CopyData{
 					Data: buf[:n],
 				}
+				ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", n)
 				if err := h.send(copyData); err != nil {
 					sendErr.Store(err)
+					cancel()
 					return
 				}
 			}
@@ -1199,27 +1217,35 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 					break
 				}
 				sendErr.Store(err)
+				cancel()
 				return
 			}
 		}
 	}()
 
-	result := <-ch
-	if result.Err != nil {
-		return fmt.Errorf("failed to copy data: %w", result.Err)
-	}
+	select {
+	case <-ctx.Done(): // Context is canceled
+		err, _ := sendErr.Load().(error)
+		return errors.Join(ctx.Err(), err)
+	case result := <-ch:
+		if result.Err != nil {
+			return fmt.Errorf("failed to copy data: %w", result.Err)
+		}
 
-	if err := sendErr.Load(); err != nil {
-		return err.(error)
-	}
+		if err, ok := sendErr.Load().(error); ok {
+			return err
+		}
 
-	// After data is sent and CopyToPipe is finished without errors, send CopyDone
-	if err := h.send(&pgproto3.CopyDone{}); err != nil {
-		return err
-	}
+		// After data is sent and the producer side is finished without errors, send CopyDone
+		ctx.GetLogger().Debug("sending CopyDone to the client")
+		if err := h.send(&pgproto3.CopyDone{}); err != nil {
+			return err
+		}
 
-	// Send CommandComplete with the number of rows copied
-	return h.send(&pgproto3.CommandComplete{
-		CommandTag: []byte(fmt.Sprintf("COPY %d", result.RowCount)),
-	})
+		// Send CommandComplete with the number of rows copied
+		ctx.GetLogger().Debugf("sending CommandComplete to the client")
+		return h.send(&pgproto3.CommandComplete{
+			CommandTag: []byte(fmt.Sprintf("COPY %d", result.RowCount)),
+		})
+	}
 }

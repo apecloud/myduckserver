@@ -1,22 +1,18 @@
 package pgserver
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strconv"
-	"syscall"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
 type DataWriter struct {
 	ctx      *sql.Context
-	cancel   context.CancelFunc
 	duckSQL  string
 	options  *tree.CopyOptions
 	pipePath string
@@ -25,7 +21,7 @@ type DataWriter struct {
 func NewDataWriter(
 	ctx *sql.Context,
 	handler *DuckHandler,
-	table sql.Table, tableName tree.TableName, columns tree.NameList,
+	schema string, table sql.Table, columns tree.NameList,
 	query string,
 	options *tree.CopyOptions,
 ) (*DataWriter, error) {
@@ -43,7 +39,10 @@ func NewDataWriter(
 
 	var source string
 	if table != nil {
-		source = tableName.FQString()
+		if schema != "" {
+			source += catalog.QuoteIdentifierANSI(schema) + "."
+		}
+		source += catalog.QuoteIdentifierANSI(table.Name())
 		if columns != nil {
 			source += "(" + columns.String() + ")"
 		}
@@ -51,33 +50,19 @@ func NewDataWriter(
 		source = "(" + query + ")"
 	}
 
-	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
-	dataDir := duckBuilder.Provider().DataDir()
-
 	// Create the FIFO pipe
-	pipeDir := filepath.Join(dataDir, "pipes", "pg-copy-to")
-	if err := os.MkdirAll(pipeDir, 0755); err != nil {
+	db := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
+	pipePath, err := db.CreatePipe(ctx, "pg-copy-to")
+	if err != nil {
 		return nil, err
 	}
-	pipeName := strconv.Itoa(int(ctx.ID())) + ".pipe"
-	pipePath := filepath.Join(pipeDir, pipeName)
-	ctx.GetLogger().Traceln("Creating FIFO pipe for COPY TO operation:", pipePath)
-	if err := syscall.Mkfifo(pipePath, 0600); err != nil {
-		return nil, err
-	}
-
-	// Create cancelable context
-	childCtx, cancel := context.WithCancel(ctx)
-	ctx.Context = childCtx
 
 	// Initialize DataWriter
 	writer := &DataWriter{
 		ctx:      ctx,
-		cancel:   cancel,
 		duckSQL:  fmt.Sprintf("COPY %s TO '%s' (%s)", source, pipePath, format),
 		options:  options,
 		pipePath: pipePath,
-		rowCount: make(chan int64, 1),
 	}
 
 	return writer, nil
@@ -88,31 +73,28 @@ type copyToResult struct {
 	Err      error
 }
 
-func (dw *DataWriter) Start() (*os.File, chan int64, error) {
-	// Open the pipe for reading.
-	pipe, err := os.OpenFile(dw.pipePath, os.O_RDONLY, os.ModeNamedPipe)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open pipe for reading: %w", err)
-	}
-
+func (dw *DataWriter) Start() (string, chan copyToResult, error) {
+	// Execute the COPY TO statement in a separate goroutine.
+	ch := make(chan copyToResult, 1)
 	go func() {
-		defer dw.cancel()
-		defer pipe.Close()
 		defer os.Remove(dw.pipePath)
-		defer close(dw.rowCount)
+		defer close(ch)
+
+		dw.ctx.GetLogger().Tracef("Executing COPY TO statement: %s", dw.duckSQL)
+
 		// This operation will block until the reader opens the pipe for reading.
 		result, err := adapter.ExecCatalog(dw.ctx, dw.duckSQL)
 		if err != nil {
-			dw.err.Store(&err)
+			ch <- copyToResult{Err: err}
 			return
 		}
 		affected, _ := result.RowsAffected()
-		dw.rowCount <- affected
+		ch <- copyToResult{RowCount: affected}
 	}()
 
-	return pipe, dw.rowCount, nil
+	return dw.pipePath, ch, nil
 }
 
-func (dw *DataWriter) Cancel() {
-	dw.cancel()
+func (dw *DataWriter) Close() {
+	os.Remove(dw.pipePath)
 }
