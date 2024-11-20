@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/lib/pq/oid"
@@ -66,6 +67,8 @@ type copyFromStdinState struct {
 	// node is used to look at what parameters were specified, such as which table to load data into, file format,
 	// delimiters, etc.
 	copyFromStdinNode *tree.CopyFrom
+	// targetTable stores the targetTable that the data is being loaded into.
+	targetTable sql.InsertableTable
 	// dataLoader is the implementation of DataLoader that is used to load each individual CopyData chunk into the
 	// target table.
 	dataLoader DataLoader

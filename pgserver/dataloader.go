@@ -63,28 +63,28 @@ type CsvDataLoader struct {
 
 var _ DataLoader = (*CsvDataLoader)(nil)
 
-func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
+func NewCsvDataLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
 	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
 	dataDir := duckBuilder.Provider().DataDir()
 
 	// Create the FIFO pipe
-	pipeDir := filepath.Join(dataDir, "pipes", "load-data")
+	pipeDir := filepath.Join(dataDir, "pipes", "pg-copy-from")
 	if err := os.MkdirAll(pipeDir, 0755); err != nil {
 		return nil, err
 	}
-	pipeName := strconv.Itoa(int(sqlCtx.ID())) + ".pipe"
+	pipeName := strconv.Itoa(int(ctx.ID())) + ".pipe"
 	pipePath := filepath.Join(pipeDir, pipeName)
-	sqlCtx.GetLogger().Traceln("Creating FIFO pipe for COPY operation:", pipePath)
+	ctx.GetLogger().Traceln("Creating FIFO pipe for COPY FROM operation:", pipePath)
 	if err := syscall.Mkfifo(pipePath, 0600); err != nil {
 		return nil, err
 	}
 
 	// Create cancelable context
-	childCtx, cancel := context.WithCancel(sqlCtx)
-	sqlCtx.Context = childCtx
+	childCtx, cancel := context.WithCancel(ctx)
+	ctx.Context = childCtx
 
 	loader := &CsvDataLoader{
-		ctx:      sqlCtx,
+		ctx:      ctx,
 		cancel:   cancel,
 		schema:   schema,
 		table:    table,
@@ -103,7 +103,7 @@ func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema string, 
 
 	// Open the pipe for writing.
 	// This operation will block until the reader opens the pipe for reading.
-	pipe, err := os.OpenFile(pipePath, os.O_WRONLY, 0600)
+	pipe, err := os.OpenFile(pipePath, os.O_WRONLY, os.ModeNamedPipe)
 	if err != nil {
 		return nil, err
 	}
