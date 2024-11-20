@@ -16,8 +16,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    ports:
-      - "12340:5432"
 
   pgsql-setup:
     image: postgres:latest
@@ -51,8 +49,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    ports:
-      - "12341:5432"
   
   pgpool:
     image: bitnami/pgpool:4.5.4
@@ -60,7 +56,9 @@ services:
     ports:
       - "54321:9999"
     environment:
-      - PGPOOL_BACKEND_NODES=0:host.docker.internal:12340,1:host.docker.internal:12341
+      # The PGPOOL_BACKEND_NODES is the list of PostgreSQL servers that pgpool will connect to.
+      # NodeID:Hostname:Port:Weight
+      - PGPOOL_BACKEND_NODES=0:pgsql:5432:0,1:myduck:5432:1
       - PGPOOL_ENABLE_LOAD_BALANCING=yes
       - PGPOOL_SR_CHECK_USER=postgres
       - PGPOOL_SR_CHECK_PASSWORD=postgres

@@ -135,7 +135,7 @@ MyDuck Server supports setting up replicas from common cloud-based MySQL & Postg
 
 ### HTAP Setup
 
-With MyDuck's powerful analytics capabilities, you can create an hybrid transactional/analytical processing system where high-frequency data writes are directed to a standard MySQL or Postgres instance, while analytical queries are handled by a MyDuck Server instance. Follow our HTAP setup instructions based on [ProxySQL](docs/tutorial/htap-proxysql-setup.md) or [MariaDB MaxScale](docs/tutorial/htap-maxscale-setup.md) to easily set up an HTAP demonstration.
+With MyDuck's powerful analytics capabilities, you can create an hybrid transactional/analytical processing system where high-frequency data writes are directed to a standard MySQL or Postgres instance, while analytical queries are handled by a MyDuck Server instance. Follow our HTAP setup instructions based on [ProxySQL](docs/tutorial/mysql-htap-proxysql-setup.md) or [MariaDB MaxScale](docs/tutorial/mysql-htap-maxscale-setup.md) to easily set up an HTAP demonstration.
 
 ### Query & Load Parquet Files
 
