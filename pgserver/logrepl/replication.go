@@ -22,7 +22,6 @@ import (
 	"math"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/apecloud/myduckserver/adapter"
@@ -184,12 +183,13 @@ type replicationState struct {
 	keys      map[uint32][]uint16 // relationID -> slice of key column indices
 	deltas    *delta.DeltaController
 
-	deltaBufSize    atomic.Uint64 // size of the delta buffer in bytes
-	lastCommitTime  time.Time     // time of last commit
-	ongoingBatchTxn atomic.Bool   // true if we're in a batched transaction
-	dirtyTxn        atomic.Bool   // true if we have uncommitted changes
-	dirtyStream     atomic.Bool   // true if the binlog stream does not end with a commit
-	inTxnStmtID     atomic.Uint64 // statement ID within transaction
+	deltaBufSize    uint64    // size of the delta buffer in bytes
+	lastCommitTime  time.Time // time of last commit
+	commitCount     uint64    // number of commits
+	ongoingBatchTxn bool      // true if we're in a batched transaction
+	dirtyTxn        bool      // true if we have uncommitted changes
+	dirtyStream     bool      // true if the binlog stream does not end with a commit
+	inTxnStmtID     uint64    // statement ID within transaction
 }
 
 func (state *replicationState) reset(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) {
@@ -354,13 +354,22 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 			case <-ticker.C:
 				cancel()
 				if time.Since(state.lastCommitTime) > r.flushInterval {
-					return r.commitOngoingTxnIfClean(state, delta.TimeTickFlushReason)
+					err := r.commitOngoingTxnIfClean(state, delta.TimeTickFlushReason)
+					if err != nil {
+						return err
+					}
+					return sendStandbyStatusUpdate(state)
 				}
 				return nil
 			}
 
 			if msgAndErr.err != nil {
 				if pgconn.Timeout(msgAndErr.err) {
+					return nil
+				} else if msgAndErr.err.Error() == "conn busy" || primaryConn.IsBusy() {
+					// This is a transient error, so we'll just wait a bit and try again
+					r.logger.Warnf("Received 'conn busy' error, waiting and retrying")
+					time.Sleep(100 * time.Millisecond)
 					return nil
 				} else {
 					return handleErrWithRetry(msgAndErr.err, true)
@@ -401,13 +410,14 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 					return err
 				}
 
-				_, err = r.processMessage(xld, state)
+				commit, err := r.processMessage(xld, state)
 				if err != nil {
 					// TODO: do we need more than one handler, one for each connection?
 					return handleErrWithRetry(err, true)
 				}
-
-				// return sendStandbyStatusUpdate(state)
+				if commit {
+					return sendStandbyStatusUpdate(state)
+				}
 				return nil
 			default:
 				r.logger.Debugf("Received unexpected message: %T\n", rawMsg)
@@ -685,13 +695,14 @@ func (r *LogicalReplicator) processMessage(
 			if err != nil {
 				return false, err
 			}
-			state.ongoingBatchTxn.Store(true)
+			state.ongoingBatchTxn = true
 		}
 
 	case *pglogrepl.CommitMessage:
 		r.logger.Debugf("CommitMessage: %v", logicalMsg)
 
 		state.lastCommitLSN = logicalMsg.CommitLSN
+		state.commitCount += 1
 
 		extend, reason := r.mayExtendBatchTxn(state)
 		if !extend {
@@ -700,8 +711,8 @@ func (r *LogicalReplicator) processMessage(
 				return false, err
 			}
 		}
-		state.dirtyStream.Store(false)
-		state.inTxnStmtID.Store(0)
+		state.dirtyStream = false
+		state.inTxnStmtID = 0
 
 		state.processMessages = false
 
@@ -717,9 +728,9 @@ func (r *LogicalReplicator) processMessage(
 			return false, err
 		}
 
-		state.dirtyTxn.Store(true)
-		state.dirtyStream.Store(true)
-		state.inTxnStmtID.Add(1)
+		state.dirtyTxn = true
+		state.dirtyStream = true
+		state.inTxnStmtID += 1
 
 	case *pglogrepl.UpdateMessageV2:
 		if !state.processMessages {
@@ -746,9 +757,9 @@ func (r *LogicalReplicator) processMessage(
 			return false, err
 		}
 
-		state.dirtyTxn.Store(true)
-		state.dirtyStream.Store(true)
-		state.inTxnStmtID.Add(1)
+		state.dirtyTxn = true
+		state.dirtyStream = true
+		state.inTxnStmtID += 1
 
 	case *pglogrepl.DeleteMessageV2:
 		if !state.processMessages {
@@ -771,9 +782,9 @@ func (r *LogicalReplicator) processMessage(
 			return false, err
 		}
 
-		state.dirtyTxn.Store(true)
-		state.dirtyStream.Store(true)
-		state.inTxnStmtID.Add(1)
+		state.dirtyTxn = true
+		state.dirtyStream = true
+		state.inTxnStmtID += 1
 
 	case *pglogrepl.TruncateMessageV2:
 		r.logger.Debugf("truncate for xid %d\n", logicalMsg.Xid)
@@ -876,12 +887,15 @@ func encodeColumnData(mi *pgtype.Map, data interface{}, dataType uint32) (string
 // mayExtendBatchTxn checks if we should extend the current batch transaction
 func (r *LogicalReplicator) mayExtendBatchTxn(state *replicationState) (bool, delta.FlushReason) {
 	extend, reason := false, delta.UnknownFlushReason
-	if state.ongoingBatchTxn.Load() {
+	if state.ongoingBatchTxn {
 		extend = true
 		switch {
+		case state.commitCount == 1:
+			// This is the first commit message we've received, we commit it immediately to avoid the keepalive flood
+			extend, reason = false, delta.InitFlushReason
 		case time.Since(state.lastCommitTime) >= 200*time.Millisecond:
 			extend, reason = false, delta.TimeTickFlushReason
-		case state.deltaBufSize.Load() >= (128 << 20): // 128MB
+		case state.deltaBufSize >= (128 << 20): // 128MB
 			extend, reason = false, delta.MemoryLimitFlushReason
 		}
 	}
@@ -889,7 +903,7 @@ func (r *LogicalReplicator) mayExtendBatchTxn(state *replicationState) (bool, de
 }
 
 func (r *LogicalReplicator) commitOngoingTxnIfClean(state *replicationState, reason delta.FlushReason) error {
-	if state.dirtyTxn.Load() && !state.dirtyStream.Load() {
+	if state.dirtyTxn && !state.dirtyStream {
 		return r.commitOngoingTxn(state, reason)
 	}
 	return nil
@@ -922,10 +936,10 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	}
 
 	// Reset transaction state
-	state.ongoingBatchTxn.Store(false)
-	state.dirtyTxn.Store(false)
-	state.dirtyStream.Store(false)
-	state.inTxnStmtID.Store(0)
+	state.ongoingBatchTxn = false
+	state.dirtyTxn = false
+	state.dirtyStream = false
+	state.inTxnStmtID = 0
 	state.lastCommitTime = time.Now()
 
 	state.lastWrittenLSN = state.lastCommitLSN
@@ -935,7 +949,9 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 
 // flushDeltaBuffer flushes the accumulated changes in the delta buffer
 func (r *LogicalReplicator) flushDeltaBuffer(state *replicationState, tx *stdsql.Tx, reason delta.FlushReason) error {
-	defer state.deltaBufSize.Store(0)
+	defer func() {
+		state.deltaBufSize = 0
+	}()
 
 	_, err := state.deltas.Flush(state.replicaCtx, tx, reason)
 	return err
@@ -964,7 +980,7 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 	txnServers.Append([]byte(""))
 	txnGroups.AppendNull()
 	txnSeqNumbers.Append(uint64(state.currentTransactionLSN))
-	txnStmtOrdinals.Append(state.inTxnStmtID.Load())
+	txnStmtOrdinals.Append(state.inTxnStmtID)
 
 	size := 0
 	idx := 0
@@ -996,7 +1012,7 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 		}
 	}
 
-	state.deltaBufSize.Add(uint64(size))
+	state.deltaBufSize += uint64(size)
 	return nil
 }
 

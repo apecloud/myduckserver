@@ -17,6 +17,8 @@ const (
 	TimeTickFlushReason
 	// QueryFlushReason means that the changes have to be flushed because some tables are queried.
 	QueryFlushReason
+	// InitFlushReason means that the changes have to be flushed because the controller is initialized.
+	InitFlushReason
 	// OnCloseFlushReason means that the changes have to be flushed because the controller is closed.
 	OnCloseFlushReason
 )
@@ -35,6 +37,10 @@ func (r FlushReason) String() string {
 		return "TimeTick"
 	case QueryFlushReason:
 		return "Query"
+	case InitFlushReason:
+		return "Init"
+	case OnCloseFlushReason:
+		return "OnClose"
 	default:
 		return "Unknown"
 	}
