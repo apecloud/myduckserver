@@ -12,3 +12,4 @@ pipes/
 *.sock
 __debug_*
 .DS_Store
+*.csv

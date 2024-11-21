@@ -19,20 +19,26 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	stdsql "database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync/atomic"
+
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/catalog"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
-	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -58,6 +64,18 @@ type ConnectionHandler struct {
 
 // Set this env var to disable panic handling in the connection, which is useful when debugging a panic
 const disablePanicHandlingEnvVar = "DOLT_PGSQL_PANIC"
+
+// precompile a regex to match "select pg_catalog.pg_is_in_recovery();"
+var pgIsInRecoveryRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.pg_is_in_recovery\(\s*\)\s*;?\s*$`)
+
+// precompile a regex to match "select pg_catalog.pg_current_wal_lsn();" or "select pg_catalog.pg_last_wal_replay_lsn();"
+var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current_wal_lsn|pg_last_wal_replay_lsn)\(\s*\)\s*;?\s*$`)
+
+// precompile a regex to match "select pg_catalog.current_setting('xxx');".
+var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog.current_setting\(\s*['"]([^'"]+)['"]\s*\)\s*;?\s*$`)
+
+// precompile a regex to match any "from pg_catalog.xxx" in the query.
+var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.`)
 
 // HandlePanics determines whether panics should be handled in the connection handler. See |disablePanicHandlingEnvVar|.
 var HandlePanics = true
@@ -234,17 +252,39 @@ func (h *ConnectionHandler) handleStartup() (bool, error) {
 
 // sendClientStartupMessages sends introductory messages to the client and returns any error
 func (h *ConnectionHandler) sendClientStartupMessages() error {
-	if err := h.send(&pgproto3.ParameterStatus{
-		Name:  "server_version",
-		Value: "15.0",
-	}); err != nil {
-		return err
+	parameters := []struct {
+		Name  string
+		Value string
+	}{
+		// These are mock parameter status messages that are sent to the client
+		// to simulate a real PostgreSQL connection. Some clients may expect these
+		// to be sent, like pgpool, which will not work without them. Because
+		// if the paramter status message list sent by this server differs from
+		// the list of the other real PostgreSQL servers, pgpool can not establish
+		// a connection to this server.
+		{"in_hot_standby", "off"},
+		{"integer_datetimes", "on"},
+		{"TimeZone", "Etc/UTC"},
+		{"IntervalStyle", "postgres"},
+		{"is_superuser", "on"},
+		{"application_name", "psql"},
+		{"default_transaction_read_only", "off"},
+		{"scram_iterations", "4096"},
+		{"DateStyle", "ISO, MDY"},
+		{"standard_conforming_strings", "postgres"},
+		{"session_authorization", "postgres"},
+		{"client_encoding", "UTF8"},
+		{"server_version", "15.0"},
+		{"server_encoding", "UTF8"},
 	}
-	if err := h.send(&pgproto3.ParameterStatus{
-		Name:  "client_encoding",
-		Value: "UTF8",
-	}); err != nil {
-		return err
+
+	for _, param := range parameters {
+		if err := h.send(&pgproto3.ParameterStatus{
+			Name:  param.Name,
+			Value: param.Value,
+		}); err != nil {
+			return err
+		}
 	}
 	return h.send(&pgproto3.BackendKeyData{
 		ProcessID: processID,
@@ -260,6 +300,12 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 	if !dbSpecified {
 		db = h.mysqlConn.User
 	}
+	if db == "postgres" {
+		if provider, ok := h.duckHandler.e.Analyzer.Catalog.DbProvider.(*catalog.DatabaseProvider); ok {
+			db = provider.CatalogName()
+		}
+	}
+
 	useStmt := fmt.Sprintf("USE %s;", db)
 	setStmt := fmt.Sprintf("SET database TO %s;", db)
 	parsed, err := parser.ParseOne(setStmt)
@@ -295,7 +341,7 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 	if HandlePanics {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Printf("Listener recovered panic: %v\n%s\n", r, string(debug.Stack()))
+				h.logger.Debugf("Listener recovered panic: %v\n%s\n", r, string(debug.Stack()))
 
 				var eomErr error
 				if rErr, ok := r.(error); ok {
@@ -306,7 +352,7 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 
 				if !endOfMessages && h.waitForSync {
 					if syncErr := h.discardToSync(); syncErr != nil {
-						fmt.Println(syncErr.Error())
+						h.logger.Error(syncErr.Error())
 					}
 				}
 				h.endOfMessages(eomErr)
@@ -390,6 +436,16 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 // expected as part of this query, in which case the server will send a READY FOR QUERY message back to the client so
 // that it can send its next query.
 func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages bool, err error) {
+	// usql use ";" to test if the connection is alive. If we don't handle it, this will return an error. So we need to
+	// manually handle it here.
+	if message.String == ";" {
+		err := h.send(makeCommandComplete("", 0))
+		if err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+
 	handled, err := h.handledPSQLCommands(message.String)
 	if handled || err != nil {
 		return true, err
@@ -398,6 +454,12 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	// TODO: Remove this once we support `SELECT * FROM function()` syntax
 	// Github issue: https://github.com/dolthub/doltgresql/issues/464
 	handled, err = h.handledWorkbenchCommands(message.String)
+	if handled || err != nil {
+		return true, err
+	}
+
+	// Certain queries are handled directly by the handler instead of being passed to the engine
+	handled, err = h.handlePgCatalogQueries(message.String)
 	if handled || err != nil {
 		return true, err
 	}
@@ -420,6 +482,107 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	return true, h.query(query)
 }
 
+// isInRecovery will get the count of
+func (h *ConnectionHandler) isInRecovery() (string, error) {
+	// Grab a sql.Context.
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return "f", err
+	}
+	var count int
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.CountAllStmt()).Scan(&count); err != nil {
+		return "f", err
+	}
+
+	if count == 0 {
+		return "f", nil
+	} else {
+		return "t", nil
+	}
+}
+
+// readOneWALPositionStr reads one of the recorded WAL position from the WAL position table
+func (h *ConnectionHandler) readOneWALPositionStr() (string, error) {
+	// Grab a sql.Context.
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return "0/0", err
+	}
+	var slotName string
+	var lsn string
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.SelectAllStmt()).Scan(&slotName, &lsn); err != nil {
+		if errors.Is(err, stdsql.ErrNoRows) {
+			// if no lsn is stored, return 0
+			return "0/0", nil
+		}
+		return "0/0", err
+	}
+
+	return lsn, nil
+}
+
+// queryPGSetting will query the pg_catalog.pg_setting table to see if the setting is set
+func (h *ConnectionHandler) queryPGSetting(name string) (string, error) {
+	// Grab a sql.Context.
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return "", err
+	}
+	var setting string
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PGCurrentSetting.SelectStmt(), name).Scan(&setting); err != nil {
+		if errors.Is(err, stdsql.ErrNoRows) {
+			// if no this setting is found, return ""
+			return "", nil
+		}
+		return "", err
+	}
+
+	return setting, nil
+}
+
+// TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
+// Remove this once we add the views for 'pg_catalog'.
+func (h *ConnectionHandler) handlePgCatalogQueries(statement string) (bool, error) {
+	lower := strings.ToLower(statement)
+	if pgIsInRecoveryRegex.MatchString(lower) {
+		isInRecovery, err := h.isInRecovery()
+		if err != nil {
+			return false, err
+		}
+		return true, h.query(ConvertedQuery{
+			String:       fmt.Sprintf(`SELECT '%s' AS "pg_is_in_recovery";`, isInRecovery),
+			StatementTag: "SELECT",
+		})
+	}
+	if matches := pgWALLSNRegex.FindStringSubmatch(lower); len(matches) == 2 {
+		lsnStr, err := h.readOneWALPositionStr()
+		if err != nil {
+			return false, err
+		}
+		return true, h.query(ConvertedQuery{
+			String:       fmt.Sprintf(`SELECT '%s' AS "%s";`, lsnStr, matches[1]),
+			StatementTag: "SELECT",
+		})
+	}
+	if matches := currentSettingRegex.FindStringSubmatch(lower); len(matches) == 2 {
+		setting, err := h.queryPGSetting(matches[1])
+		if err != nil {
+			return false, err
+		}
+		return true, h.query(ConvertedQuery{
+			String:       fmt.Sprintf(`SELECT '%s' AS "current_setting";`, setting),
+			StatementTag: "SELECT",
+		})
+	}
+	if pgCatalogRegex.MatchString(lower) {
+		return true, h.query(ConvertedQuery{
+			String:       pgCatalogRegex.ReplaceAllString(lower, " FROM __sys__."),
+			StatementTag: "SELECT",
+		})
+	}
+	return false, nil
+}
+
 // handleQueryOutsideEngine handles any queries that should be handled by the handler directly, rather than being
 // passed to the engine. The response parameter |handled| is true if the query was handled, |endOfMessages| is true
 // if no more messages are expected for this query and server should send the client a READY FOR QUERY message,
@@ -438,6 +601,8 @@ func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (hand
 		if stmt.Stdin {
 			return true, false, h.handleCopyFromStdinQuery(query, stmt, h.Conn())
 		}
+	case *tree.CopyTo:
+		return true, true, h.handleCopyToStdout(query, stmt)
 	}
 	return false, true, nil
 }
@@ -652,25 +817,13 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 		if copyFrom == nil {
 			return false, false, fmt.Errorf("no COPY FROM STDIN node found")
 		}
-
-		// TODO: It would be better to get the table from the copyFromStdinNode – not by calling core.GetSqlTableFromContext
-		schemaName := copyFrom.Table.Schema()
-		tableName := copyFrom.Table.Table()
-		table, err := GetSqlTableFromContext(sqlCtx, schemaName, tableName)
-		if err != nil {
-			return false, true, err
-		}
+		table := h.copyFromStdinState.targetTable
 		if table == nil {
-			return false, true, fmt.Errorf(`relation "%s" does not exist`, tableName)
-		}
-		insertableTable, ok := table.(sql.InsertableTable)
-		if !ok {
-			return false, true, fmt.Errorf(`table "%s" is read-only`, tableName)
+			return false, true, fmt.Errorf("no target table found")
 		}
 
 		switch copyFrom.Options.CopyFormat {
 		case tree.CopyFormatText:
-			copyFrom.Options.Delimiter = tree.NewStrVal("\t")
 			// Remove trailing backslash, comma and newline characters from the data
 			if bytes.HasSuffix(message.Data, []byte{'\n'}) {
 				message.Data = message.Data[:len(message.Data)-1]
@@ -683,12 +836,15 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 			}
 			fallthrough
 		case tree.CopyFormatCSV:
-			dataLoader, err = NewCsvDataLoader(sqlCtx, h.duckHandler, schemaName, insertableTable, copyFrom.Columns, &copyFrom.Options)
+			dataLoader, err = NewCsvDataLoader(
+				sqlCtx, h.duckHandler,
+				copyFrom.Table.Schema(), table, copyFrom.Columns,
+				&copyFrom.Options,
+			)
 		case tree.CopyFormatBinary:
 			err = fmt.Errorf("BINARY format is not supported for COPY FROM")
 		default:
-			err = fmt.Errorf("unknown format specified for COPY FROM: %v",
-				copyFrom.Options.CopyFormat)
+			err = fmt.Errorf("unknown format specified for COPY FROM: %v", copyFrom.Options.CopyFormat)
 		}
 
 		if err != nil {
@@ -1037,7 +1193,11 @@ func (h *ConnectionHandler) sendError(err error) {
 }
 
 // convertQuery takes the given Postgres query, and converts it as an ast.ConvertedQuery that will work with the handler.
-func (h *ConnectionHandler) convertQuery(query string) (ConvertedQuery, error) {
+func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifier) (ConvertedQuery, error) {
+	for _, modifier := range modifiers {
+		query = modifier(query)
+	}
+
 	parsable := true
 
 	// Check if the query is a subscription query, and if so, parse it as a subscription query.
@@ -1101,12 +1261,14 @@ func (h *ConnectionHandler) handleCopyFromStdinQuery(query ConvertedQuery, copyF
 	}
 	sqlCtx.SetLogger(sqlCtx.GetLogger().WithField("query", query.String))
 
-	if err := ValidateCopyFrom(copyFrom, sqlCtx); err != nil {
+	table, err := ValidateCopyFrom(copyFrom, sqlCtx)
+	if err != nil {
 		return err
 	}
 
 	h.copyFromStdinState = &copyFromStdinState{
 		copyFromStdinNode: copyFrom,
+		targetTable:       table,
 	}
 
 	return h.send(&pgproto3.CopyInResponse{
@@ -1142,5 +1304,127 @@ func returnsRow(tag string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tree.CopyTo) error {
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, query.String)
+	if err != nil {
+		return err
+	}
+	ctx.SetLogger(ctx.GetLogger().WithField("query", query.String))
+
+	// Create cancelable context
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ctx = ctx.WithContext(childCtx)
+
+	table, err := ValidateCopyTo(copyTo, ctx)
+	if err != nil {
+		return err
+	}
+
+	var stmt string
+	if copyTo.Statement != nil {
+		stmt = copyTo.Statement.String()
+	}
+	writer, err := NewDataWriter(
+		ctx, h.duckHandler,
+		copyTo.Table.Schema(), table, copyTo.Columns,
+		stmt,
+		&copyTo.Options,
+	)
+	if err != nil {
+		return err
+	}
+	defer writer.Close()
+
+	// Send CopyOutResponse to the client
+	ctx.GetLogger().Debug("sending CopyOutResponse to the client")
+	copyOutResponse := &pgproto3.CopyOutResponse{
+		OverallFormat:     0,           // 0 for text format
+		ColumnFormatCodes: []uint16{0}, // 0 for text format
+	}
+	if err := h.send(copyOutResponse); err != nil {
+		return err
+	}
+
+	pipePath, ch, err := writer.Start()
+	if err != nil {
+		return err
+	}
+
+	done := make(chan struct{})
+	var sendErr atomic.Value
+	go func() {
+		defer close(done)
+
+		// Open the pipe for reading.
+		ctx.GetLogger().Tracef("Opening FIFO pipe for reading: %s", pipePath)
+		pipe, err := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
+		if err != nil {
+			sendErr.Store(fmt.Errorf("failed to open pipe for reading: %w", err))
+			cancel()
+			return
+		}
+		defer pipe.Close()
+
+		ctx.GetLogger().Debug("Copying data from the pipe to the client")
+		defer func() {
+			ctx.GetLogger().Debug("Finished copying data from the pipe to the client")
+		}()
+
+		buf := make([]byte, 1<<20) // 1MB buffer
+		for {
+			n, err := pipe.Read(buf)
+			if n > 0 {
+				copyData := &pgproto3.CopyData{
+					Data: buf[:n],
+				}
+				ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", n)
+				if err := h.send(copyData); err != nil {
+					sendErr.Store(err)
+					cancel()
+					return
+				}
+			}
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				sendErr.Store(err)
+				cancel()
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done(): // Context is canceled
+		<-done
+		err, _ := sendErr.Load().(error)
+		return errors.Join(ctx.Err(), err)
+	case result := <-ch:
+		<-done
+
+		if result.Err != nil {
+			return fmt.Errorf("failed to copy data: %w", result.Err)
+		}
+
+		if err, ok := sendErr.Load().(error); ok {
+			return err
+		}
+
+		// After data is sent and the producer side is finished without errors, send CopyDone
+		ctx.GetLogger().Debug("sending CopyDone to the client")
+		if err := h.send(&pgproto3.CopyDone{}); err != nil {
+			return err
+		}
+
+		// Send CommandComplete with the number of rows copied
+		ctx.GetLogger().Debugf("sending CommandComplete to the client")
+		return h.send(&pgproto3.CommandComplete{
+			CommandTag: []byte(fmt.Sprintf("COPY %d", result.RowCount)),
+		})
 	}
 }

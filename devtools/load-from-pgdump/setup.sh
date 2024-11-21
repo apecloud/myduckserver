@@ -62,34 +62,13 @@ if [[ -z $MYDUCK_DB ]]; then
     usage
 fi
 
-# Step 1: Check if psql exists, if not, install it
+# Step 1: Check if psql exists
 if ! command -v psql &> /dev/null; then
-    echo "psql not found, attempting to install..."
-    bash install_psql.sh
-    check_command "psql installation"
-else
-    echo "psql is already installed."
+    echo "Error: psql is not installed."
+    exit 1
 fi
 
-# Step 2: Check if replication has already been started
-#echo "Checking if replication has already been started..."
-#check_if_myduck_has_replica
-#if [[ $? -ne 0 ]]; then
-#    echo "Replication has already been started. Exiting."
-#    exit 1
-#fi
-
-# Step 3: Prepare MyDuck Server for replication
-#echo "Preparing MyDuck Server for replication..."
-#source prepare.sh
-#check_command "preparing MyDuck Server for replication"
-
-# Step 4: Establish replication
-#echo "Starting replication..."
-#source start_replication.sh
-#check_command "starting replication"
-
-# Step 5: Load the existing data from pg_dump file
+# Step 2: Load the existing data from pg_dump file
 if [[ -n "$PG_DUMP" ]]; then
     echo "Loading the snapshot from pg_dump to MyDuck Server..."
     source snapshot.sh

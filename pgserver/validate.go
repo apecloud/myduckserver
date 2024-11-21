@@ -16,40 +16,42 @@ package pgserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
-// Validate returns an error if the CopyFrom node is invalid, for example if it contains columns that
-// are not in the table schema.
-func ValidateCopyFrom(cf *tree.CopyFrom, ctx *sql.Context) error {
+// ValidateCopyFrom returns an error if the CopyFrom node is invalid.
+func ValidateCopyFrom(cf *tree.CopyFrom, ctx *sql.Context) (sql.InsertableTable, error) {
 	table, err := GetSqlTableFromContext(ctx, cf.Table.Schema(), cf.Table.Table())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if table == nil {
-		return fmt.Errorf(`relation "%s" does not exist`, cf.Table.Table())
+		return nil, fmt.Errorf(`relation "%s" does not exist`, cf.Table.Table())
 	}
-	if _, ok := table.(sql.InsertableTable); !ok {
-		return fmt.Errorf(`table "%s" is read-only`, cf.Table.Table())
+	if it, ok := table.(sql.InsertableTable); !ok {
+		return nil, fmt.Errorf(`table "%s" is read-only`, cf.Table.Table())
+	} else {
+		return it, nil
 	}
+}
 
-	// If a set of columns was explicitly specified, validate them
-	if len(cf.Columns) > 0 {
-		if len(table.Schema()) != len(cf.Columns) {
-			return fmt.Errorf("invalid column name list for table %s: %v", table.Name(), cf.Columns)
+// ValidateCopyTo returns an error if the CopyTo node is invalid, for example if it contains columns that
+// are not in the table schema.
+func ValidateCopyTo(ct *tree.CopyTo, ctx *sql.Context) (sql.Table, error) {
+	if ct.Table.Table() == "" {
+		if ct.Statement == nil {
+			return nil, fmt.Errorf("no table specified")
 		}
-
-		for i, col := range table.Schema() {
-			name := cf.Columns[i]
-			nameString := strings.Trim(name.String(), `"`)
-			if nameString != col.Name {
-				return fmt.Errorf("invalid column name list for table %s: %v", table.Name(), cf.Columns)
-			}
-		}
+		return nil, nil
 	}
-
-	return nil
+	table, err := GetSqlTableFromContext(ctx, ct.Table.Schema(), ct.Table.Table())
+	if err != nil {
+		return nil, err
+	}
+	if table == nil {
+		return nil, fmt.Errorf(`relation "%s" does not exist`, ct.Table.Table())
+	}
+	return table, nil
 }

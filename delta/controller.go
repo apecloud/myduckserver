@@ -118,13 +118,13 @@ func (c *DeltaController) Flush(ctx *sql.Context, tx *stdsql.Tx, reason FlushRea
 	}
 
 	if stats.DeltaSize > 0 {
-		if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
-			ctx.GetLogger().WithFields(logrus.Fields{
+		if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+			log.WithFields(logrus.Fields{
 				"DeltaSize":  stats.DeltaSize,
 				"Insertions": stats.Insertions,
 				"Deletions":  stats.Deletions,
 				"Reason":     reason.String(),
-			}).Trace("Flushed delta buffer")
+			}).Debug("Flushed delta buffer")
 		}
 	}
 
@@ -236,11 +236,11 @@ func (c *DeltaController) updateTable(
 	stats.DeltaSize += affected
 	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main.delta")
 
-	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
 		log.WithFields(logrus.Fields{
 			"table": qualifiedTableName,
 			"rows":  affected,
-		}).Trace("Delta created")
+		}).Debug("Delta created")
 	}
 
 	// Insert or replace new rows (action = INSERT) into the base table.
@@ -257,11 +257,11 @@ func (c *DeltaController) updateTable(
 	}
 	stats.Insertions += affected
 
-	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
 		log.WithFields(logrus.Fields{
 			"table": qualifiedTableName,
 			"rows":  affected,
-		}).Trace("Inserted")
+		}).Debug("Inserted")
 	}
 
 	// Delete rows that have been deleted.
@@ -304,11 +304,11 @@ func (c *DeltaController) updateTable(
 	// 	fmt.Printf("row:%+v\n", row)
 	// }
 
-	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
 		log.WithFields(logrus.Fields{
 			"table": qualifiedTableName,
 			"rows":  affected,
-		}).Trace("Deleted")
+		}).Debug("Deleted")
 	}
 
 	return nil

@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
@@ -80,21 +79,15 @@ func (db *DuckBuilder) buildClientSideLoadData(ctx *sql.Context, insert *plan.In
 	}
 	defer reader.Close()
 
-	// Create the FIFO pipe
-	pipeDir := filepath.Join(db.provider.DataDir(), "pipes", "load-data")
-	if err := os.MkdirAll(pipeDir, 0755); err != nil {
-		return nil, err
-	}
-	pipeName := strconv.Itoa(int(ctx.ID())) + ".pipe"
-	pipePath := filepath.Join(pipeDir, pipeName)
-	if err := syscall.Mkfifo(pipePath, 0600); err != nil {
+	pipePath, err := db.CreatePipe(ctx, "load-data")
+	if err != nil {
 		return nil, err
 	}
 	defer os.Remove(pipePath)
 
 	// Write the data to the FIFO pipe.
 	go func() {
-		pipe, err := os.OpenFile(pipePath, os.O_WRONLY, 0600)
+		pipe, err := os.OpenFile(pipePath, os.O_WRONLY, os.ModeNamedPipe)
 		if err != nil {
 			return
 		}

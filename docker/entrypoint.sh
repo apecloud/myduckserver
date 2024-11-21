@@ -61,11 +61,17 @@ parse_dsn() {
     echo "SOURCE_DATABASE=$SOURCE_DATABASE"
 }
 
-# Example Usage
-parse_dsn "postgresql://user:password@localhost:5432"
-parse_dsn "mysql://user:password@127.0.0.1:3306"
-parse_dsn "mysql://user:password@127.0.0.1"
-parse_dsn "postgresql://user:password@localhost"
+if [ -n "$PGSQL_PRIMARY_DSN" ]; then
+    export PGSQL_PRIMARY_DSN_ARG="-pg-primary-dsn $PGSQL_PRIMARY_DSN"
+fi
+
+if [ -n "$PGSQL_SLOT_NAME" ]; then
+    export PGSQL_SLOT_NAME_ARG="-pg-slot-name $PGSQL_SLOT_NAME"
+fi
+
+if [ -n "$LOG_LEVEL" ]; then
+    export LOG_LEVEL="-loglevel $LOG_LEVEL"
+fi
 
 # Function to run replica setup
 run_replica_setup() {
@@ -101,13 +107,13 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver >> "${LOG_PATH}"/server.log 2>&1 &
+      nohup myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
 run_server_in_foreground() {
     cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-    myduckserver
+    myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL
 }
 
 wait_for_my_duck_server_ready() {

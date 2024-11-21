@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
@@ -63,28 +61,20 @@ type CsvDataLoader struct {
 
 var _ DataLoader = (*CsvDataLoader)(nil)
 
-func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
-	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
-	dataDir := duckBuilder.Provider().DataDir()
-
+func NewCsvDataLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
 	// Create the FIFO pipe
-	pipeDir := filepath.Join(dataDir, "pipes", "load-data")
-	if err := os.MkdirAll(pipeDir, 0755); err != nil {
-		return nil, err
-	}
-	pipeName := strconv.Itoa(int(sqlCtx.ID())) + ".pipe"
-	pipePath := filepath.Join(pipeDir, pipeName)
-	sqlCtx.GetLogger().Traceln("Creating FIFO pipe for COPY operation:", pipePath)
-	if err := syscall.Mkfifo(pipePath, 0600); err != nil {
+	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
+	pipePath, err := duckBuilder.CreatePipe(ctx, "pg-copy-from")
+	if err != nil {
 		return nil, err
 	}
 
 	// Create cancelable context
-	childCtx, cancel := context.WithCancel(sqlCtx)
-	sqlCtx.Context = childCtx
+	childCtx, cancel := context.WithCancel(ctx)
+	ctx.Context = childCtx
 
 	loader := &CsvDataLoader{
-		ctx:      sqlCtx,
+		ctx:      ctx,
 		cancel:   cancel,
 		schema:   schema,
 		table:    table,
@@ -103,7 +93,7 @@ func NewCsvDataLoader(sqlCtx *sql.Context, handler *DuckHandler, schema string, 
 
 	// Open the pipe for writing.
 	// This operation will block until the reader opens the pipe for reading.
-	pipe, err := os.OpenFile(pipePath, os.O_WRONLY, 0600)
+	pipe, err := os.OpenFile(pipePath, os.O_WRONLY, os.ModeNamedPipe)
 	if err != nil {
 		return nil, err
 	}
@@ -138,32 +128,43 @@ func (loader *CsvDataLoader) buildSQL() string {
 
 	b.WriteString(" FROM '")
 	b.WriteString(loader.pipePath)
-	b.WriteString("' (AUTO_DETECT false")
+	b.WriteString("' (FORMAT CSV, AUTO_DETECT false")
 
 	options := loader.options
 
+	b.WriteString(", HEADER ")
 	if options.HasHeader && options.Header {
-		b.WriteString(", HEADER")
+		b.WriteString("true")
+	} else {
+		b.WriteString("false")
 	}
 
 	if options.Delimiter != nil {
 		b.WriteString(", SEP ")
 		b.WriteString(options.Delimiter.String())
+	} else if options.CopyFormat == tree.CopyFormatText {
+		b.WriteString(`, SEP '\t'`)
 	}
 
 	if options.Quote != nil {
 		b.WriteString(", QUOTE ")
 		b.WriteString(singleQuotedDuckChar(options.Quote.RawString()))
+	} else if options.CopyFormat == tree.CopyFormatText {
+		b.WriteString(`, QUOTE ''`)
 	}
 
 	if options.Escape != nil {
 		b.WriteString(", ESCAPE ")
 		b.WriteString(singleQuotedDuckChar(options.Escape.RawString()))
+	} else if options.CopyFormat == tree.CopyFormatText {
+		b.WriteString(`, ESCAPE ''`)
 	}
 
 	if options.Null != nil {
 		b.WriteString(", NULLSTR ")
-		b.WriteString(loader.options.Null.String())
+		b.WriteString(options.Null.String())
+	} else if options.CopyFormat == tree.CopyFormatText {
+		b.WriteString(`, NULLSTR '\N'`)
 	}
 
 	b.WriteString(")")
@@ -178,7 +179,7 @@ func (loader *CsvDataLoader) executeCopy(sql string, pipePath string) {
 		loader.ctx.GetLogger().Error(err)
 		loader.err.Store(&err)
 		// Open the pipe once to unblock the writer
-		loader.errPipe, _ = os.OpenFile(pipePath, os.O_RDONLY, 0600)
+		loader.errPipe, _ = os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
 		return
 	}
 
