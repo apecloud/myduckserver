@@ -58,14 +58,18 @@ func NewDataWriter(
 
 	builder.WriteString(" TO '")
 	builder.WriteString(pipePath)
-	builder.WriteString("' (FORMAT CSV")
-
-	if options.HasHeader && options.Header {
-		builder.WriteString(", HEADER")
-	}
 
 	switch options.CopyFormat {
 	case tree.CopyFormatText, tree.CopyFormatCSV:
+		builder.WriteString("' (FORMAT CSV")
+
+		builder.WriteString(", HEADER ")
+		if options.HasHeader && options.Header {
+			builder.WriteString("true")
+		} else {
+			builder.WriteString("false")
+		}
+
 		if options.Delimiter != nil {
 			builder.WriteString(", DELIMITER ")
 			builder.WriteString(options.Delimiter.String())

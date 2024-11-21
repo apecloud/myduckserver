@@ -132,8 +132,11 @@ func (loader *CsvDataLoader) buildSQL() string {
 
 	options := loader.options
 
+	b.WriteString(", HEADER ")
 	if options.HasHeader && options.Header {
-		b.WriteString(", HEADER")
+		b.WriteString("true")
+	} else {
+		b.WriteString("false")
 	}
 
 	if options.Delimiter != nil {
