@@ -61,7 +61,7 @@ type CsvDataLoader struct {
 
 var _ DataLoader = (*CsvDataLoader)(nil)
 
-func NewCsvDataxLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
+func NewCsvDataLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
 	// Create the FIFO pipe
 	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
 	pipePath, err := duckBuilder.CreatePipe(ctx, "pg-copy-from")
