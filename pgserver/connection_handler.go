@@ -603,7 +603,7 @@ func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (hand
 			return true, false, h.handleCopyFromStdinQuery(query, stmt, h.Conn())
 		}
 	case *tree.CopyTo:
-		return true, true, h.handleCopyToStdout(query, stmt, "", tree.CopyFormatBinary /* unused */)
+		return true, true, h.handleCopyToStdout(query, stmt, "" /* unused */, tree.CopyFormatBinary, "")
 	}
 
 	if query.StatementTag == "COPY" {
