@@ -5,6 +5,8 @@ import (
 	stdsql "database/sql"
 	"fmt"
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/pgserver/logrepl"
+	"github.com/jackc/pglogrepl"
 	"regexp"
 )
 
@@ -16,26 +18,31 @@ type SubscriptionConfig struct {
 	Port             string
 	User             string
 	Password         string
-	LSN              string
+	LSN              pglogrepl.LSN
 }
 
 var lsnQueryIndex = 5
-var lsnColumnName = "pg_current_wal_lsn"
 
 var subscriptionRegex = regexp.MustCompile(`CREATE SUBSCRIPTION\s+(\w+)\s+CONNECTION\s+'([^']+)'\s+PUBLICATION\s+(\w+);`)
 var connectionRegex = regexp.MustCompile(`(\b\w+)=([\w\.\d]*)`)
 
-// ToDSN Format SubscriptionConfig into a DSN
-func (config *SubscriptionConfig) ToDSN() string {
+// ToConnectionInfo Format SubscriptionConfig into a ConnectionInfo
+func (config *SubscriptionConfig) ToConnectionInfo() string {
 	return fmt.Sprintf("dbname=%s user=%s password=%s host=%s port=%s",
 		config.DBName, config.User, config.Password, config.Host, config.Port)
+}
+
+// ToDNS Format SubscriptionConfig into a DNS
+func (config *SubscriptionConfig) ToDNS() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
+		config.User, config.Password, config.Host, config.Port, config.DBName)
 }
 
 func (config *SubscriptionConfig) ToDuckDBQuery() []string {
 	return []string{
 		"INSTALL postgres_scanner;",
 		"LOAD postgres_scanner;",
-		fmt.Sprintf("ATTACH '%s' AS pg_postgres (TYPE POSTGRES);", config.ToDSN()),
+		fmt.Sprintf("ATTACH '%s' AS pg_postgres (TYPE POSTGRES);", config.ToConnectionInfo()),
 		"BEGIN;",
 		"COPY FROM DATABASE pg_postgres TO mysql;",
 		"SELECT * FROM postgres_query('pg_postgres', 'SELECT pg_current_wal_lsn()');",
@@ -93,6 +100,21 @@ func parseSubscriptionSQL(sql string) (*SubscriptionConfig, error) {
 }
 
 func executeCreateSubscriptionSQL(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) error {
+	err := doSnapshot(h, subscriptionConfig)
+	if err != nil {
+		return fmt.Errorf("failed to execute snapshot in CREATE SUBSCRIPTION: %w", err)
+	}
+
+	err = doCreateSubscription(h, subscriptionConfig)
+	if err != nil {
+		return fmt.Errorf("failed to execute CREATE SUBSCRIPTION: %w", err)
+	}
+
+	return nil
+}
+
+func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) error {
+
 	duckDBQueries := subscriptionConfig.ToDuckDBQuery()
 
 	for index, duckDBQuery := range duckDBQueries {
@@ -125,12 +147,45 @@ func executeCreateSubscriptionSQL(h *ConnectionHandler, subscriptionConfig *Subs
 	return nil
 }
 
+func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) error {
+	replicator, err := logrepl.NewLogicalReplicator(subscriptionConfig.ToDNS())
+	if err != nil {
+		return fmt.Errorf("failed to create logical replicator: %w", err)
+	}
+
+	err = replicator.CreateReplicationSlotIfNecessary(subscriptionConfig.SubscriptionName)
+	if err != nil {
+		return fmt.Errorf("failed to create replication slot: %w", err)
+	}
+
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
+
+	err = replicator.WriteWALPosition(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.LSN)
+	if err != nil {
+		return fmt.Errorf("failed to write WAL position: %w", err)
+	}
+
+	err = replicator.StartReplication(sqlCtx, subscriptionConfig.SubscriptionName)
+	if err != nil {
+		return fmt.Errorf("failed to start replication: %w", err)
+	}
+
+	return nil
+}
+
 // processLSN scans the rows for the LSN value and updates the subscriptionConfig.
 func processLSN(rows *stdsql.Rows, subscriptionConfig *SubscriptionConfig) error {
 	for rows.Next() {
-		var lsn string
-		if err := rows.Scan(&lsn); err != nil {
+		var lsnStr string
+		if err := rows.Scan(&lsnStr); err != nil {
 			return fmt.Errorf("failed to scan LSN: %w", err)
+		}
+		lsn, err := pglogrepl.ParseLSN(lsnStr)
+		if err != nil {
+			return fmt.Errorf("failed to parse LSN: %w", err)
 		}
 		subscriptionConfig.LSN = lsn
 	}

@@ -766,8 +766,8 @@ func (r *LogicalReplicator) readWALPosition(ctx *sql.Context, slotName string) (
 	return pglogrepl.ParseLSN(lsn)
 }
 
-// writeWALPosition writes the recorded WAL position to the WAL position table
-func (r *LogicalReplicator) writeWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
+// WriteWALPosition writes the recorded WAL position to the WAL position table
+func (r *LogicalReplicator) WriteWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
 	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgReplicationLSN.UpsertStmt(), slotName, lsn.String())
 	return err
 }
@@ -864,7 +864,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	}
 
 	r.logger.Debugf("Writing LSN %s\n", state.lastCommitLSN)
-	if err = r.writeWALPosition(state.replicaCtx, state.slotName, state.lastCommitLSN); err != nil {
+	if err = r.WriteWALPosition(state.replicaCtx, state.slotName, state.lastCommitLSN); err != nil {
 		return err
 	}
 
