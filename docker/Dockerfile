@@ -19,7 +19,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy the remaining source code
 COPY . .
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && \
+    apt-get install -y debian-archive-keyring && \
+    apt-get update && \
+    apt-get install -y \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
     --no-install-recommends \
@@ -82,6 +85,13 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     && rm duckdb_cli-linux-$ARCH.zip \
     && duckdb -c 'SELECT extension_name, loaded, install_path FROM duckdb_extensions() where installed'
 
+RUN apt-get update && \
+    apt-get install -y debian-archive-keyring && \
+    apt-get update && \
+    apt-get install -y libpq-dev postgresql-client \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN duckdb -version
 
 RUN useradd --create-home --user-group --shell /bin/bash admin \
@@ -95,13 +105,14 @@ WORKDIR /home/admin
 # Copy the compiled Go binary from the builder stage
 COPY --from=builder /myduckserver /usr/local/bin/myduckserver
 COPY --chown=admin:admin --chmod=755 docker/*.sh .
-COPY --chown=admin:admin --chmod=755 devtools/replica-setup ./replica-setup
+COPY --chown=admin:admin --chmod=755 devtools/replica-setup-mysql ./replica-setup-mysql
 
 # ENV LC_CTYPE="en_US.UTF-8"
 # ENV LANG="en_US.UTF-8"
 
-# Expose the port your server will run on (if applicable)
+# Expose the ports your server will run on (if applicable)
 EXPOSE 3306
+EXPOSE 5432
 
 # Set the default command to run the Go server
 ENTRYPOINT /home/admin/entrypoint.sh
