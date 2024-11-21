@@ -39,6 +39,7 @@ import (
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
+	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -602,8 +603,15 @@ func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (hand
 			return true, false, h.handleCopyFromStdinQuery(query, stmt, h.Conn())
 		}
 	case *tree.CopyTo:
-		return true, true, h.handleCopyToStdout(query, stmt)
+		return true, true, h.handleCopyToStdout(query, stmt, "", tree.CopyFormatBinary /* unused */)
 	}
+
+	if query.StatementTag == "COPY" {
+		if subquery, format, options, ok := ParseCopy(query.String); ok {
+			return true, true, h.handleCopyToStdout(query, nil, subquery, format, options)
+		}
+	}
+
 	return false, true, nil
 }
 
@@ -1293,7 +1301,7 @@ func returnsRow(tag string) bool {
 	}
 }
 
-func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tree.CopyTo) error {
+func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tree.CopyTo, subquery string, format tree.CopyFormat, rawOptions string) error {
 	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, query.String)
 	if err != nil {
 		return err
@@ -1305,20 +1313,40 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 	defer cancel()
 	ctx = ctx.WithContext(childCtx)
 
-	table, err := ValidateCopyTo(copyTo, ctx)
-	if err != nil {
-		return err
+	var (
+		schema  string
+		table   sql.Table
+		columns tree.NameList
+		stmt    string
+		options *tree.CopyOptions
+	)
+
+	if copyTo != nil {
+		// PG-parsable COPY TO
+		table, err = ValidateCopyTo(copyTo, ctx)
+		if err != nil {
+			return err
+		}
+		if copyTo.Statement != nil {
+			stmt = `(` + copyTo.Statement.String() + `)`
+		}
+		schema = copyTo.Table.Schema()
+		columns = copyTo.Columns
+		options = &copyTo.Options
+	} else {
+		// Non-PG-parsable COPY TO, which is parsed via regex.
+		stmt = subquery
+		options = &tree.CopyOptions{
+			CopyFormat: format,
+			HasFormat:  true,
+		}
 	}
 
-	var stmt string
-	if copyTo.Statement != nil {
-		stmt = copyTo.Statement.String()
-	}
 	writer, err := NewDataWriter(
 		ctx, h.duckHandler,
-		copyTo.Table.Schema(), table, copyTo.Columns,
+		schema, table, columns,
 		stmt,
-		&copyTo.Options,
+		options, rawOptions,
 	)
 	if err != nil {
 		return err
