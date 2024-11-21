@@ -1340,8 +1340,11 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 		return err
 	}
 
+	done := make(chan struct{})
 	var sendErr atomic.Value
 	go func() {
+		defer close(done)
+
 		// Open the pipe for reading.
 		ctx.GetLogger().Tracef("Opening FIFO pipe for reading: %s", pipePath)
 		pipe, err := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
@@ -1353,6 +1356,10 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 		defer pipe.Close()
 
 		ctx.GetLogger().Debug("Copying data from the pipe to the client")
+		defer func() {
+			ctx.GetLogger().Debug("Finished copying data from the pipe to the client")
+		}()
+
 		buf := make([]byte, 1<<20) // 1MB buffer
 		for {
 			n, err := pipe.Read(buf)
@@ -1380,9 +1387,12 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 
 	select {
 	case <-ctx.Done(): // Context is canceled
+		<-done
 		err, _ := sendErr.Load().(error)
 		return errors.Join(ctx.Err(), err)
 	case result := <-ch:
+		<-done
+
 		if result.Err != nil {
 			return fmt.Errorf("failed to copy data: %w", result.Err)
 		}
