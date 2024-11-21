@@ -60,6 +60,10 @@ func NewDataWriter(
 	builder.WriteString(pipePath)
 	builder.WriteString("' (FORMAT CSV")
 
+	if options.HasHeader && options.Header {
+		builder.WriteString(", HEADER")
+	}
+
 	switch options.CopyFormat {
 	case tree.CopyFormatText, tree.CopyFormatCSV:
 		if options.Delimiter != nil {
@@ -84,16 +88,13 @@ func NewDataWriter(
 		}
 
 		if options.Null != nil {
-			builder.WriteString(`, NULL '`)
+			builder.WriteString(`, NULLSTR '`)
 			builder.WriteString(options.Null.String())
 			builder.WriteString(`'`)
 		} else if options.CopyFormat == tree.CopyFormatText {
-			builder.WriteString(`, NULL '\N'`)
+			builder.WriteString(`, NULLSTR '\N'`)
 		}
 
-		if options.HasHeader && options.Header {
-			builder.WriteString(", HEADER")
-		}
 	case tree.CopyFormatBinary:
 		return nil, fmt.Errorf("BINARY format is not supported for COPY TO")
 	}

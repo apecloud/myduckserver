@@ -17,7 +17,7 @@ func (h *DuckBuilder) CreatePipe(ctx *sql.Context, subdir string) (string, error
 	}
 	pipeName := strconv.Itoa(int(ctx.ID())) + ".pipe"
 	pipePath := filepath.Join(pipeDir, pipeName)
-	ctx.GetLogger().Debugln("Creating FIFO pipe for COPY operation:", pipePath)
+	ctx.GetLogger().Debugln("Creating FIFO pipe for LOAD/COPY operation:", pipePath)
 	if err := syscall.Mkfifo(pipePath, 0600); err != nil {
 		return "", err
 	}

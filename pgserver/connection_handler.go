@@ -38,7 +38,6 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
-	// Import the new datawriter package
 )
 
 // ConnectionHandler is responsible for the entire lifecycle of a user connection: receiving messages they send,
@@ -297,7 +296,7 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 	if HandlePanics {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Printf("Listener recovered panic: %v\n%s\n", r, string(debug.Stack()))
+				h.logger.Debugf("Listener recovered panic: %v\n%s\n", r, string(debug.Stack()))
 
 				var eomErr error
 				if rErr, ok := r.(error); ok {
@@ -308,7 +307,7 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 
 				if !endOfMessages && h.waitForSync {
 					if syncErr := h.discardToSync(); syncErr != nil {
-						fmt.Println(syncErr.Error())
+						h.logger.Error(syncErr.Error())
 					}
 				}
 				h.endOfMessages(eomErr)
@@ -350,7 +349,7 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 // handleMessages processes the message provided and returns status flags indicating what the connection should do next.
 // If the |stop| response parameter is true, it indicates that the connection should be closed by the caller. If the
 // |endOfMessages| response parameter is true, it indicates that no more messages are expected for the current operation
-// and a READY FOR QUERY message should be sent back to the client so it can send the next query.
+// and a READY FOR QUERY message should be sent back to the client, so it can send the next query.
 func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMessages bool, err error) {
 	logrus.Tracef("Handling message: %T", msg)
 	switch message := msg.(type) {
@@ -456,6 +455,7 @@ func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (hand
 	return false, true, nil
 }
 
+// handleParse handles a parse message, returning any error that occurs
 func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	h.waitForSync = true
 
