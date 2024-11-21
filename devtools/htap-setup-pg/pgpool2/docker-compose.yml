@@ -1,0 +1,78 @@
+services:
+  pgsql:
+    image: postgres:latest
+    container_name: htap-pg
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=30
+      - -c
+      - max_replication_slots=10
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "localhost", "-p", "5432", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pgsql-setup:
+    image: postgres:latest
+    container_name: htap-pg-setup
+    command: >
+      sh -c "
+             PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"CREATE PUBLICATION myduck_subscription FOR ALL TABLES;\" &&
+             PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"SELECT PG_CREATE_LOGICAL_REPLICATION_SLOT('myduck_subscription', 'pgoutput');\" &&
+             PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"CREATE TABLE test (id INT PRIMARY KEY, name VARCHAR(255));\" &&
+             PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"INSERT INTO test (id, name) VALUES (1, 'test');\"
+             "
+    restart: "no"
+    depends_on:
+      pgsql:
+        condition: service_healthy
+
+  myduck:
+    image: apecloud/myduckserver:latest
+    pull_policy: always
+    container_name: htap-myduck
+    environment:
+      PGSQL_PRIMARY_DSN: postgres://postgres:postgres@pgsql:5432/postgres?sslmode=disable
+      PGSQL_SLOT_NAME: myduck_subscription
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      pgsql-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "psql", "-h", "localhost", "-p", "5432", "-U", "postgres", "-d", "postgres", "-c", "SELECT 1;"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  
+  pgpool:
+    image: bitnami/pgpool:4.5.4
+    container_name: htap-pgpool
+    ports:
+      - "54321:9999"
+    environment:
+      # The PGPOOL_BACKEND_NODES is the list of PostgreSQL servers that pgpool will connect to.
+      # NodeID:Hostname:Port:Weight
+      - PGPOOL_BACKEND_NODES=0:pgsql:5432:0,1:myduck:5432:1
+      - PGPOOL_ENABLE_LOAD_BALANCING=yes
+      - PGPOOL_SR_CHECK_USER=postgres
+      - PGPOOL_SR_CHECK_PASSWORD=postgres
+      - PGPOOL_POSTGRES_USERNAME=postgres
+      - PGPOOL_POSTGRES_PASSWORD=postgres
+      - PGPOOL_ADMIN_USERNAME=admin
+      - PGPOOL_ADMIN_PASSWORD=adminpassword
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      myduck:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/opt/bitnami/scripts/pgpool/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
