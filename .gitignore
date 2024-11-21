@@ -13,3 +13,4 @@ pipes/
 __debug_*
 .DS_Store
 *.csv
+*.parquet

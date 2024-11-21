@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+	"github.com/dolthub/go-mysql-server/sql"
 )
 
 const (
@@ -21,6 +22,8 @@ var (
 )
 
 func ParseCopy(stmt string) (query string, format tree.CopyFormat, options string, ok bool) {
+	stmt = RemoveComments(stmt)
+	stmt = sql.RemoveSpaceAndDelimiter(stmt, ';')
 	m := reCopyToFormat.FindStringSubmatch(stmt)
 	if m == nil {
 		return "", 0, "", false

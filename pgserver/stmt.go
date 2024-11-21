@@ -1,6 +1,7 @@
 package pgserver
 
 import (
+	"bytes"
 	"strings"
 	"unicode"
 
@@ -82,18 +83,18 @@ func GetStatementTag(stmt *duckdb.Stmt) string {
 }
 
 func GuessStatementTag(query string) string {
-	// Remove leading line and block comments
+	// Remove leading comments
 	query = RemoveLeadingComments(query)
 	// Remove trailing semicolon
 	query = sql.RemoveSpaceAndDelimiter(query, ';')
 
-	// Guess the statement tag by looking for the first space in the query.
+	// Guess the statement tag by looking for the first non-identifier character
 	for i, c := range query {
-		if unicode.IsSpace(c) {
+		if !unicode.IsLetter(c) && c != '_' {
 			return strings.ToUpper(query[:i])
 		}
 	}
-	return ""
+	return strings.ToUpper(query)
 }
 
 func RemoveLeadingComments(query string) string {
@@ -109,12 +110,28 @@ func RemoveLeadingComments(query string) string {
 			}
 			i += end + 1
 		} else if strings.HasPrefix(query[i:], "/*") {
-			// Skip block comment
-			end := strings.Index(query[i+2:], "*/")
-			if end == -1 {
+			// Skip block comment with nesting support
+			nestLevel := 1
+			pos := i + 2
+			for pos < n && nestLevel > 0 {
+				if pos+1 < n {
+					if query[pos] == '/' && query[pos+1] == '*' {
+						nestLevel++
+						pos += 2
+						continue
+					}
+					if query[pos] == '*' && query[pos+1] == '/' {
+						nestLevel--
+						pos += 2
+						continue
+					}
+				}
+				pos++
+			}
+			if nestLevel > 0 {
 				return ""
 			}
-			i += end + 4
+			i = pos
 		} else if unicode.IsSpace(rune(query[i])) {
 			// Skip whitespace
 			i++
@@ -123,4 +140,122 @@ func RemoveLeadingComments(query string) string {
 		}
 	}
 	return query[i:]
+}
+
+// RemoveComments removes comments from a query string.
+// It supports line comments (--), block comments (/* ... */), and quoted strings.
+// Author: Claude Sonnet 3.5
+func RemoveComments(query string) string {
+	var buf bytes.Buffer
+	runes := []rune(query)
+	length := len(runes)
+	pos := 0
+
+	for pos < length {
+		// Handle line comments
+		if pos+1 < length && runes[pos] == '-' && runes[pos+1] == '-' {
+			pos += 2
+			for pos < length && runes[pos] != '\n' {
+				pos++
+			}
+			if pos < length {
+				buf.WriteRune('\n')
+				pos++
+			}
+			continue
+		}
+
+		// Handle block comments
+		if pos+1 < length && runes[pos] == '/' && runes[pos+1] == '*' {
+			nestLevel := 1
+			pos += 2
+			for pos < length && nestLevel > 0 {
+				if pos+1 < length {
+					if runes[pos] == '/' && runes[pos+1] == '*' {
+						nestLevel++
+						pos += 2
+						continue
+					}
+					if runes[pos] == '*' && runes[pos+1] == '/' {
+						nestLevel--
+						pos += 2
+						continue
+					}
+				}
+				pos++
+			}
+			continue
+		}
+
+		// Handle string literals
+		if runes[pos] == '\'' || (pos+1 < length && runes[pos] == 'E' && runes[pos+1] == '\'') {
+			if runes[pos] == 'E' {
+				buf.WriteRune('E')
+				pos++
+			}
+			buf.WriteRune('\'')
+			pos++
+			for pos < length {
+				if runes[pos] == '\'' {
+					buf.WriteRune('\'')
+					pos++
+					break
+				}
+				if pos+1 < length && runes[pos] == '\\' {
+					buf.WriteRune('\\')
+					buf.WriteRune(runes[pos+1])
+					pos += 2
+					continue
+				}
+				buf.WriteRune(runes[pos])
+				pos++
+			}
+			continue
+		}
+
+		// Handle dollar-quoted strings
+		if runes[pos] == '$' {
+			start := pos
+			tagEnd := pos + 1
+			for tagEnd < length && (unicode.IsLetter(runes[tagEnd]) || unicode.IsDigit(runes[tagEnd]) || runes[tagEnd] == '_') {
+				tagEnd++
+			}
+			if tagEnd < length && runes[tagEnd] == '$' {
+				tag := string(runes[start : tagEnd+1])
+				buf.WriteString(tag)
+				pos = tagEnd + 1
+				for pos < length {
+					if pos+len(tag) <= length && string(runes[pos:pos+len(tag)]) == tag {
+						buf.WriteString(tag)
+						pos += len(tag)
+						break
+					}
+					buf.WriteRune(runes[pos])
+					pos++
+				}
+				continue
+			}
+		}
+
+		// Handle quoted identifiers
+		if runes[pos] == '"' {
+			buf.WriteRune('"')
+			pos++
+			for pos < length {
+				if runes[pos] == '"' {
+					buf.WriteRune('"')
+					pos++
+					break
+				}
+				buf.WriteRune(runes[pos])
+				pos++
+			}
+			continue
+		}
+
+		buf.WriteRune(runes[pos])
+		pos++
+	}
+
+	return buf.String()
 }
