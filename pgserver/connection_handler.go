@@ -672,7 +672,6 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 
 		switch copyFrom.Options.CopyFormat {
 		case tree.CopyFormatText:
-			copyFrom.Options.Delimiter = tree.NewStrVal("\t")
 			// Remove trailing backslash, comma and newline characters from the data
 			if bytes.HasSuffix(message.Data, []byte{'\n'}) {
 				message.Data = message.Data[:len(message.Data)-1]

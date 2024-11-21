@@ -1,6 +1,6 @@
-CREATE SCHEMA IF NOT EXISTS test_psql_copy;
+CREATE SCHEMA IF NOT EXISTS test_psql_copy_from;
 
-USE test_psql_copy;
+USE test_psql_copy_from;
 
 CREATE TABLE t (a int, b text);
 

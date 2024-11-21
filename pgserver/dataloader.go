@@ -61,7 +61,7 @@ type CsvDataLoader struct {
 
 var _ DataLoader = (*CsvDataLoader)(nil)
 
-func NewCsvDataLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
+func NewCsvDataxLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options *tree.CopyOptions) (DataLoader, error) {
 	// Create the FIFO pipe
 	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
 	pipePath, err := duckBuilder.CreatePipe(ctx, "pg-copy-from")
@@ -128,32 +128,43 @@ func (loader *CsvDataLoader) buildSQL() string {
 
 	b.WriteString(" FROM '")
 	b.WriteString(loader.pipePath)
-	b.WriteString("' (AUTO_DETECT false")
+	b.WriteString("' (FORMAT CSV")
 
 	options := loader.options
 
+	switch options.CopyFormat {
+	case tree.CopyFormatText, tree.CopyFormatCSV:
+		if options.Delimiter != nil {
+			b.WriteString(", SEP ")
+			b.WriteString(options.Delimiter.String())
+		} else if options.CopyFormat == tree.CopyFormatText {
+			b.WriteString(`, SEP '\t'`)
+		}
+
+		if options.Quote != nil {
+			b.WriteString(", QUOTE ")
+			b.WriteString(singleQuotedDuckChar(options.Quote.RawString()))
+		} else if options.CopyFormat == tree.CopyFormatText {
+			b.WriteString(`, QUOTE ''`)
+		}
+
+		if options.Escape != nil {
+			b.WriteString(", ESCAPE ")
+			b.WriteString(singleQuotedDuckChar(options.Escape.RawString()))
+		} else if options.CopyFormat == tree.CopyFormatText {
+			b.WriteString(`, ESCAPE ''`)
+		}
+
+		if options.Null != nil {
+			b.WriteString(", NULLSTR ")
+			b.WriteString(options.Null.String())
+		} else if options.CopyFormat == tree.CopyFormatText {
+			b.WriteString(`, NULLSTR '\N'`)
+		}
+	}
+
 	if options.HasHeader && options.Header {
 		b.WriteString(", HEADER")
-	}
-
-	if options.Delimiter != nil {
-		b.WriteString(", SEP ")
-		b.WriteString(options.Delimiter.String())
-	}
-
-	if options.Quote != nil {
-		b.WriteString(", QUOTE ")
-		b.WriteString(singleQuotedDuckChar(options.Quote.RawString()))
-	}
-
-	if options.Escape != nil {
-		b.WriteString(", ESCAPE ")
-		b.WriteString(singleQuotedDuckChar(options.Escape.RawString()))
-	}
-
-	if options.Null != nil {
-		b.WriteString(", NULLSTR ")
-		b.WriteString(loader.options.Null.String())
 	}
 
 	b.WriteString(")")

@@ -3,6 +3,7 @@ package pgserver
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
@@ -25,31 +26,6 @@ func NewDataWriter(
 	query string,
 	options *tree.CopyOptions,
 ) (*DataWriter, error) {
-	// https://www.postgresql.org/docs/current/sql-copy.html
-	// https://duckdb.org/docs/sql/statements/copy.html#csv-options
-	var format string
-	switch options.CopyFormat {
-	case tree.CopyFormatText:
-		format = `FORMAT CSV, DELIMITER '\t', QUOTE '', ESCAPE '', NULLSTR '\N'`
-	case tree.CopyFormatCSV:
-		format = `FORMAT CSV`
-	case tree.CopyFormatBinary:
-		return nil, fmt.Errorf("BINARY format is not supported for COPY TO")
-	}
-
-	var source string
-	if table != nil {
-		if schema != "" {
-			source += catalog.QuoteIdentifierANSI(schema) + "."
-		}
-		source += catalog.QuoteIdentifierANSI(table.Name())
-		if columns != nil {
-			source += "(" + columns.String() + ")"
-		}
-	} else {
-		source = "(" + query + ")"
-	}
-
 	// Create the FIFO pipe
 	db := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
 	pipePath, err := db.CreatePipe(ctx, "pg-copy-to")
@@ -57,15 +33,79 @@ func NewDataWriter(
 		return nil, err
 	}
 
-	// Initialize DataWriter
-	writer := &DataWriter{
-		ctx:      ctx,
-		duckSQL:  fmt.Sprintf("COPY %s TO '%s' (%s)", source, pipePath, format),
-		options:  options,
-		pipePath: pipePath,
+	// https://www.postgresql.org/docs/current/sql-copy.html
+	// https://duckdb.org/docs/sql/statements/copy.html#csv-options
+	var builder strings.Builder
+	builder.Grow(128)
+
+	builder.WriteString("COPY ")
+	if table != nil {
+		if schema != "" {
+			builder.WriteString(catalog.QuoteIdentifierANSI(schema))
+			builder.WriteString(".")
+		}
+		builder.WriteString(catalog.QuoteIdentifierANSI(table.Name()))
+		if columns != nil {
+			builder.WriteString("(")
+			builder.WriteString(columns.String())
+			builder.WriteString(")")
+		}
+	} else {
+		builder.WriteString("(")
+		builder.WriteString(query)
+		builder.WriteString(")")
 	}
 
-	return writer, nil
+	builder.WriteString(" TO '")
+	builder.WriteString(pipePath)
+	builder.WriteString("' (FORMAT CSV")
+
+	switch options.CopyFormat {
+	case tree.CopyFormatText, tree.CopyFormatCSV:
+		if options.Delimiter != nil {
+			builder.WriteString(", DELIMITER ")
+			builder.WriteString(options.Delimiter.String())
+		} else if options.CopyFormat == tree.CopyFormatText {
+			builder.WriteString(`, DELIMITER '\t'`)
+		}
+
+		if options.Quote != nil {
+			builder.WriteString(", QUOTE ")
+			builder.WriteString(singleQuotedDuckChar(options.Quote.RawString()))
+		} else if options.CopyFormat == tree.CopyFormatText {
+			builder.WriteString(`, QUOTE ''`)
+		}
+
+		if options.Escape != nil {
+			builder.WriteString(", ESCAPE ")
+			builder.WriteString(singleQuotedDuckChar(options.Escape.RawString()))
+		} else if options.CopyFormat == tree.CopyFormatText {
+			builder.WriteString(`, ESCAPE ''`)
+		}
+
+		if options.Null != nil {
+			builder.WriteString(`, NULL '`)
+			builder.WriteString(options.Null.String())
+			builder.WriteString(`'`)
+		} else if options.CopyFormat == tree.CopyFormatText {
+			builder.WriteString(`, NULL '\N'`)
+		}
+
+		if options.HasHeader && options.Header {
+			builder.WriteString(", HEADER")
+		}
+	case tree.CopyFormatBinary:
+		return nil, fmt.Errorf("BINARY format is not supported for COPY TO")
+	}
+
+	builder.WriteString(")")
+
+	return &DataWriter{
+		ctx:      ctx,
+		duckSQL:  builder.String(),
+		options:  options,
+		pipePath: pipePath,
+	}, nil
 }
 
 type copyToResult struct {
