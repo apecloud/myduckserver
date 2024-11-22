@@ -125,6 +125,14 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 	}
 }
 
+func (h *ConnectionHandler) closeBackendConn() {
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	adapter.CloseBackendConn(ctx)
+}
+
 // HandleConnection handles a connection's session, reading messages, executing queries, and sending responses.
 // Expected to run in a goroutine per connection.
 func (h *ConnectionHandler) HandleConnection() {
@@ -157,6 +165,7 @@ func (h *ConnectionHandler) HandleConnection() {
 			}
 
 			h.duckHandler.ConnectionClosed(h.mysqlConn)
+			h.closeBackendConn()
 			if err := h.Conn().Close(); err != nil {
 				fmt.Printf("Failed to properly close connection:\n%v\n", err)
 			}
@@ -1235,10 +1244,7 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 
 // discardAll handles the DISCARD ALL command
 func (h *ConnectionHandler) discardAll(query ConvertedQuery) error {
-	err := h.duckHandler.ComResetConnection(h.mysqlConn)
-	if err != nil {
-		return err
-	}
+	h.closeBackendConn()
 
 	return h.send(&pgproto3.CommandComplete{
 		CommandTag: []byte(query.StatementTag),

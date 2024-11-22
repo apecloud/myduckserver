@@ -231,6 +231,11 @@ func (sess *Session) CloseTxn() {
 	sess.pool.CloseTxn(sess.ID())
 }
 
+// CloseBackendConn implements adapter.ConnectionHolder.
+func (sess *Session) CloseBackendConn() {
+	sess.pool.CloseConn(sess.ID())
+}
+
 func (sess *Session) ExecContext(ctx context.Context, query string, args ...any) (stdsql.Result, error) {
 	conn, err := sess.GetCatalogConn(ctx)
 	if err != nil {
