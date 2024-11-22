@@ -55,7 +55,7 @@ class Tests {
             port: port,
             user: user,
             password: password,
-            database: 'main'
+            database: 'postgres'
         });
         await this.client.connect();
     }

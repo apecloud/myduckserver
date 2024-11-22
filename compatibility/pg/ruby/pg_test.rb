@@ -9,7 +9,7 @@ class PGTest
 
     def connect(ip, port, user, password)
       begin
-        @conn = PG.connect(host: ip, port: port, user: user, password: password, dbname: 'main')
+        @conn = PG.connect(host: ip, port: port, user: user, password: password, dbname: 'postgres')
       rescue PG::Error => e
         raise "Connection failed: #{e.message}"
       end

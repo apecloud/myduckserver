@@ -18,7 +18,7 @@ typedef struct {
 
 void connectDB(PGTest *pgTest, const char *ip, int port, const char *user, const char *password) {
     char conninfo[256];
-    snprintf(conninfo, sizeof(conninfo), "host=%s port=%d dbname=main user=%s password=%s", ip, port, user, password);
+    snprintf(conninfo, sizeof(conninfo), "host=%s port=%d dbname=postgres user=%s password=%s", ip, port, user, password);
     pgTest->conn = PQconnectdb(conninfo);
     if (PQstatus(pgTest->conn) != CONNECTION_OK) {
         printf("Connection to database failed: %s", PQerrorMessage(pgTest->conn));

@@ -25,7 +25,7 @@ class Tests {
 
     public function connect($ip, $port, $user, $password) {
         try {
-            $url = "pgsql:host=$ip;port=$port;dbname=main";
+            $url = "pgsql:host=$ip;port=$port;dbname=postgres";
             $this->conn = new PDO($url, $user, $password);
         } catch (PDOException $e) {
             throw new RuntimeException($e->getMessage());

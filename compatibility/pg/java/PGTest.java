@@ -11,7 +11,7 @@ public class PGTest {
 
         public void connect(String ip, int port, String user, String password) {
             try {
-                String url = "jdbc:postgresql://" + ip + ":" + port + "/main";
+                String url = "jdbc:postgresql://" + ip + ":" + port + "/postgres";
                 conn = DriverManager.getConnection(url, user, password);
                 st = conn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
             } catch (SQLException e) {

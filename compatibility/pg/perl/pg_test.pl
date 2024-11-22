@@ -16,7 +16,7 @@ sub new {
 
 sub connect {
     my ($self, $ip, $port, $user, $password) = @_;
-    my $dsn = "dbi:Pg:dbname=main;host=$ip;port=$port";
+    my $dsn = "dbi:Pg:dbname=postgres;host=$ip;port=$port";
     $self->{conn} = DBI->connect($dsn, $user, $password, { RaiseError => 1, AutoCommit => 1 });
 }
 

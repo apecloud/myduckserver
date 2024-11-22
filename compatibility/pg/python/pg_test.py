@@ -40,7 +40,7 @@ class PGTest:
             self.conn = psycopg2.connect(
                 host=ip,
                 port=port,
-                dbname="main",
+                dbname="postgres",
                 user=user,
                 password=password
             )
