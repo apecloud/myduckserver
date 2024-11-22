@@ -24,7 +24,7 @@ func NewDataWriter(
 	handler *DuckHandler,
 	schema string, table sql.Table, columns tree.NameList,
 	query string,
-	options *tree.CopyOptions,
+	options *tree.CopyOptions, rawOptions string,
 ) (*DataWriter, error) {
 	// Create the FIFO pipe
 	db := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
@@ -51,17 +51,40 @@ func NewDataWriter(
 			builder.WriteString(")")
 		}
 	} else {
-		builder.WriteString("(")
+		// the parentheses have already been added
 		builder.WriteString(query)
-		builder.WriteString(")")
 	}
 
 	builder.WriteString(" TO '")
 	builder.WriteString(pipePath)
 
 	switch options.CopyFormat {
+	case CopyFormatParquet:
+		builder.WriteString("' (FORMAT PARQUET")
+		if rawOptions != "" {
+			builder.WriteString(", ")
+			builder.WriteString(rawOptions)
+		}
+		builder.WriteString(")")
+
+	case CopyFormatJSON:
+		builder.WriteString("' (FORMAT JSON")
+		if rawOptions != "" {
+			builder.WriteString(", ")
+			builder.WriteString(rawOptions)
+		}
+		builder.WriteString(")")
+
 	case tree.CopyFormatText, tree.CopyFormatCSV:
 		builder.WriteString("' (FORMAT CSV")
+
+		if rawOptions != "" {
+			// TODO(fan): For TEXT format, we should add some default options if not specified.
+			builder.WriteString(", ")
+			builder.WriteString(rawOptions)
+			builder.WriteString(")")
+			break
+		}
 
 		builder.WriteString(", HEADER ")
 		if options.HasHeader && options.Header {
@@ -98,12 +121,11 @@ func NewDataWriter(
 		} else if options.CopyFormat == tree.CopyFormatText {
 			builder.WriteString(`, NULLSTR '\N'`)
 		}
+		builder.WriteString(")")
 
 	case tree.CopyFormatBinary:
 		return nil, fmt.Errorf("BINARY format is not supported for COPY TO")
 	}
-
-	builder.WriteString(")")
 
 	return &DataWriter{
 		ctx:      ctx,
