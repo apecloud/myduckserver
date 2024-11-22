@@ -168,10 +168,12 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 		return fmt.Errorf("failed to write WAL position: %w", err)
 	}
 
-	err = replicator.StartReplication(sqlCtx, subscriptionConfig.SubscriptionName)
+	sqlCtx, err = h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		return fmt.Errorf("failed to start replication: %w", err)
+		return fmt.Errorf("failed to create context for query: %w", err)
 	}
+
+	go replicator.StartReplication(sqlCtx, subscriptionConfig.SubscriptionName)
 
 	return nil
 }
