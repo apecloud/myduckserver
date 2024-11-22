@@ -10,6 +10,16 @@ import (
 	"regexp"
 )
 
+// This file implements the logic for handling CREATE SUBSCRIPTION SQL statements.
+// Example usage of CREATE SUBSCRIPTION SQL:
+//
+// CREATE SUBSCRIPTION mysub
+// CONNECTION 'dbname= host=127.0.0.1 port=15432 user=postgres password=root'
+// PUBLICATION mypub;
+//
+// The statement creates a subscription named 'mysub' that connects to a PostgreSQL
+// database and subscribes to changes published under the 'mypub' publication.
+
 type SubscriptionConfig struct {
 	SubscriptionName string
 	PublicationName  string
