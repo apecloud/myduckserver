@@ -69,6 +69,10 @@ type copyFromStdinState struct {
 	copyFromStdinNode *tree.CopyFrom
 	// targetTable stores the targetTable that the data is being loaded into.
 	targetTable sql.InsertableTable
+
+	// For non-PG-parsable COPY FROM
+	rawOptions string
+
 	// dataLoader is the implementation of DataLoader that is used to load each individual CopyData chunk into the
 	// target table.
 	dataLoader DataLoader

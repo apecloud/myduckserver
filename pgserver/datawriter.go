@@ -12,20 +12,30 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
-type DataWriter struct {
+type DataWriter interface {
+	Start() (string, chan CopyToResult, error)
+	Close()
+}
+
+type CopyToResult struct {
+	RowCount int64
+	Err      error
+}
+
+type DuckDataWriter struct {
 	ctx      *sql.Context
 	duckSQL  string
 	options  *tree.CopyOptions
 	pipePath string
 }
 
-func NewDataWriter(
+func NewDuckDataWriter(
 	ctx *sql.Context,
 	handler *DuckHandler,
 	schema string, table sql.Table, columns tree.NameList,
 	query string,
 	options *tree.CopyOptions, rawOptions string,
-) (*DataWriter, error) {
+) (*DuckDataWriter, error) {
 	// Create the FIFO pipe
 	db := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
 	pipePath, err := db.CreatePipe(ctx, "pg-copy-to")
@@ -127,7 +137,7 @@ func NewDataWriter(
 		return nil, fmt.Errorf("BINARY format is not supported for COPY TO")
 	}
 
-	return &DataWriter{
+	return &DuckDataWriter{
 		ctx:      ctx,
 		duckSQL:  builder.String(),
 		options:  options,
@@ -135,14 +145,9 @@ func NewDataWriter(
 	}, nil
 }
 
-type copyToResult struct {
-	RowCount int64
-	Err      error
-}
-
-func (dw *DataWriter) Start() (string, chan copyToResult, error) {
+func (dw *DuckDataWriter) Start() (string, chan CopyToResult, error) {
 	// Execute the COPY TO statement in a separate goroutine.
-	ch := make(chan copyToResult, 1)
+	ch := make(chan CopyToResult, 1)
 	go func() {
 		defer os.Remove(dw.pipePath)
 		defer close(ch)
@@ -152,16 +157,16 @@ func (dw *DataWriter) Start() (string, chan copyToResult, error) {
 		// This operation will block until the reader opens the pipe for reading.
 		result, err := adapter.ExecCatalog(dw.ctx, dw.duckSQL)
 		if err != nil {
-			ch <- copyToResult{Err: err}
+			ch <- CopyToResult{Err: err}
 			return
 		}
 		affected, _ := result.RowsAffected()
-		ch <- copyToResult{RowCount: affected}
+		ch <- CopyToResult{RowCount: affected}
 	}()
 
 	return dw.pipePath, ch, nil
 }
 
-func (dw *DataWriter) Close() {
+func (dw *DuckDataWriter) Close() {
 	os.Remove(dw.pipePath)
 }
