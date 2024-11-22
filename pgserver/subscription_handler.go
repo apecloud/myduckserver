@@ -173,6 +173,9 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
+	// TODO(neo.zty): This process has error message with:
+	//  Received 'conn busy' error, waiting and retrying  component=replicator protocol=pg
+	//  Deal with it.
 	go replicator.StartReplication(sqlCtx, subscriptionConfig.SubscriptionName)
 
 	return nil
