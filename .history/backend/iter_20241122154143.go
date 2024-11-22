@@ -17,8 +17,6 @@ package backend
 import (
 	stdsql "database/sql"
 	"io"
-	"math/big"
-	"reflect"
 	"strings"
 
 	"github.com/apecloud/myduckserver/charset"
@@ -32,16 +30,15 @@ var _ sql.RowIter = (*SQLRowIter)(nil)
 
 // SQLRowIter wraps a standard sql.Rows as a RowIter.
 type SQLRowIter struct {
-	rows            *stdsql.Rows
-	columns         []*stdsql.ColumnType
-	schema          sql.Schema
-	buffer          []any // pre-allocated buffer for scanning values
-	pointers        []any // pointers to the buffer
-	decimals        []int
-	intervals       []int
-	nonUTF8         []int
-	charsets        []sql.CharacterSetID
-	typeConversions map[int]reflect.Type
+	rows      *stdsql.Rows
+	columns   []*stdsql.ColumnType
+	schema    sql.Schema
+	buffer    []any // pre-allocated buffer for scanning values
+	pointers  []any // pointers to the buffer
+	decimals  []int
+	intervals []int
+	nonUTF8   []int
+	charsets  []sql.CharacterSetID
 }
 
 func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
@@ -75,24 +72,6 @@ func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
 		}
 	}
 
-	typeConversions := make(map[int]reflect.Type)
-	for i, c := range columns {
-		if c.DatabaseTypeName() == "HUGEINT" {
-			expectedType := schema[i].Type
-			if ok := types.IsFloat(expectedType); ok {
-				typeConversions[i] = reflect.TypeOf(float64(0))
-			} else {
-				typeConversions[i] = reflect.TypeOf(int64(0))
-			}
-		}
-		if c.DatabaseTypeName() == "DOUBLE" || c.DatabaseTypeName() == "FLOAT" {
-			expectedType := schema[i].Type
-			if ok := types.IsInteger(expectedType); ok {
-				typeConversions[i] = reflect.TypeOf(int64(0))
-			}
-		}
-	}
-
 	width := max(len(columns), len(schema))
 	buf := make([]any, width)
 	ptrs := make([]any, width)
@@ -100,7 +79,7 @@ func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
 		ptrs[i] = &buf[i]
 	}
 
-	return &SQLRowIter{rows, columns, schema, buf, ptrs, decimals, intervals, nonUTF8, charsets, typeConversions}, nil
+	return &SQLRowIter{rows, columns, schema, buf, ptrs, decimals, intervals, nonUTF8, charsets}, nil
 }
 
 // Next retrieves the next row. It will return io.EOF if it's the last row.
@@ -133,27 +112,6 @@ func (iter *SQLRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		switch v := iter.buffer[idx].(type) {
 		case duckdb.Interval:
 			iter.buffer[idx] = t.MicrosecondsToTimespan(v.Micros + int64(v.Days)*24*60*60*1000000) // ignore the month part, which does not appear in MySQL
-		}
-	}
-
-	// Process type conversions
-	for idx, targetType := range iter.typeConversions {
-		rawValue := iter.buffer[idx]
-		if targetType == reflect.TypeOf(float64(0)) {
-			switch v := rawValue.(type) {
-			case *big.Int:
-				iter.buffer[idx], _ = v.Float64()
-			}
-		}
-		if targetType == reflect.TypeOf(int64(0)) {
-			switch v := rawValue.(type) {
-			case float64:
-				iter.buffer[idx] = int64(v)
-			case float32:
-				iter.buffer[idx] = int64(v)
-			case *big.Int:
-				iter.buffer[idx] = v.Int64()
-			}
 		}
 	}
 
