@@ -30,18 +30,23 @@ import (
 
 var _ sql.RowIter = (*SQLRowIter)(nil)
 
+type typeConversion struct {
+	idx  int
+	kind reflect.Kind
+}
+
 // SQLRowIter wraps a standard sql.Rows as a RowIter.
 type SQLRowIter struct {
-	rows            *stdsql.Rows
-	columns         []*stdsql.ColumnType
-	schema          sql.Schema
-	buffer          []any // pre-allocated buffer for scanning values
-	pointers        []any // pointers to the buffer
-	decimals        []int
-	intervals       []int
-	nonUTF8         []int
-	charsets        []sql.CharacterSetID
-	typeConversions map[int]reflect.Type
+	rows        *stdsql.Rows
+	columns     []*stdsql.ColumnType
+	schema      sql.Schema
+	buffer      []any // pre-allocated buffer for scanning values
+	pointers    []any // pointers to the buffer
+	decimals    []int
+	intervals   []int
+	nonUTF8     []int
+	charsets    []sql.CharacterSetID
+	conversions []typeConversion
 }
 
 func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
@@ -75,20 +80,20 @@ func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
 		}
 	}
 
-	typeConversions := make(map[int]reflect.Type)
+	var conversions []typeConversion
 	for i, c := range columns {
 		if c.DatabaseTypeName() == "HUGEINT" {
 			expectedType := schema[i].Type
 			if ok := types.IsFloat(expectedType); ok {
-				typeConversions[i] = reflect.TypeOf(float64(0))
+				conversions = append(conversions, typeConversion{idx: i, kind: reflect.Float64})
 			} else {
-				typeConversions[i] = reflect.TypeOf(int64(0))
+				conversions = append(conversions, typeConversion{idx: i, kind: reflect.Int64})
 			}
 		}
 		if c.DatabaseTypeName() == "DOUBLE" || c.DatabaseTypeName() == "FLOAT" {
 			expectedType := schema[i].Type
 			if ok := types.IsInteger(expectedType); ok {
-				typeConversions[i] = reflect.TypeOf(int64(0))
+				conversions = append(conversions, typeConversion{idx: i, kind: reflect.Int64})
 			}
 		}
 	}
@@ -100,7 +105,7 @@ func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
 		ptrs[i] = &buf[i]
 	}
 
-	return &SQLRowIter{rows, columns, schema, buf, ptrs, decimals, intervals, nonUTF8, charsets, typeConversions}, nil
+	return &SQLRowIter{rows, columns, schema, buf, ptrs, decimals, intervals, nonUTF8, charsets, conversions}, nil
 }
 
 // Next retrieves the next row. It will return io.EOF if it's the last row.
@@ -137,15 +142,16 @@ func (iter *SQLRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 	}
 
 	// Process type conversions
-	for idx, targetType := range iter.typeConversions {
+	for _, targetType := range iter.conversions {
+		idx := targetType.idx
 		rawValue := iter.buffer[idx]
-		if targetType == reflect.TypeOf(float64(0)) {
+		if targetType.kind == reflect.Float64 {
 			switch v := rawValue.(type) {
 			case *big.Int:
 				iter.buffer[idx], _ = v.Float64()
 			}
 		}
-		if targetType == reflect.TypeOf(int64(0)) {
+		if targetType.kind == reflect.Int64 {
 			switch v := rawValue.(type) {
 			case float64:
 				iter.buffer[idx] = int64(v)
