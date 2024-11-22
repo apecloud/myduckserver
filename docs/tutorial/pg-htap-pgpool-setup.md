@@ -27,6 +27,26 @@ The HTAP service can be accessed by
 docker exec -ti htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres"
 ``` 
 
+And a table `test` with one row data is replicated from the primary PostreSQL to MyDuck server.
+
+```sql
+psql (17.1)
+Type "help" for help.
+
+postgres=# \d
+        List of relations
+ Schema | Name | Type  |  Owner
+--------+------+-------+----------
+ public | test | table | postgres
+(1 row)
+
+postgres=# select * from test;
+ id | name
+----+------
+  1 | test
+(1 row)
+```
+
 # Monitor status
 
 * The status of proxy `PGPool-II` can be retrieved by the built-in statement [SHOW POOL_NODES](https://www.pgpool.net/docs/latest/en/html/sql-show-pool-nodes.html). e.g. You can get the status of the servers by executing the statement `SHOW POOL_NODES;` on the connection to PGPool server.
@@ -53,7 +73,7 @@ postgres=# show pool_nodes;
 
 after executing the `READ` statement. As you can see, the `select_cnt` has been increased by 1, indicating that the read statement has been routed to MyDuck server.
 ```sql
-postgres=# select * from public.test;
+postgres=# select * from test;
  id | name 
 ----+------
   1 | test
@@ -70,9 +90,9 @@ postgres=# show pool_nodes;
 Let's insert a new row and then query the table. Without surprise, the data has been replicated to our MyDuck server.
 ```sql
 postgres=# 
-postgres=# insert into public.test values (2, 'test again');
+postgres=# insert into test values (2, 'test again');
 INSERT 0 1
-postgres=# select * from public.test;
+postgres=# select * from test;
  id |    name    
 ----+------------
   1 | test

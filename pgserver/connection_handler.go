@@ -316,7 +316,7 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 		}
 	}
 
-	useStmt := fmt.Sprintf("USE %s;", db)
+	useStmt := fmt.Sprintf("USE %s.public;", db)
 	setStmt := fmt.Sprintf("SET database TO %s;", db)
 	parsed, err := parser.ParseOne(setStmt)
 	if err != nil {
