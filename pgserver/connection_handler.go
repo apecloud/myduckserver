@@ -280,7 +280,7 @@ func (h *ConnectionHandler) sendClientStartupMessages() error {
 		{"default_transaction_read_only", "off"},
 		{"scram_iterations", "4096"},
 		{"DateStyle", "ISO, MDY"},
-		{"standard_conforming_strings", "postgres"},
+		{"standard_conforming_strings", "on"},
 		{"session_authorization", "postgres"},
 		{"client_encoding", "UTF8"},
 		{"server_version", "15.0"},
