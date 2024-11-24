@@ -57,6 +57,10 @@ const (
 // Match any strings starting with "ON" (case insensitive)
 var gtidModeIsOnRegex = regexp.MustCompile(`(?i)^ON$`)
 
+type tableIdentifier struct {
+	dbName, tableName string
+}
+
 // binlogReplicaApplier represents the process that applies updates from a binlog connection.
 //
 // This type is NOT used concurrently – there is currently only one single applier process running to process binlog
@@ -64,6 +68,7 @@ var gtidModeIsOnRegex = regexp.MustCompile(`(?i)^ON$`)
 type binlogReplicaApplier struct {
 	format                *mysql.BinlogFormat
 	tableMapsById         map[uint64]*mysql.TableMap
+	tablesByName          map[tableIdentifier]sql.Table
 	stopReplicationChan   chan struct{}
 	currentGtid           replication.GTID
 	replicationSourceUuid string
@@ -86,6 +91,7 @@ type binlogReplicaApplier struct {
 func newBinlogReplicaApplier(filters *filterConfiguration) *binlogReplicaApplier {
 	return &binlogReplicaApplier{
 		tableMapsById:       make(map[uint64]*mysql.TableMap),
+		tablesByName:        make(map[tableIdentifier]sql.Table),
 		stopReplicationChan: make(chan struct{}),
 		filters:             filters,
 	}
@@ -895,6 +901,7 @@ func (a *binlogReplicaApplier) executeQueryWithEngine(ctx *sql.Context, engine *
 		}
 		if mysqlutil.CauseSchemaChange(node) {
 			flushReason = delta.DDLStmtFlushReason
+			a.tablesByName = make(map[tableIdentifier]sql.Table)
 		}
 	}
 
@@ -1013,7 +1020,7 @@ func (a *binlogReplicaApplier) processRowEvent(ctx *sql.Context, event mysql.Bin
 		ctx.GetLogger().Errorf(msg)
 		MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, msg)
 	}
-	pkSchema, tableName, err := getTableSchema(ctx, engine, tableMap.Name, tableMap.Database)
+	pkSchema, tableName, err := a.getTableSchema(ctx, engine, tableMap.Name, tableMap.Database)
 	if err != nil {
 		return err
 	}
@@ -1199,6 +1206,7 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 			}
 			a.deltaBufSize.Add(uint64(pos))
 		}
+		appender.IncDeleteEventCount()
 	}
 
 	// Insert the after image
@@ -1229,6 +1237,7 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 			}
 			a.deltaBufSize.Add(uint64(pos))
 		}
+		appender.IncInsertEventCount()
 	}
 
 	return nil
@@ -1291,17 +1300,25 @@ varsLoop:
 
 // getTableSchema returns a sql.Schema for the case-insensitive |tableName| in the database named
 // |databaseName|, along with the exact, case-sensitive table name.
-func getTableSchema(ctx *sql.Context, engine *gms.Engine, tableName, databaseName string) (sql.PrimaryKeySchema, string, error) {
-	database, err := engine.Analyzer.Catalog.Database(ctx, databaseName)
-	if err != nil {
-		return sql.PrimaryKeySchema{}, "", err
-	}
-	table, ok, err := database.GetTableInsensitive(ctx, tableName)
-	if err != nil {
-		return sql.PrimaryKeySchema{}, "", err
-	}
-	if !ok {
-		return sql.PrimaryKeySchema{}, "", fmt.Errorf("unable to find table %q", tableName)
+func (a *binlogReplicaApplier) getTableSchema(ctx *sql.Context, engine *gms.Engine, tableName, databaseName string) (sql.PrimaryKeySchema, string, error) {
+	key := tableIdentifier{dbName: strings.ToLower(databaseName), tableName: strings.ToLower(tableName)}
+	table, found := a.tablesByName[key]
+
+	if !found {
+		database, err := engine.Analyzer.Catalog.Database(ctx, databaseName)
+		if err != nil {
+			return sql.PrimaryKeySchema{}, "", err
+		}
+		var ok bool
+		table, ok, err = database.GetTableInsensitive(ctx, tableName)
+		if err != nil {
+			return sql.PrimaryKeySchema{}, "", err
+		}
+		if !ok {
+			return sql.PrimaryKeySchema{}, "", fmt.Errorf("unable to find table %q", tableName)
+		}
+
+		a.tablesByName[key] = table
 	}
 
 	if pkTable, ok := table.(sql.PrimaryKeyTable); ok {

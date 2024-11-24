@@ -17,8 +17,10 @@ type tableIdentifier struct {
 }
 
 type DeltaAppender struct {
-	schema   sql.Schema
-	appender myarrow.ArrowAppender
+	schema           sql.Schema
+	appender         myarrow.ArrowAppender
+	insertEventCount int
+	deleteEventCount int
 }
 
 // Create a new appender.
@@ -114,4 +116,25 @@ func (a *DeltaAppender) Grow(n int) {
 
 func (a *DeltaAppender) Release() {
 	a.appender.Release()
+}
+
+func (a *DeltaAppender) IncInsertEventCount() {
+	a.insertEventCount++
+}
+
+func (a *DeltaAppender) IncDeleteEventCount() {
+	a.deleteEventCount++
+}
+
+func (a *DeltaAppender) GetInsertEventCount() int {
+	return a.insertEventCount
+}
+
+func (a *DeltaAppender) GetDeleteEventCount() int {
+	return a.deleteEventCount
+}
+
+func (a *DeltaAppender) ResetEventCounts() {
+	a.insertEventCount = 0
+	a.deleteEventCount = 0
 }

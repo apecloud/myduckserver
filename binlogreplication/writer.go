@@ -25,6 +25,11 @@ type DeltaAppender interface {
 	TxnGroup() *array.BinaryDictionaryBuilder
 	TxnSeqNumber() *array.Uint64Builder
 	TxnStmtOrdinal() *array.Uint64Builder
+	IncInsertEventCount()
+	IncDeleteEventCount()
+	GetInsertEventCount() int
+	GetDeleteEventCount() int
+	ResetEventCounts()
 }
 
 type TableWriterProvider interface {

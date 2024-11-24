@@ -147,7 +147,10 @@ func (c *DeltaController) updateTable(
 
 	schema := appender.BaseSchema() // schema of the base table
 	record := appender.Build()
-	defer record.Release()
+	defer func() {
+		record.Release()
+		appender.ResetEventCounts()
+	}()
 
 	// fmt.Println("record:", record)
 
@@ -197,26 +200,39 @@ func (c *DeltaController) updateTable(
 	augmentedSchema := appender.Schema()
 	var builder strings.Builder
 	builder.Grow(512)
-	builder.WriteString("SELECT ")
-	builder.WriteString("r[1] AS ")
-	builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
-	for i, col := range augmentedSchema[1:] {
-		builder.WriteString(", r[")
-		builder.WriteString(strconv.Itoa(i + 2))
-		builder.WriteString("]")
-		if types.IsTimestampType(col.Type) {
-			builder.WriteString("::TIMESTAMP")
+	if appender.GetDeleteEventCount() > 0 {
+		builder.WriteString("SELECT ")
+		builder.WriteString("r[1] AS ")
+		builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
+		for i, col := range augmentedSchema[1:] {
+			builder.WriteString(", r[")
+			builder.WriteString(strconv.Itoa(i + 2))
+			builder.WriteString("]")
+			if types.IsTimestampType(col.Type) {
+				builder.WriteString("::TIMESTAMP")
+			}
+			builder.WriteString(" AS ")
+			builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
 		}
-		builder.WriteString(" AS ")
-		builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
+		builder.WriteString(" FROM (SELECT ")
+		builder.WriteString(pkList)
+		builder.WriteString(", LAST(ROW(*COLUMNS(*)) ORDER BY txn_group, txn_seq, txn_stmt, action) AS r")
+		builder.WriteString(ipcSQL)
+		builder.WriteString(" GROUP BY ")
+		builder.WriteString(pkList)
+		builder.WriteString(")")
+	} else {
+		builder.WriteString("SELECT ")
+		builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
+		for _, col := range augmentedSchema[1:] {
+			builder.WriteString(", ")
+			builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
+			if types.IsTimestampType(col.Type) {
+				builder.WriteString("::TIMESTAMP")
+			}
+		}
+		builder.WriteString(ipcSQL)
 	}
-	builder.WriteString(" FROM (SELECT ")
-	builder.WriteString(pkList)
-	builder.WriteString(", LAST(ROW(*COLUMNS(*)) ORDER BY txn_group, txn_seq, txn_stmt, action) AS r")
-	builder.WriteString(ipcSQL)
-	builder.WriteString(" GROUP BY ")
-	builder.WriteString(pkList)
-	builder.WriteString(")")
 	condenseDeltaSQL := builder.String()
 
 	var (
@@ -244,7 +260,11 @@ func (c *DeltaController) updateTable(
 	}
 
 	// Insert or replace new rows (action = INSERT) into the base table.
-	insertSQL := "INSERT OR REPLACE INTO " +
+	insertSQL := "INSERT "
+	if appender.GetDeleteEventCount() > 0 {
+		insertSQL += "OR REPLACE "
+	}
+	insertSQL += "INTO " +
 		qualifiedTableName +
 		" SELECT * EXCLUDE (" + AugmentedColumnList + ") FROM temp.main.delta WHERE action = " +
 		strconv.Itoa(int(binlog.InsertRowEvent))
