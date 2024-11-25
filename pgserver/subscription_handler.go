@@ -163,7 +163,12 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 		return fmt.Errorf("failed to create logical replicator: %w", err)
 	}
 
-	err = replicator.CreateReplicationSlotIfNecessary(subscriptionConfig.SubscriptionName)
+	err = logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
+	if err != nil {
+		return fmt.Errorf("failed to create publication: %w", err)
+	}
+
+	err = replicator.CreateReplicationSlotIfNotExists(subscriptionConfig.PublicationName)
 	if err != nil {
 		return fmt.Errorf("failed to create replication slot: %w", err)
 	}
@@ -173,7 +178,7 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	err = replicator.WriteWALPosition(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.LSN)
+	err = replicator.WriteWALPosition(sqlCtx, subscriptionConfig.PublicationName, subscriptionConfig.LSN)
 	if err != nil {
 		return fmt.Errorf("failed to write WAL position: %w", err)
 	}
@@ -183,10 +188,7 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	// TODO(neo.zty): This process has error message with:
-	//  Received 'conn busy' error, waiting and retrying  component=replicator protocol=pg
-	//  Deal with it.
-	go replicator.StartReplication(sqlCtx, subscriptionConfig.SubscriptionName)
+	go replicator.StartReplication(sqlCtx, subscriptionConfig.PublicationName)
 
 	return nil
 }
