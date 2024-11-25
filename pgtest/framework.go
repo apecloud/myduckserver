@@ -220,12 +220,6 @@ func NormalizeValToString(typ *pgtype.Type, v any) any {
 	}
 
 	switch val := v.(type) {
-	case bool:
-		if val {
-			return "t"
-		} else {
-			return "f"
-		}
 	case pgtype.Numeric:
 		if val.NaN {
 			return math.NaN()

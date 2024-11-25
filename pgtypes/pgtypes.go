@@ -224,8 +224,16 @@ func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 
 	schema := make(sql.Schema, len(types))
 	for i, t := range types {
-		dbTypeName := t.DatabaseTypeName()
+		var (
+			dbTypeName       = t.DatabaseTypeName()
+			precision, scale int32
+		)
 		if strings.HasPrefix(dbTypeName, "DECIMAL") {
+			// Scan precision and scale from the type name
+			// Ref: logicalTypeNameDecimal in go-duckdb
+			if _, err := fmt.Sscanf(dbTypeName, "DECIMAL(%d,%d)", &precision, &scale); err != nil {
+				return nil, err
+			}
 			dbTypeName = "DECIMAL"
 		}
 		pgTypeName, ok := DuckdbTypeStrToPostgresTypeStr[dbTypeName]
@@ -243,7 +251,6 @@ func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 			size = s
 		}
 
-		var precision, scale int32
 		if pgType.OID == pgtype.NumericOID {
 			if p, s, ok := t.DecimalSize(); ok {
 				precision = int32(p)
@@ -270,10 +277,18 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 	columns := rows.Columns()
 	schema := make(sql.Schema, len(columns))
 	for i, colName := range columns {
-		var pgTypeName string
+		var (
+			pgTypeName       string
+			precision, scale int32
+		)
 		if colType, ok := rows.(driver.RowsColumnTypeDatabaseTypeName); ok {
 			dbTypeName := colType.ColumnTypeDatabaseTypeName(i)
 			if strings.HasPrefix(dbTypeName, "DECIMAL") {
+				// Scan precision and scale from the type name
+				// Ref: logicalTypeNameDecimal in go-duckdb
+				if _, err := fmt.Sscanf(dbTypeName, "DECIMAL(%d,%d)", &precision, &scale); err != nil {
+					return nil, err
+				}
 				dbTypeName = "DECIMAL"
 			}
 			pgTypeName = DuckdbTypeStrToPostgresTypeStr[dbTypeName]
@@ -296,7 +311,6 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 			size = s
 		}
 
-		var precision, scale int32
 		if pgType.OID == pgtype.NumericOID {
 			if colPrecisionScale, ok := rows.(driver.RowsColumnTypePrecisionScale); ok {
 				p, s, ok := colPrecisionScale.ColumnTypePrecisionScale(i)
