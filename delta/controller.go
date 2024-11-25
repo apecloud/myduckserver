@@ -149,7 +149,7 @@ func (c *DeltaController) updateTable(
 	record := appender.Build()
 	defer func() {
 		record.Release()
-		appender.ResetEventCounts()
+		appender.ResetCounters()
 	}()
 
 	// fmt.Println("record:", record)
@@ -200,7 +200,7 @@ func (c *DeltaController) updateTable(
 	augmentedSchema := appender.Schema()
 	var builder strings.Builder
 	builder.Grow(512)
-	if appender.GetDeleteEventCount() > 0 {
+	if appender.counters.event.delete > 0 || appender.counters.event.update > 0 { // sometimes UPDATE does not DELETE pre-image
 		builder.WriteString("SELECT ")
 		builder.WriteString("r[1] AS ")
 		builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
@@ -222,6 +222,8 @@ func (c *DeltaController) updateTable(
 		builder.WriteString(pkList)
 		builder.WriteString(")")
 	} else {
+		// For pure INSERTs, since the source has confirmed that there are no duplicates,
+		// we can skip the deduplication step.
 		builder.WriteString("SELECT ")
 		builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
 		for _, col := range augmentedSchema[1:] {
@@ -261,7 +263,7 @@ func (c *DeltaController) updateTable(
 
 	// Insert or replace new rows (action = INSERT) into the base table.
 	insertSQL := "INSERT "
-	if appender.GetDeleteEventCount() > 0 || appender.GetUpdateEventCount() > 0 {
+	if appender.counters.event.delete > 0 || appender.counters.event.update > 0 { // sometimes UPDATE does not DELETE pre-image
 		insertSQL += "OR REPLACE "
 	}
 	insertSQL += "INTO " +
@@ -285,7 +287,7 @@ func (c *DeltaController) updateTable(
 	}
 
 	// If there are no rows to delete, we can skip the DELETE step.
-	if appender.GetDeleteEventCount() == 0 {
+	if appender.counters.action.delete == 0 {
 		return nil
 	}
 
