@@ -648,7 +648,7 @@ func (r *LogicalReplicator) processMessage(
 		schema := make(sql.Schema, len(logicalMsg.Columns))
 		var keys []uint16
 		for i, col := range logicalMsg.Columns {
-			pgType, err := pgtypes.NewPostgresType(col.DataType)
+			pgType, err := pgtypes.NewPostgresType(col.DataType, col.TypeModifier)
 			if err != nil {
 				return false, err
 			}

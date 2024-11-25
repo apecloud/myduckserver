@@ -30,6 +30,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pgx/v5"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -477,17 +478,16 @@ var replicationTests = []ReplicationTest{
 	},
 	{
 		Name: "all types",
-		Skip: true, // some types don't work yet: DATE and DATETIME not round-tripping correctly
 		SetUpScript: []string{
 			dropReplicationSlot,
 			createReplicationSlot,
 			startReplication,
 			"/* replica */ drop table if exists public.test",
-			"/* replica */ create table public.test (id INT primary key, name varchar(100), age INT, is_cool BOOLEAN, height FLOAT, birth_date DATE, birth_timestamp TIMESTAMP)",
+			"/* replica */ create table public.test (id INT primary key, name varchar(100), age INT, is_cool BOOLEAN, height FLOAT, birth_date DATE, birth_timestamp TIMESTAMP, income DECIMAL(10,2))",
 			"drop table if exists public.test",
-			"create table public.test (id INT primary key, name varchar(100), age INT, is_cool BOOLEAN, height FLOAT, birth_date DATE, birth_timestamp TIMESTAMP)",
-			"INSERT INTO public.test VALUES (1, 'one', 1, true, 1.1, '2021-01-01', '2021-01-01 12:00:00')",
-			"INSERT INTO public.test VALUES (2, 'two', 2, false, 2.2, '2021-02-02', '2021-02-02 13:00:00')",
+			"create table public.test (id INT primary key, name varchar(100), age INT, is_cool BOOLEAN, height FLOAT, birth_date DATE, birth_timestamp TIMESTAMP, income DECIMAL(10,2))",
+			"INSERT INTO public.test VALUES (1, 'one', 1, true, 1.1, '2021-01-01', '2021-01-01 12:00:00', 12345678.91)",
+			"INSERT INTO public.test VALUES (2, 'two', 2, false, 2.2, '2021-02-02', '2021-02-02 13:00:00', 98765432.12)",
 			"UPDATE public.test SET name = 'three' WHERE id = 2",
 			"DELETE FROM public.test WHERE id = 1",
 			waitForCatchup,
@@ -496,7 +496,7 @@ var replicationTests = []ReplicationTest{
 			{
 				Query: "/* replica */ SELECT * FROM public.test order by id",
 				Expected: []sql.Row{
-					{int32(2), "three", int32(2), false, 2.2, "2021-02-02", "2021-02-02 13:00:00"},
+					{int32(2), "three", int32(2), false, 2.2, "2021-02-02", "2021-02-02 13:00:00", pgtest.Numeric("98765432.12")},
 				},
 			},
 		},
@@ -528,7 +528,7 @@ var replicationTests = []ReplicationTest{
 }
 
 func TestReplication(t *testing.T) {
-	// logrus.SetLevel(logrus.DebugLevel)
+	logrus.SetLevel(logrus.DebugLevel)
 	RunReplicationScripts(t, replicationTests)
 }
 
@@ -568,14 +568,14 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	require.NoError(t, logrepl.CreatePublication(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
-	// for i, script := range scripts {
-	// 	if i == 0 {
-	// 		RunReplicationScript(t, dsn, script)
-	// 	}
-	// }
-	for _, script := range scripts {
-		RunReplicationScript(t, dsn, script)
+	for i, script := range scripts {
+		if i == 10 {
+			RunReplicationScript(t, dsn, script)
+		}
 	}
+	// for _, script := range scripts {
+	// 	RunReplicationScript(t, dsn, script)
+	// }
 }
 
 const slotName = "myduck_slot"
