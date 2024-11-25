@@ -40,21 +40,13 @@ func generateCreateTableStmt(msg *pglogrepl.RelationMessageV2) (string, error) {
 func pgTypeName(col *pglogrepl.RelationMessageColumn) string {
 	if duckdbType, ok := pgtypes.PostgresOIDToDuckDBTypeName[col.DataType]; ok {
 		if col.DataType == pgtype.NumericOID {
-			precision, scale := decodePrecisionScale(int(col.TypeModifier))
-			return fmt.Sprintf("DECIMAL(%d,%d)", precision, scale)
+			if precision, scale, ok := pgtypes.DecodePrecisionScale(int(col.TypeModifier)); ok {
+				return fmt.Sprintf("DECIMAL(%d,%d)", precision, scale)
+			} else {
+				return "VARCHAR" // default to VARCHAR if precision/scale is unknown
+			}
 		}
 		return duckdbType
 	}
 	return "VARCHAR" // default to VARCHAR if type is unknown
-}
-
-func decodePrecisionScale(typmod int) (precision int, scale int) {
-	if typmod >= 0 {
-		precision = ((typmod - 4) >> 16) & 0xFFFF
-		scale = (typmod - 4) & 0xFFFF
-	} else {
-		precision = 0
-		scale = 0
-	}
-	return
 }

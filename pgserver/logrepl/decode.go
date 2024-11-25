@@ -2,10 +2,13 @@ package logrepl
 
 import (
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/decimal128"
+	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -27,7 +30,19 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 		return 0, fmt.Errorf("column %s: unsupported type conversion for OID %d to %T", columnType.Name, columnType.DataType, builder)
 	}
 
-	oid := dt.OID
+	var (
+		oid   = dt.OID
+		scale int32
+	)
+	if oid == pgtype.NumericOID {
+		_, scale, _ = pgtypes.DecodePrecisionScale(int(columnType.TypeModifier))
+	}
+
+	// StringBuilder.Append is just StringBuilder.BinaryBuilder.Append
+	if b, ok := builder.(*array.StringBuilder); ok {
+		builder = b.BinaryBuilder
+	}
+
 	switch oid {
 	case pgtype.BoolOID:
 		if b, ok := builder.(*array.BooleanBuilder); ok {
@@ -129,15 +144,51 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 		}
 
 	case pgtype.NumericOID:
-		// TODO(fan): write small decimal as Decimal128
-		if b, ok := builder.(*array.StringBuilder); ok {
-			var v pgtype.Text
-			var codec pgtype.NumericCodec
-			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+		// Fast path for text format & string destination
+		if format == pgtype.TextFormatCode {
+			switch b := builder.(type) {
+			case *array.BinaryBuilder:
+				b.Append(data)
+				return len(data), nil
+			}
+		}
+
+		// TODO(fan): Write a custom decoder for numeric to achieve better performance
+		var v pgtype.Numeric
+		var codec pgtype.NumericCodec
+		if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+			return 0, err
+		}
+		if v.NaN || v.InfinityModifier != 0 {
+			builder.AppendNull() // Arrow doesn't support NaN or Infinity
+			return 0, nil
+		}
+
+		switch b := builder.(type) {
+		case *array.Decimal128Builder:
+			if exp := v.Exp + scale; exp != 0 {
+				ten := big.NewInt(10)
+				if exp > 0 { // e.g., v.Int = 123, v.Exp = -2, scale = 3 (i.e., target = 1.230), exp = 1, we need to scale up by 10: 123 x 10 = 1230
+					for range exp {
+						v.Int.Mul(v.Int, ten)
+					}
+				} else { // e.g., v.Int = 1230, v.Exp = -3, scale = 2 (i.e., target = 1.23), exp = -1, we need to scale down by 10: 1230 / 10 = 123
+					for range -exp {
+						v.Int.Div(v.Int, ten)
+					}
+				}
+			}
+			b.Append(decimal128.FromBigInt(v.Int))
+			return 16, nil
+
+		case *array.BinaryBuilder: // This is for very large numbers that can't fit into Decimal128, so we pre-allocate a larger buffer
+			var buf [64]byte
+			res, err := codec.PlanEncode(typeMap, oid, pgtype.TextFormatCode, v).Encode(v, buf[:0])
+			if err != nil {
 				return 0, err
 			}
-			b.AppendString(v.String)
-			return len(data), nil
+			b.Append(res)
+			return len(res), nil
 		}
 
 	case pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.NameOID:
@@ -148,9 +199,6 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 			return 0, err
 		}
 		switch b := builder.(type) {
-		case *array.StringBuilder:
-			b.BinaryBuilder.Append(v)
-			return len(v), nil
 		case *array.BinaryBuilder:
 			b.Append(v)
 			return len(v), nil
@@ -178,10 +226,10 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 		case *array.FixedSizeBinaryBuilder:
 			b.Append(v.Bytes[:])
 			return 16, nil
-		case *array.StringBuilder:
+		case *array.BinaryBuilder:
 			var buf [36]byte
 			codec.PlanEncode(typeMap, oid, pgtype.TextFormatCode, &v).Encode(&v, buf[:0])
-			b.BinaryBuilder.Append(buf[:])
+			b.Append(buf[:])
 			return 36, nil
 		}
 	}

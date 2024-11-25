@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/dolthub/vitess/go/sqltypes"
@@ -159,8 +160,8 @@ var PostgresTypeSizes = map[uint32]int32{
 	pgtype.UUIDOID:        16, // uuid
 }
 
-func PostgresTypeToArrowType(oid uint32) arrow.DataType {
-	switch oid {
+func PostgresTypeToArrowType(p PostgresType) arrow.DataType {
+	switch p.PG.OID {
 	case pgtype.BoolOID:
 		return arrow.FixedWidthTypes.Boolean
 	case pgtype.ByteaOID:
@@ -190,8 +191,21 @@ func PostgresTypeToArrowType(oid uint32) arrow.DataType {
 		return arrow.FixedWidthTypes.Time64ns
 	case pgtype.TimestampOID, pgtype.TimestamptzOID:
 		return arrow.FixedWidthTypes.Timestamp_s
-	case pgtype.NumericOID: // TODO: Use Decimal128Type for precision <= 38
-		return arrow.BinaryTypes.String
+	case pgtype.NumericOID:
+		if p.Precision > 0 && p.Scale >= 0 {
+			if p.Precision <= 38 {
+				return &arrow.Decimal128Type{Precision: p.Precision, Scale: p.Scale}
+				// 256-bit decimal is not supported in DuckDB
+				// } else if p.Precision <= 76 {
+				// 	return &arrow.Decimal256Type{Precision: p.Precision, Scale: p.Scale}
+			} else {
+				// Precision too large, default to string
+				return arrow.BinaryTypes.String
+			}
+		} else {
+			// Unknown precision and scale, default to string
+			return arrow.BinaryTypes.String
+		}
 	case pgtype.UUIDOID:
 		// TODO(fan): Currently, DuckDB does not support BLOB -> UUID conversion,
 		//   so we use a string type for UUIDs.
@@ -210,9 +224,21 @@ func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 
 	schema := make(sql.Schema, len(types))
 	for i, t := range types {
-		pgTypeName, ok := DuckdbTypeStrToPostgresTypeStr[t.DatabaseTypeName()]
+		var (
+			dbTypeName       = t.DatabaseTypeName()
+			precision, scale int32
+		)
+		if strings.HasPrefix(dbTypeName, "DECIMAL") {
+			// Scan precision and scale from the type name
+			// Ref: logicalTypeNameDecimal in go-duckdb
+			if _, err := fmt.Sscanf(dbTypeName, "DECIMAL(%d,%d)", &precision, &scale); err != nil {
+				return nil, err
+			}
+			dbTypeName = "DECIMAL"
+		}
+		pgTypeName, ok := DuckdbTypeStrToPostgresTypeStr[dbTypeName]
 		if !ok {
-			return nil, fmt.Errorf("unsupported type %s", t.DatabaseTypeName())
+			return nil, fmt.Errorf("unsupported type %s", dbTypeName)
 		}
 		pgType, ok := DefaultTypeMap.TypeForName(pgTypeName)
 		if !ok {
@@ -225,11 +251,20 @@ func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 			size = s
 		}
 
+		if pgType.OID == pgtype.NumericOID {
+			if p, s, ok := t.DecimalSize(); ok {
+				precision = int32(p)
+				scale = int32(s)
+			}
+		}
+
 		schema[i] = &sql.Column{
 			Name: t.Name(),
 			Type: PostgresType{
-				PG:   pgType,
-				Size: size,
+				PG:        pgType,
+				Size:      size,
+				Precision: precision,
+				Scale:     scale,
 			},
 			Nullable: nullable,
 		}
@@ -242,9 +277,21 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 	columns := rows.Columns()
 	schema := make(sql.Schema, len(columns))
 	for i, colName := range columns {
-		var pgTypeName string
+		var (
+			pgTypeName       string
+			precision, scale int32
+		)
 		if colType, ok := rows.(driver.RowsColumnTypeDatabaseTypeName); ok {
-			pgTypeName = DuckdbTypeStrToPostgresTypeStr[colType.ColumnTypeDatabaseTypeName(i)]
+			dbTypeName := colType.ColumnTypeDatabaseTypeName(i)
+			if strings.HasPrefix(dbTypeName, "DECIMAL") {
+				// Scan precision and scale from the type name
+				// Ref: logicalTypeNameDecimal in go-duckdb
+				if _, err := fmt.Sscanf(dbTypeName, "DECIMAL(%d,%d)", &precision, &scale); err != nil {
+					return nil, err
+				}
+				dbTypeName = "DECIMAL"
+			}
+			pgTypeName = DuckdbTypeStrToPostgresTypeStr[dbTypeName]
 		} else {
 			pgTypeName = "text" // Default to text if type name is not available
 		}
@@ -264,11 +311,23 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 			size = s
 		}
 
+		if pgType.OID == pgtype.NumericOID {
+			if colPrecisionScale, ok := rows.(driver.RowsColumnTypePrecisionScale); ok {
+				p, s, ok := colPrecisionScale.ColumnTypePrecisionScale(i)
+				if ok {
+					precision = int32(p)
+					scale = int32(s)
+				}
+			}
+		}
+
 		schema[i] = &sql.Column{
 			Name: colName,
 			Type: PostgresType{
-				PG:   pgType,
-				Size: size,
+				PG:        pgType,
+				Size:      size,
+				Precision: precision,
+				Scale:     scale,
 			},
 			Nullable: nullable,
 		}
@@ -277,12 +336,14 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 }
 
 type PostgresType struct {
-	PG *pgtype.Type
+	PG        *pgtype.Type
+	Precision int32
+	Scale     int32
 	// https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ROWDESCRIPTION
 	Size int32
 }
 
-func NewPostgresType(oid uint32) (PostgresType, error) {
+func NewPostgresType(oid uint32, modifier int32) (PostgresType, error) {
 	t, ok := DefaultTypeMap.TypeForOID(oid)
 	if !ok {
 		return PostgresType{}, fmt.Errorf("unsupported type OID %d", oid)
@@ -291,9 +352,18 @@ func NewPostgresType(oid uint32) (PostgresType, error) {
 	if s, ok := PostgresTypeSizes[oid]; ok {
 		size = s
 	}
+
+	var precision, scale int32
+	switch oid {
+	case pgtype.NumericOID:
+		precision, scale, _ = DecodePrecisionScale(int(modifier))
+	}
+
 	return PostgresType{
-		PG:   t,
-		Size: size,
+		PG:        t,
+		Precision: precision,
+		Scale:     scale,
+		Size:      size,
 	}, nil
 }
 
@@ -345,4 +415,15 @@ func (p PostgresType) Zero() interface{} {
 
 func (p PostgresType) String() string {
 	return fmt.Sprintf("PostgresType(%s)", p.PG.Name)
+}
+
+func DecodePrecisionScale(typmod int) (precision, scale int32, ok bool) {
+	if typmod > 0 {
+		precision = int32((typmod >> 16) & 0xFFFF)
+		scale = int32(typmod & 0xFFFF)
+		ok = true
+	}
+	// The max precision is 131072, which is larger than the max int16 value.
+	// Therefore, if the precision is larger than the max int16 value, we default to unknown precision and scale.
+	return
 }
