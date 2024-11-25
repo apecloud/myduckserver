@@ -1206,7 +1206,7 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 			}
 			a.deltaBufSize.Add(uint64(pos))
 		}
-		appender.IncDeleteEventCount()
+		appender.UpdateActionStats(binlog.DeleteRowEvent, len(rows.Rows))
 	}
 
 	// Insert the after image
@@ -1237,9 +1237,10 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 			}
 			a.deltaBufSize.Add(uint64(pos))
 		}
-		appender.IncInsertEventCount()
+		appender.UpdateActionStats(binlog.InsertRowEvent, len(rows.Rows))
 	}
 
+	appender.ObserveEvents(event, len(rows.Rows))
 	return nil
 }
 

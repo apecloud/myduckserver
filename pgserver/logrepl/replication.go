@@ -723,7 +723,7 @@ func (r *LogicalReplicator) processMessage(
 			return false, nil
 		}
 
-		err = r.append(state, logicalMsg.RelationID, logicalMsg.Tuple.Columns, binlog.InsertRowEvent, false)
+		err = r.append(state, logicalMsg.RelationID, logicalMsg.Tuple.Columns, binlog.InsertRowEvent, binlog.InsertRowEvent, false)
 		if err != nil {
 			return false, err
 		}
@@ -741,18 +741,23 @@ func (r *LogicalReplicator) processMessage(
 		// Delete the old tuple
 		switch logicalMsg.OldTupleType {
 		case pglogrepl.UpdateMessageTupleTypeKey:
-			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, true)
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, binlog.UpdateRowEvent, true)
 		case pglogrepl.UpdateMessageTupleTypeOld:
-			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, false)
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, binlog.UpdateRowEvent, false)
 		default:
-			// No old tuple provided; it means the key columns are unchanged
+			// No old tuple provided; it means the key columns are unchanged.
+			// It's fine not to append a delete event to the delta in this case.
+			// However, the delta appender implements an optimization that
+			// uses INSERT instead of UPSERT+DELETE when there is no deletion in a batch.
+			// We need to enforce the use of UPSERT here because the deletion count is zero.
+			err = r.append(state, logicalMsg.RelationID, nil, binlog.DeleteRowEvent, binlog.UpdateRowEvent, true)
 		}
 		if err != nil {
 			return false, err
 		}
 
 		// Insert the new tuple
-		err = r.append(state, logicalMsg.RelationID, logicalMsg.NewTuple.Columns, binlog.InsertRowEvent, false)
+		err = r.append(state, logicalMsg.RelationID, logicalMsg.NewTuple.Columns, binlog.InsertRowEvent, binlog.UpdateRowEvent, false)
 		if err != nil {
 			return false, err
 		}
@@ -770,9 +775,9 @@ func (r *LogicalReplicator) processMessage(
 
 		switch logicalMsg.OldTupleType {
 		case pglogrepl.UpdateMessageTupleTypeKey:
-			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, true)
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, binlog.DeleteRowEvent, true)
 		case pglogrepl.UpdateMessageTupleTypeOld:
-			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, false)
+			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, binlog.DeleteRowEvent, false)
 		default:
 			// No old tuple provided; cannot perform delete
 			err = fmt.Errorf("DeleteMessage without OldTuple")
@@ -957,7 +962,7 @@ func (r *LogicalReplicator) flushDeltaBuffer(state *replicationState, tx *stdsql
 	return err
 }
 
-func (r *LogicalReplicator) append(state *replicationState, relationID uint32, tuple []*pglogrepl.TupleDataColumn, eventType binlog.RowEventType, onlyKeys bool) error {
+func (r *LogicalReplicator) append(state *replicationState, relationID uint32, tuple []*pglogrepl.TupleDataColumn, actionType, eventType binlog.RowEventType, onlyKeys bool) error {
 	rel, ok := state.relations[relationID]
 	if !ok {
 		return fmt.Errorf("unknown relation ID %d", relationID)
@@ -965,6 +970,16 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 	appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[relationID])
 	if err != nil {
 		return err
+	}
+
+	if len(tuple) == 0 {
+		// The only case where we can have an empty tuple is when
+		// we're deleting+inserting a row and the key columns are unchanged.
+		if eventType == binlog.UpdateRowEvent && actionType == binlog.DeleteRowEvent {
+			appender.ObserveEvents(binlog.UpdateRowEvent, 1)
+			return nil
+		}
+		return fmt.Errorf("empty tuple data")
 	}
 
 	fields := appender.Fields()
@@ -975,7 +990,7 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 	txnSeqNumbers := appender.TxnSeqNumber()
 	txnStmtOrdinals := appender.TxnStmtOrdinal()
 
-	actions.Append(int8(eventType))
+	actions.Append(int8(actionType))
 	txnTags.AppendNull()
 	txnServers.Append([]byte(""))
 	txnGroups.AppendNull()
@@ -1011,6 +1026,9 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 			return fmt.Errorf("unsupported replication data format %d", col.DataType)
 		}
 	}
+
+	appender.UpdateActionStats(actionType, 1)
+	appender.ObserveEvents(eventType, 1)
 
 	state.deltaBufSize += uint64(size)
 	return nil

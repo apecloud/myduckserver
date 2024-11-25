@@ -169,7 +169,7 @@ func (p *ConnectionPool) Close() error {
 		return true
 	})
 	for _, conn := range conns {
-		if err := conn.Close(); err != nil {
+		if err := conn.Close(); err != nil && !errors.Is(err, stdsql.ErrConnDone) {
 			logrus.WithError(err).Warn("Failed to close connection")
 			lastErr = err
 		}
