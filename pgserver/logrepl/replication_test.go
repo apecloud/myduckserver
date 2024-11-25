@@ -560,7 +560,7 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 		require.NoError(t, err)
 	}()
 
-	primaryDns := dsn + "?sslmode=disable&replication=database"
+	primaryDns := dsn + "?sslmode=disable"
 
 	// We drop and recreate the replication slot once at the beginning of the test suite. Postgres seems to do a little
 	// work in the background with a publication, so we need to wait a little bit before running any test scripts.
