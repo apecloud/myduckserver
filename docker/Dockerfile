@@ -106,6 +106,7 @@ WORKDIR /home/admin
 COPY --from=builder /myduckserver /usr/local/bin/myduckserver
 COPY --chown=admin:admin --chmod=755 docker/*.sh .
 COPY --chown=admin:admin --chmod=755 devtools/replica-setup-mysql ./replica-setup-mysql
+COPY --chown=admin:admin --chmod=755 devtools/replica-setup-postgres ./replica-setup-postgres
 
 # ENV LC_CTYPE="en_US.UTF-8"
 # ENV LANG="en_US.UTF-8"

@@ -18,10 +18,10 @@ parse_dsn() {
     SOURCE_DATABASE=""
 
     # Detect type
-    if [[ "$dsn" =~ ^postgresql:// ]]; then
+    if [[ "$dsn" =~ ^postgres:// ]]; then
         SOURCE_TYPE="POSTGRES"
         # Strip the prefix
-        dsn="${dsn#postgresql://}"
+        dsn="${dsn#postgres://}"
     elif [[ "$dsn" =~ ^mysql:// ]]; then
         SOURCE_TYPE="MYSQL"
         # Strip the prefix

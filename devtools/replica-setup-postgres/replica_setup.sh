@@ -6,12 +6,11 @@ usage() {
 }
 
 MYDUCK_HOST=${MYDUCK_HOST:-127.0.0.1}
-MYDUCK_PORT=${MYDUCK_PORT:-3306}
-MYDUCK_USER=${MYDUCK_USER:-root}
+MYDUCK_PORT=${MYDUCK_PORT:-5432}
+MYDUCK_USER=${MYDUCK_USER:-mysql}
 MYDUCK_PASSWORD=${MYDUCK_PASSWORD:-}
 MYDUCK_SERVER_ID=${MYDUCK_SERVER_ID:-2}
 MYDUCK_IN_DOCKER=${MYDUCK_IN_DOCKER:-false}
-GTID_MODE="ON"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -62,34 +61,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-source checker.sh
-
 # Check if all parameters are set
 if [[ -z "$SOURCE_HOST" || -z "$SOURCE_PORT" || -z "$SOURCE_USER" ]]; then
     echo "Error: Missing required Postgres connection variables: SOURCE_HOST, SOURCE_PORT, SOURCE_USER."
     usage
 fi
 
-# Step 3: Check Postgres configuration
+# Step 1: Check Postgres configuration
 echo "Checking Postgres configuration..."
 # TODO(neo.zty): add check for Postgres configuration
-check_command "Postgres configuration check"
 
-# Step 3: Prepare MyDuck Server for replication
-echo "Preparing MyDuck Server for replication..."
-# TODO(neo.zty): add prepare for MyDuck Server for replication
-check_command "preparing MyDuck Server for replication"
-
-# Step 5: Copy the existing data if the Postgres instance is not empty
-if [[ $SOURCE_IS_EMPTY -ne 0 ]]; then
-    echo "Copying a snapshot of the Postgres instance to MyDuck Server..."
-    source snapshot.sh
-    check_command "copying a snapshot of the Postgres instance"
-else
-    echo "This Postgres instance is empty. Skipping snapshot."
-fi
-
-# Step 6: Establish replication
+# Step 2: Establish replication
 echo "Starting replication..."
-source start_replication.sh
-check_command "starting replication"
+export PUBLICATION_NAME="myduck_publication"
+export SUBSCRIPTION_NAME="myduck_subscription"
+
+CREATE_SUBSCRIPTION_SQL="CREATE SUBSCRIPTION ${SUBSCRIPTION_NAME} \
+    CONNECTION 'dbname=${SOURCE_DATABASE} host=${SOURCE_HOST} port=${SOURCE_PORT} user=${SOURCE_USER} password=${SOURCE_PASSWORD}' \
+    PUBLICATION ${PUBLICATION_NAME};"
+
+psql -h $MYDUCK_HOST -p $MYDUCK_PORT -U $MYDUCK_USER <<EOF
+${CREATE_SUBSCRIPTION_SQL}
+EOF
+
+if [[ -n "$?" ]]; then
+    echo "SQL executed successfully."
+else
+    echo "SQL execution failed. Check the error message above."
+    exit 1
+fi
