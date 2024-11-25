@@ -62,13 +62,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-source checker.sh
-
 # Check if all parameters are set
-if [[ -z "$SOURCE_PORT" || -z "$SOURCE_PORT" || -z "$SOURCE_PORT" ]]; then
+if [[ -z "$SOURCE_HOST" || -z "$SOURCE_PORT" || -z "$SOURCE_USER" ]]; then
     echo "Error: Missing required MySQL connection variables: SOURCE_HOST, SOURCE_PORT, SOURCE_USER."
     usage
 fi
+
+source checker.sh
 
 # Step 1: Check if mysqlsh exists, if not, install it
 if ! command -v mysqlsh &> /dev/null; then

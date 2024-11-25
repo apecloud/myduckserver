@@ -33,11 +33,11 @@ parse_dsn() {
 
     # Extract credentials and host/port/dbname
     if [[ "$dsn" =~ ^([^:@]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?(/(.+))?$ ]]; then
-        SOURCE_USER="${BASH_REMATCH[1]}"
-        SOURCE_PASSWORD="${BASH_REMATCH[3]}"
-        SOURCE_HOST="${BASH_REMATCH[4]}"
-        SOURCE_PORT="${BASH_REMATCH[6]}"
-        SOURCE_DATABASE="${BASH_REMATCH[8]}"
+        export SOURCE_USER="${BASH_REMATCH[1]}"
+        export SOURCE_PASSWORD="${BASH_REMATCH[3]}"
+        export SOURCE_HOST="${BASH_REMATCH[4]}"
+        export SOURCE_PORT="${BASH_REMATCH[6]}"
+        export SOURCE_DATABASE="${BASH_REMATCH[8]}"
     else
         echo "Error: Failed to parse DSN"
         return 1
@@ -46,9 +46,9 @@ parse_dsn() {
     # Handle empty SOURCE_DATABASE
     if [[ -z "$SOURCE_DATABASE" ]]; then
         if [[ "$SOURCE_TYPE" == "POSTGRES" ]]; then
-            SOURCE_DATABASE="postgres"
+            export SOURCE_DATABASE="postgres"
         elif [[ "$SOURCE_TYPE" == "MYSQL" ]]; then
-            SOURCE_DATABASE="mysql"
+            export SOURCE_DATABASE="mysql"
         fi
     fi
 
@@ -60,18 +60,6 @@ parse_dsn() {
     echo "SOURCE_PORT=$SOURCE_PORT"
     echo "SOURCE_DATABASE=$SOURCE_DATABASE"
 }
-
-if [ -n "$PGSQL_PRIMARY_DSN" ]; then
-    export PGSQL_PRIMARY_DSN_ARG="-pg-primary-dsn $PGSQL_PRIMARY_DSN"
-fi
-
-if [ -n "$PGSQL_SLOT_NAME" ]; then
-    export PGSQL_SLOT_NAME_ARG="-pg-slot-name $PGSQL_SLOT_NAME"
-fi
-
-if [ -n "$LOG_LEVEL" ]; then
-    export LOG_LEVEL="-loglevel $LOG_LEVEL"
-fi
 
 # Function to run replica setup
 run_replica_setup() {
@@ -91,13 +79,13 @@ run_replica_setup() {
             }
             ;;
         *)
-            echo "Error: Invalid SOURCE_TYPE value. Valid options are: MYSQL, POSTGRES."
+            echo "Error: Invalid SOURCE_TYPE value: ${SOURCE_TYPE}. Valid options are: MYSQL, POSTGRES."
             exit 1
             ;;
     esac
 
     # Run replica_setup.sh and check for errors
-    if bash replica_setup.sh; then
+    if source replica_setup.sh; then
         echo "Replica setup completed."
     else
         echo "Error: Replica setup failed."
@@ -107,13 +95,13 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
+      nohup myduckserver $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
 run_server_in_foreground() {
     cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-    myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL
+    myduckserver $LOG_LEVEL
 }
 
 wait_for_my_duck_server_ready() {
@@ -163,6 +151,10 @@ check_process_alive() {
 
 # Handle the setup_mode
 setup() {
+    if [ -n "$LOG_LEVEL" ]; then
+        export LOG_LEVEL="-loglevel $LOG_LEVEL"
+    fi
+    parse_dsn
     # Ensure required directories exist
     mkdir -p "${DATA_PATH}" "${LOG_PATH}"
 
@@ -171,28 +163,12 @@ setup() {
             echo "Starting MyDuck Server in SERVER mode..."
             run_server_in_foreground
             ;;
-
         "REPLICA")
             echo "Starting MyDuck Server and running replica setup in REPLICA mode..."
-
-            case "$SOURCE_TYPE" in
-                MYSQL)
-                    run_server_in_background
-                    wait_for_my_duck_server_ready
-                    run_replica_setup
-                    ;;
-                POSTGRES)
-                    run_replica_setup
-                    run_server_in_background
-                    wait_for_my_duck_server_ready
-                    ;;
-                *)
-                    echo "Error: Invalid SOURCE_TYPE value. Valid options are: MYSQL, POSTGRES."
-                    exit 1
-                    ;;
-            esac
+            run_server_in_background
+            wait_for_my_duck_server_ready
+            run_replica_setup
             ;;
-
         *)
             echo "Error: Invalid SETUP_MODE value. Valid options are: SERVER, REPLICA."
             exit 1
