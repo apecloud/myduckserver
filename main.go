@@ -23,6 +23,7 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
+	"github.com/apecloud/myduckserver/pgserver/config"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/apecloud/myduckserver/plugin"
 	"github.com/apecloud/myduckserver/replica"
@@ -145,12 +146,12 @@ func main() {
 	replica.RegisterReplicaOptions(&replicaOptions)
 	replica.RegisterReplicaController(provider, engine, pool, builder)
 
-	config := server.Config{
+	serverConfig := server.Config{
 		Protocol: "tcp",
 		Address:  fmt.Sprintf("%s:%d", address, port),
 		Socket:   socket,
 	}
-	myServer, err := server.NewServerWithHandler(config, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
+	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
 	if err != nil {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
@@ -189,6 +190,8 @@ func main() {
 			go replicator.StartReplication(pgServer.NewInternalCtx(), pub)
 		}
 
+		// Load the configuration for the Postgres server.
+		config.Init()
 		go pgServer.Start()
 	}
 

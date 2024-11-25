@@ -10,6 +10,7 @@ import (
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/pgserver"
+	pgConfig "github.com/apecloud/myduckserver/pgserver/config"
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/server"
@@ -63,6 +64,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	if err != nil {
 		panic(err)
 	}
+	pgConfig.Init()
 	go pgServer.Start()
 
 	ctx = context.Background()

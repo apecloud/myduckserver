@@ -73,7 +73,13 @@ var pgIsInRecoveryRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.pg_is
 var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current_wal_lsn|pg_last_wal_replay_lsn)\(\s*\)\s*;?\s*$`)
 
 // precompile a regex to match "select pg_catalog.current_setting('xxx');".
-var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog.current_setting\(\s*['"]([^'"]+)['"]\s*\)\s*;?\s*$`)
+var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+(pg_catalog.)?current_setting\(\s*['"]([^'"]+)['"]\s*\)\s*;?\s*$`)
+
+// precompile a regex to match "SHOW {ALL | var_name};".
+var showVariablesRegex = regexp.MustCompile(`(?i)^\s*SHOW\s+(ALL|[a-zA-Z_][a-zA-Z0-9_]*)\s*;\s*$`)
+
+// precompile a regex to match "SET xxx TO 'yyy';" or "SET xxx = 'yyy';" or "SET xxx TO DEFAULT;" or "SET xxx = DEFAULT;".
+var setStmtRegex = regexp.MustCompile(`(?i)^\s*SET\s+(SESSION|LOCAL)?\s*([a-zA-Z_][a-zA-Z0-9_]+)\s*(TO|=)\s*(DEFAULT|'([^']*)'|"([^"]*)"|[^'"\s;]+)\s*;?\s*$`)
 
 // precompile a regex to match any "from pg_catalog.xxx" in the query.
 var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.`)
@@ -264,36 +270,49 @@ func (h *ConnectionHandler) handleStartup() (bool, error) {
 
 // sendClientStartupMessages sends introductory messages to the client and returns any error
 func (h *ConnectionHandler) sendClientStartupMessages() error {
-	parameters := []struct {
+	sessParams := []struct {
 		Name  string
-		Value string
+		Value any
 	}{
-		// These are mock parameter status messages that are sent to the client
+		// These are session parameter status messages that are sent to the client
 		// to simulate a real PostgreSQL connection. Some clients may expect these
 		// to be sent, like pgpool, which will not work without them. Because
 		// if the paramter status message list sent by this server differs from
 		// the list of the other real PostgreSQL servers, pgpool can not establish
 		// a connection to this server.
-		{"in_hot_standby", "off"},
-		{"integer_datetimes", "on"},
-		{"TimeZone", "Etc/UTC"},
-		{"IntervalStyle", "postgres"},
-		{"is_superuser", "on"},
-		{"application_name", "psql"},
-		{"default_transaction_read_only", "off"},
-		{"scram_iterations", "4096"},
-		{"DateStyle", "ISO, MDY"},
-		{"standard_conforming_strings", "on"},
-		{"session_authorization", "postgres"},
-		{"client_encoding", "UTF8"},
-		{"server_version", "15.0"},
-		{"server_encoding", "UTF8"},
+		// Some of these may not exists in postgresConfigParameters(in doltgresql),
+		// which lists all the available parameters in PostgreSQL. In that case,
+		// we will use a mock value for that parameter. e.g. "on" for "is_superuser".
+		{"in_hot_standby", nil},
+		{"integer_datetimes", nil},
+		{"TimeZone", nil},
+		{"IntervalStyle", nil},
+		{"is_superuser", "on"}, // This is not specified in postgresConfigParameters now.
+		{"application_name", nil},
+		{"default_transaction_read_only", nil},
+		{"scram_iterations", nil},
+		{"DateStyle", nil},
+		{"standard_conforming_strings", nil},
+		{"session_authorization", "postgres"}, // This is not specified in postgresConfigParameters now.
+		{"client_encoding", nil},
+		{"server_version", nil},
+		{"server_encoding", nil},
 	}
 
-	for _, param := range parameters {
+	for _, param := range sessParams {
+		var value string
+		if param.Value != nil {
+			value = fmt.Sprintf("%v", param.Value)
+		} else {
+			_, v, ok := sql.SystemVariables.GetGlobal(param.Name)
+			if !ok {
+				return fmt.Errorf("error: %v variable was not found", param.Name)
+			}
+			value = fmt.Sprintf("%v", v)
+		}
 		if err := h.send(&pgproto3.ParameterStatus{
 			Name:  param.Name,
-			Value: param.Value,
+			Value: value,
 		}); err != nil {
 			return err
 		}
@@ -535,30 +554,59 @@ func (h *ConnectionHandler) readOneWALPositionStr() (string, error) {
 	return lsn, nil
 }
 
-// queryPGSetting will query the pg_catalog.pg_setting table to see if the setting is set
-func (h *ConnectionHandler) queryPGSetting(name string) (string, error) {
-	// Grab a sql.Context.
+// queryPGSetting will query the system variable value from the system variable map
+func (h *ConnectionHandler) queryPGSetting(name string) (any, error) {
+	sysVar, _, ok := sql.SystemVariables.GetGlobal(name)
+	if !ok {
+		return nil, fmt.Errorf("error: %s variable was not found", name)
+	}
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	v, err := sysVar.GetSessionScope().GetValue(ctx, name, sql.Collation_Default)
+	if err != nil {
+		return nil, fmt.Errorf("error: %s variable was not found, err: %w", name, err)
+	}
+	return v, nil
+}
+
+// getSettingValue will get the value of the setting from the matching groups
+func getSettingValue(matches []string) (string, bool) {
+	if matches[6] != "" {
+		return matches[6], false
+	}
+	if matches[5] != "" {
+		return matches[5], false
+	}
+	return matches[4], strings.ToLower(matches[4]) == "default"
+}
+
+// setSessionVar will set the session variable to the value provided
+func (h *ConnectionHandler) setSessionVar(name string, value any, useDefault bool) (any, error) {
+	sysVar, _, ok := sql.SystemVariables.GetGlobal(name)
+	if !ok {
+		return nil, fmt.Errorf("error: %s variable was not found", name)
+	}
 	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var setting string
-	if err := adapter.QueryRow(ctx, catalog.InternalTables.PGCurrentSetting.SelectStmt(), name).Scan(&setting); err != nil {
-		if errors.Is(err, stdsql.ErrNoRows) {
-			// if no this setting is found, return ""
-			return "", nil
-		}
-		return "", err
+	if useDefault {
+		value = sysVar.GetDefault()
 	}
-
-	return setting, nil
+	err = sysVar.GetSessionScope().SetValue(ctx, name, value)
+	if err != nil {
+		return nil, err
+	}
+	v, err := sysVar.GetSessionScope().GetValue(ctx, name, sql.Collation_Default)
+	if err != nil {
+		return nil, fmt.Errorf("error: %s variable was not found, err: %w", name, err)
+	}
+	return v, nil
 }
 
 // TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
 // Remove this once we add the views for 'pg_catalog'.
 func (h *ConnectionHandler) handlePgCatalogQueries(statement string) (bool, error) {
-	lower := strings.ToLower(statement)
-	if pgIsInRecoveryRegex.MatchString(lower) {
+	if pgIsInRecoveryRegex.MatchString(statement) {
 		isInRecovery, err := h.isInRecovery()
 		if err != nil {
 			return false, err
@@ -568,7 +616,7 @@ func (h *ConnectionHandler) handlePgCatalogQueries(statement string) (bool, erro
 			StatementTag: "SELECT",
 		})
 	}
-	if matches := pgWALLSNRegex.FindStringSubmatch(lower); len(matches) == 2 {
+	if matches := pgWALLSNRegex.FindStringSubmatch(statement); len(matches) == 2 {
 		lsnStr, err := h.readOneWALPositionStr()
 		if err != nil {
 			return false, err
@@ -578,19 +626,55 @@ func (h *ConnectionHandler) handlePgCatalogQueries(statement string) (bool, erro
 			StatementTag: "SELECT",
 		})
 	}
-	if matches := currentSettingRegex.FindStringSubmatch(lower); len(matches) == 2 {
-		setting, err := h.queryPGSetting(matches[1])
+	if matches := currentSettingRegex.FindStringSubmatch(statement); len(matches) == 3 {
+		setting, err := h.queryPGSetting(matches[2])
 		if err != nil {
 			return false, err
 		}
 		return true, h.query(ConvertedQuery{
-			String:       fmt.Sprintf(`SELECT '%s' AS "current_setting";`, setting),
+			String:       fmt.Sprintf(`SELECT '%s' AS "current_setting";`, fmt.Sprintf("%v", setting)),
 			StatementTag: "SELECT",
 		})
 	}
-	if pgCatalogRegex.MatchString(lower) {
+	if matches := showVariablesRegex.FindStringSubmatch(statement); len(matches) == 2 {
+		key := strings.ToLower(matches[1])
+		if key != "all" {
+			setting, err := h.queryPGSetting(key)
+			if err != nil {
+				return false, err
+			}
+			return true, h.query(ConvertedQuery{
+				String:       fmt.Sprintf(`SELECT '%s' AS "%s";`, fmt.Sprintf("%v", setting), key),
+				StatementTag: "SELECT",
+			})
+		}
+		// TODO(sean): If the query is "SHOW ALL", we need to return all the system variables
+	}
+	if matches := setStmtRegex.FindStringSubmatch(statement); len(matches) == 7 {
+		key := matches[2]
+		value, isDefault := getSettingValue(matches)
+		newVal, err := h.setSessionVar(key, value, isDefault)
+		if err != nil {
+			return false, err
+		}
+		// Sent CommandComplete message
+		err = h.send(makeCommandComplete("SET", 0))
+		if err != nil {
+			return true, err
+		}
+		// Sent ParameterStatus message
+		if err := h.send(&pgproto3.ParameterStatus{
+			Name:  key,
+			Value: fmt.Sprintf("%v", newVal),
+		}); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+
+	if pgCatalogRegex.MatchString(statement) {
 		return true, h.query(ConvertedQuery{
-			String:       pgCatalogRegex.ReplaceAllString(lower, " FROM __sys__."),
+			String:       pgCatalogRegex.ReplaceAllString(statement, " FROM __sys__."),
 			StatementTag: "SELECT",
 		})
 	}
