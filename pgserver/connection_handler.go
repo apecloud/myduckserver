@@ -15,7 +15,6 @@
 package pgserver
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -125,6 +124,14 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 	}
 }
 
+func (h *ConnectionHandler) closeBackendConn() {
+	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	adapter.CloseBackendConn(ctx)
+}
+
 // HandleConnection handles a connection's session, reading messages, executing queries, and sending responses.
 // Expected to run in a goroutine per connection.
 func (h *ConnectionHandler) HandleConnection() {
@@ -157,6 +164,7 @@ func (h *ConnectionHandler) HandleConnection() {
 			}
 
 			h.duckHandler.ConnectionClosed(h.mysqlConn)
+			h.closeBackendConn()
 			if err := h.Conn().Close(); err != nil {
 				fmt.Printf("Failed to properly close connection:\n%v\n", err)
 			}
@@ -307,7 +315,7 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 		}
 	}
 
-	useStmt := fmt.Sprintf("USE %s;", db)
+	useStmt := fmt.Sprintf("USE %s.public;", db)
 	setStmt := fmt.Sprintf("SET database TO %s;", db)
 	parsed, err := parser.ParseOne(setStmt)
 	if err != nil {
@@ -478,6 +486,8 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	handled, endOfMessages, err = h.handleQueryOutsideEngine(query)
 	if handled {
 		return endOfMessages, err
+	} else if err != nil {
+		h.logger.Warnf("Failed to handle query %v outside engine: %v", query, err)
 	}
 
 	return true, h.query(query)
@@ -600,15 +610,35 @@ func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (hand
 		// We send endOfMessages=false since the server will be in COPY DATA mode and won't
 		// be ready for more queries util COPY DATA mode is completed.
 		if stmt.Stdin {
-			return true, false, h.handleCopyFromStdinQuery(query, stmt, h.Conn())
+			return true, false, h.handleCopyFromStdinQuery(query, stmt, "")
 		}
 	case *tree.CopyTo:
-		return true, true, h.handleCopyToStdout(query, stmt, "" /* unused */, tree.CopyFormatBinary, "")
+		return true, true, h.handleCopyToStdout(query, stmt, "" /* unused */, stmt.Options.CopyFormat, "")
 	}
 
 	if query.StatementTag == "COPY" {
-		if subquery, format, options, ok := ParseCopy(query.String); ok {
-			return true, true, h.handleCopyToStdout(query, nil, subquery, format, options)
+		if target, format, options, ok := ParseCopyFrom(query.String); ok {
+			stmt, err := parser.ParseOne("COPY " + target + " FROM STDIN")
+			if err != nil {
+				return false, true, err
+			}
+			copyFrom := stmt.AST.(*tree.CopyFrom)
+			copyFrom.Options.CopyFormat = format
+			return true, false, h.handleCopyFromStdinQuery(query, copyFrom, options)
+		}
+		if subquery, format, options, ok := ParseCopyTo(query.String); ok {
+			if strings.HasPrefix(subquery, "(") && strings.HasSuffix(subquery, ")") {
+				// subquery may be richer than Postgres supports, so we just pass it as a string
+				return true, true, h.handleCopyToStdout(query, nil, subquery, format, options)
+			}
+			// subquery is "table [(column_list)]", so we can parse it and pass the AST
+			stmt, err := parser.ParseOne("COPY " + subquery + " TO STDOUT")
+			if err != nil {
+				return false, true, err
+			}
+			copyTo := stmt.AST.(*tree.CopyTo)
+			copyTo.Options.CopyFormat = format
+			return true, true, h.handleCopyToStdout(query, copyTo, "", format, options)
 		}
 	}
 
@@ -829,8 +859,15 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 		if table == nil {
 			return false, true, fmt.Errorf("no target table found")
 		}
+		rawOptions := h.copyFromStdinState.rawOptions
 
 		switch copyFrom.Options.CopyFormat {
+		case CopyFormatArrow:
+			dataLoader, err = NewArrowDataLoader(
+				sqlCtx, h.duckHandler,
+				copyFrom.Table.Schema(), table, copyFrom.Columns,
+				rawOptions,
+			)
 		case tree.CopyFormatText:
 			// Remove trailing backslash, comma and newline characters from the data
 			if bytes.HasSuffix(message.Data, []byte{'\n'}) {
@@ -848,6 +885,7 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 				sqlCtx, h.duckHandler,
 				copyFrom.Table.Schema(), table, copyFrom.Columns,
 				&copyFrom.Options,
+				rawOptions,
 			)
 		case tree.CopyFormatBinary:
 			err = fmt.Errorf("BINARY format is not supported for COPY FROM")
@@ -859,12 +897,15 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 			return false, false, err
 		}
 
+		ready := dataLoader.Start()
+		if err, hasErr := <-ready; hasErr {
+			return false, false, err
+		}
+
 		h.copyFromStdinState.dataLoader = dataLoader
 	}
 
-	byteReader := bytes.NewReader(message.Data)
-	reader := bufio.NewReader(byteReader)
-	if err = dataLoader.LoadChunk(sqlCtx, reader); err != nil {
+	if err = dataLoader.LoadChunk(sqlCtx, message.Data); err != nil {
 		return false, false, err
 	}
 
@@ -1249,10 +1290,7 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 
 // discardAll handles the DISCARD ALL command
 func (h *ConnectionHandler) discardAll(query ConvertedQuery) error {
-	err := h.duckHandler.ComResetConnection(h.mysqlConn)
-	if err != nil {
-		return err
-	}
+	h.closeBackendConn()
 
 	return h.send(&pgproto3.CommandComplete{
 		CommandTag: []byte(query.StatementTag),
@@ -1262,7 +1300,10 @@ func (h *ConnectionHandler) discardAll(query ConvertedQuery) error {
 // handleCopyFromStdinQuery handles the COPY FROM STDIN query at the Doltgres layer, without passing it to the engine.
 // COPY FROM STDIN can't be handled directly by the GMS engine, since COPY FROM STDIN relies on multiple messages sent
 // over the wire.
-func (h *ConnectionHandler) handleCopyFromStdinQuery(query ConvertedQuery, copyFrom *tree.CopyFrom, conn net.Conn) error {
+func (h *ConnectionHandler) handleCopyFromStdinQuery(
+	query ConvertedQuery, copyFrom *tree.CopyFrom,
+	rawOptions string, // For non-PG-parseable COPY FROM
+) error {
 	sqlCtx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, query.String)
 	if err != nil {
 		return err
@@ -1277,10 +1318,19 @@ func (h *ConnectionHandler) handleCopyFromStdinQuery(query ConvertedQuery, copyF
 	h.copyFromStdinState = &copyFromStdinState{
 		copyFromStdinNode: copyFrom,
 		targetTable:       table,
+		rawOptions:        rawOptions,
+	}
+
+	var format byte
+	switch copyFrom.Options.CopyFormat {
+	case tree.CopyFormatText, tree.CopyFormatCSV, CopyFormatJSON:
+		format = 0 // text format
+	default:
+		format = 1 // binary format
 	}
 
 	return h.send(&pgproto3.CopyInResponse{
-		OverallFormat: 0,
+		OverallFormat: format,
 	})
 }
 
@@ -1356,12 +1406,24 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 		}
 	}
 
-	writer, err := NewDataWriter(
-		ctx, h.duckHandler,
-		schema, table, columns,
-		stmt,
-		options, rawOptions,
-	)
+	var writer DataWriter
+
+	switch format {
+	case CopyFormatArrow:
+		writer, err = NewArrowWriter(
+			ctx, h.duckHandler,
+			schema, table, columns,
+			stmt,
+			rawOptions,
+		)
+	default:
+		writer, err = NewDuckDataWriter(
+			ctx, h.duckHandler,
+			schema, table, columns,
+			stmt,
+			options, rawOptions,
+		)
+	}
 	if err != nil {
 		return err
 	}

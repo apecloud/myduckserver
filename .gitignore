@@ -14,3 +14,4 @@ __debug_*
 .DS_Store
 *.csv
 *.parquet
+*.arrow

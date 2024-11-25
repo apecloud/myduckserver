@@ -3,6 +3,7 @@ package delta
 import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/myarrow"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
@@ -19,6 +20,11 @@ type tableIdentifier struct {
 type DeltaAppender struct {
 	schema   sql.Schema
 	appender myarrow.ArrowAppender
+
+	counters struct {
+		event  struct{ delete, insert, update int }
+		action struct{ delete, insert int }
+	}
 }
 
 // Create a new appender.
@@ -114,4 +120,32 @@ func (a *DeltaAppender) Grow(n int) {
 
 func (a *DeltaAppender) Release() {
 	a.appender.Release()
+}
+
+func (a *DeltaAppender) UpdateActionStats(action binlog.RowEventType, count int) {
+	switch action {
+	case binlog.DeleteRowEvent:
+		a.counters.action.delete += count
+	case binlog.InsertRowEvent:
+		a.counters.action.insert += count
+	}
+}
+
+func (a *DeltaAppender) ObserveEvents(event binlog.RowEventType, count int) {
+	switch event {
+	case binlog.DeleteRowEvent:
+		a.counters.event.delete++
+	case binlog.InsertRowEvent:
+		a.counters.event.insert++
+	case binlog.UpdateRowEvent:
+		a.counters.event.update++
+	}
+}
+
+func (a *DeltaAppender) ResetCounters() {
+	a.counters.event.delete = 0
+	a.counters.event.insert = 0
+	a.counters.event.update = 0
+	a.counters.action.delete = 0
+	a.counters.action.insert = 0
 }

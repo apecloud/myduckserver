@@ -14,10 +14,15 @@ type ConnectionHolder interface {
 	GetCatalogTxn(ctx context.Context, options *stdsql.TxOptions) (*stdsql.Tx, error)
 	TryGetTxn() *stdsql.Tx
 	CloseTxn()
+	CloseBackendConn()
 }
 
 func GetConn(ctx *sql.Context) (*stdsql.Conn, error) {
 	return ctx.Session.(ConnectionHolder).GetConn(ctx)
+}
+
+func CloseBackendConn(ctx *sql.Context) {
+	ctx.Session.(ConnectionHolder).CloseBackendConn()
 }
 
 func GetTxn(ctx *sql.Context, options *stdsql.TxOptions) (*stdsql.Tx, error) {

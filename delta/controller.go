@@ -59,10 +59,10 @@ func (c *DeltaController) Close() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	for k, da := range c.tables {
+	for _, da := range c.tables {
 		da.appender.Release()
-		delete(c.tables, k)
 	}
+	clear(c.tables)
 }
 
 // Flush writes the accumulated changes to the database.
@@ -147,7 +147,10 @@ func (c *DeltaController) updateTable(
 
 	schema := appender.BaseSchema() // schema of the base table
 	record := appender.Build()
-	defer record.Release()
+	defer func() {
+		record.Release()
+		appender.ResetCounters()
+	}()
 
 	// fmt.Println("record:", record)
 
@@ -197,26 +200,41 @@ func (c *DeltaController) updateTable(
 	augmentedSchema := appender.Schema()
 	var builder strings.Builder
 	builder.Grow(512)
-	builder.WriteString("SELECT ")
-	builder.WriteString("r[1] AS ")
-	builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
-	for i, col := range augmentedSchema[1:] {
-		builder.WriteString(", r[")
-		builder.WriteString(strconv.Itoa(i + 2))
-		builder.WriteString("]")
-		if types.IsTimestampType(col.Type) {
-			builder.WriteString("::TIMESTAMP")
+	if appender.counters.event.delete > 0 || appender.counters.event.update > 0 { // sometimes UPDATE does not DELETE pre-image
+		builder.WriteString("SELECT ")
+		builder.WriteString("r[1] AS ")
+		builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
+		for i, col := range augmentedSchema[1:] {
+			builder.WriteString(", r[")
+			builder.WriteString(strconv.Itoa(i + 2))
+			builder.WriteString("]")
+			if types.IsTimestampType(col.Type) {
+				builder.WriteString("::TIMESTAMP")
+			}
+			builder.WriteString(" AS ")
+			builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
 		}
-		builder.WriteString(" AS ")
-		builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
+		builder.WriteString(" FROM (SELECT ")
+		builder.WriteString(pkList)
+		builder.WriteString(", LAST(ROW(*COLUMNS(*)) ORDER BY txn_group, txn_seq, txn_stmt, action) AS r")
+		builder.WriteString(ipcSQL)
+		builder.WriteString(" GROUP BY ")
+		builder.WriteString(pkList)
+		builder.WriteString(")")
+	} else {
+		// For pure INSERTs, since the source has confirmed that there are no duplicates,
+		// we can skip the deduplication step.
+		builder.WriteString("SELECT ")
+		builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
+		for _, col := range augmentedSchema[1:] {
+			builder.WriteString(", ")
+			builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
+			if types.IsTimestampType(col.Type) {
+				builder.WriteString("::TIMESTAMP")
+			}
+		}
+		builder.WriteString(ipcSQL)
 	}
-	builder.WriteString(" FROM (SELECT ")
-	builder.WriteString(pkList)
-	builder.WriteString(", LAST(ROW(*COLUMNS(*)) ORDER BY txn_group, txn_seq, txn_stmt, action) AS r")
-	builder.WriteString(ipcSQL)
-	builder.WriteString(" GROUP BY ")
-	builder.WriteString(pkList)
-	builder.WriteString(")")
 	condenseDeltaSQL := builder.String()
 
 	var (
@@ -244,7 +262,11 @@ func (c *DeltaController) updateTable(
 	}
 
 	// Insert or replace new rows (action = INSERT) into the base table.
-	insertSQL := "INSERT OR REPLACE INTO " +
+	insertSQL := "INSERT "
+	if appender.counters.event.delete > 0 || appender.counters.event.update > 0 { // sometimes UPDATE does not DELETE pre-image
+		insertSQL += "OR REPLACE "
+	}
+	insertSQL += "INTO " +
 		qualifiedTableName +
 		" SELECT * EXCLUDE (" + AugmentedColumnList + ") FROM temp.main.delta WHERE action = " +
 		strconv.Itoa(int(binlog.InsertRowEvent))
@@ -262,6 +284,11 @@ func (c *DeltaController) updateTable(
 			"table": qualifiedTableName,
 			"rows":  affected,
 		}).Debug("Inserted")
+	}
+
+	// If there are no rows to delete, we can skip the DELETE step.
+	if appender.counters.action.delete == 0 {
+		return nil
 	}
 
 	// Delete rows that have been deleted.
