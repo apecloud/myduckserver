@@ -168,11 +168,11 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 		case *array.Decimal128Builder:
 			if exp := v.Exp + scale; exp != 0 {
 				ten := big.NewInt(10)
-				if exp > 0 { // e.g., v.Int = 123, v.Exp = -2, scale = 3 (i.e., taget = 1.230), exp = 1, we need to scale up by 100: 123 x 10 = 1230
+				if exp > 0 { // e.g., v.Int = 123, v.Exp = -2, scale = 3 (i.e., target = 1.230), exp = 1, we need to scale up by 100: 123 x 10 = 1230
 					for range exp {
 						v.Int.Mul(v.Int, ten)
 					}
-				} else { // e.g., v.Int = 1230, v.Exp = -3, scale = 2 (i.e., taget = 1.23), exp = -1, we need to scale down by 10: 1230 / 10 = 123
+				} else { // e.g., v.Int = 1230, v.Exp = -3, scale = 2 (i.e., target = 1.23), exp = -1, we need to scale down by 10: 1230 / 10 = 123
 					for range -exp {
 						v.Int.Div(v.Int, ten)
 					}
