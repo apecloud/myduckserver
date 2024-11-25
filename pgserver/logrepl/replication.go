@@ -745,7 +745,12 @@ func (r *LogicalReplicator) processMessage(
 		case pglogrepl.UpdateMessageTupleTypeOld:
 			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, false)
 		default:
-			// No old tuple provided; it means the key columns are unchanged
+			// No old tuple provided; it means the key columns are unchanged.
+			// It's fine not to append a delete event to the delta in this case.
+			// However, the delta appender implements an optimization that
+			// uses INSERT instead of UPSERT+DELETE when there is no deletion in a batch.
+			// We need to enforce the use of UPSERT here because the deletion count is zero.
+			err = r.enforceUpsert(state, logicalMsg.RelationID)
 		}
 		if err != nil {
 			return false, err
@@ -1012,7 +1017,27 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 		}
 	}
 
+	switch eventType {
+	case binlog.DeleteRowEvent:
+		appender.IncDeleteEventCount()
+	case binlog.InsertRowEvent:
+		appender.IncInsertEventCount()
+	}
+
 	state.deltaBufSize += uint64(size)
+	return nil
+}
+
+func (r *LogicalReplicator) enforceUpsert(state *replicationState, relationID uint32) error {
+	rel, ok := state.relations[relationID]
+	if !ok {
+		return fmt.Errorf("unknown relation ID %d", relationID)
+	}
+	appender, err := state.deltas.GetDeltaAppender(rel.Namespace, rel.RelationName, state.schemas[relationID])
+	if err != nil {
+		return err
+	}
+	appender.IncUpdateEventCount()
 	return nil
 }
 

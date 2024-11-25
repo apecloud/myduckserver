@@ -59,10 +59,10 @@ func (c *DeltaController) Close() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	for k, da := range c.tables {
+	for _, da := range c.tables {
 		da.appender.Release()
-		delete(c.tables, k)
 	}
+	clear(c.tables)
 }
 
 // Flush writes the accumulated changes to the database.
@@ -261,7 +261,7 @@ func (c *DeltaController) updateTable(
 
 	// Insert or replace new rows (action = INSERT) into the base table.
 	insertSQL := "INSERT "
-	if appender.GetDeleteEventCount() > 0 {
+	if appender.GetDeleteEventCount() > 0 || appender.GetUpdateEventCount() > 0 {
 		insertSQL += "OR REPLACE "
 	}
 	insertSQL += "INTO " +
@@ -282,6 +282,11 @@ func (c *DeltaController) updateTable(
 			"table": qualifiedTableName,
 			"rows":  affected,
 		}).Debug("Inserted")
+	}
+
+	// If there are no rows to delete, we can skip the DELETE step.
+	if appender.GetDeleteEventCount() == 0 {
+		return nil
 	}
 
 	// Delete rows that have been deleted.

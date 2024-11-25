@@ -21,6 +21,7 @@ type DeltaAppender struct {
 	appender         myarrow.ArrowAppender
 	insertEventCount int
 	deleteEventCount int
+	updateEventCount int
 }
 
 // Create a new appender.
@@ -126,6 +127,10 @@ func (a *DeltaAppender) IncDeleteEventCount() {
 	a.deleteEventCount++
 }
 
+func (a *DeltaAppender) IncUpdateEventCount() {
+	a.updateEventCount++
+}
+
 func (a *DeltaAppender) GetInsertEventCount() int {
 	return a.insertEventCount
 }
@@ -134,7 +139,12 @@ func (a *DeltaAppender) GetDeleteEventCount() int {
 	return a.deleteEventCount
 }
 
+func (a *DeltaAppender) GetUpdateEventCount() int {
+	return a.updateEventCount
+}
+
 func (a *DeltaAppender) ResetEventCounts() {
 	a.insertEventCount = 0
 	a.deleteEventCount = 0
+	a.updateEventCount = 0
 }
