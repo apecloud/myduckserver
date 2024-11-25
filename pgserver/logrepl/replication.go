@@ -231,7 +231,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 	state.reset(sqlCtx, slotName, lastWrittenLsn)
 
 	// Switch to the `public` schema.
-	if _, err := adapter.Exec(sqlCtx, "USE public"); err != nil {
+	if _, err := adapter.ExecCatalog(sqlCtx, "USE public"); err != nil {
 		return err
 	}
 	sqlCtx.SetCurrentDatabase("public")
@@ -297,6 +297,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 	defer ticker.Stop()
 
 	for {
+		var msgReceiverExited chan struct{}
 		err := func() error {
 			// Shutdown if requested
 			select {
@@ -336,9 +337,14 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 
 			ctx, cancel := context.WithDeadline(context.Background(), nextStandbyMessageDeadline)
 			receiveMsgChan := make(chan rcvMsg)
+			msgReceiverExited = make(chan struct{})
 			go func() {
+				defer close(msgReceiverExited)
 				rawMsg, err := primaryConn.ReceiveMessage(ctx)
-				receiveMsgChan <- rcvMsg{msg: rawMsg, err: err}
+				select {
+				case <-ctx.Done():
+				case receiveMsgChan <- rcvMsg{msg: rawMsg, err: err}:
+				}
 			}()
 
 			var msgAndErr rcvMsg
@@ -425,6 +431,11 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 
 			return nil
 		}()
+
+		// Wait for the message receiver goroutine to finish.
+		if msgReceiverExited != nil {
+			<-msgReceiverExited
+		}
 
 		if err != nil {
 			if errors.Is(err, errShutdownRequested) {
@@ -819,7 +830,7 @@ func (r *LogicalReplicator) processMessage(
 // readWALPosition reads the recorded WAL position from the WAL position table
 func (r *LogicalReplicator) readWALPosition(ctx *sql.Context, slotName string) (pglogrepl.LSN, error) {
 	var lsn string
-	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.SelectStmt(), slotName).Scan(&lsn); err != nil {
+	if err := adapter.QueryRowCatalog(ctx, catalog.InternalTables.PgReplicationLSN.SelectStmt(), slotName).Scan(&lsn); err != nil {
 		if errors.Is(err, stdsql.ErrNoRows) {
 			// if the LSN doesn't exist, consider this a cold start and return 0
 			return pglogrepl.LSN(0), nil
