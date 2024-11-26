@@ -13,7 +13,7 @@ check_server_params() {
     echo "Checking MySQL server parameters..."
 
     # Retrieve the required MySQL server variables using mysqlsh
-    result=$(mysqlsh --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "
+    result=$(mysqlsh --uri="$SOURCE_DSN" --sql -e "
     SHOW VARIABLES WHERE variable_name IN ('binlog_format', 'enforce_gtid_consistency', 'gtid_mode', 'gtid_strict_mode', 'log_bin');
     ")
 
@@ -62,10 +62,10 @@ check_server_params() {
 
 # Function to check MySQL current user privileges
 check_user_privileges() {
-    echo "Checking privileges for the current user '$MYSQL_USER'..."
+    echo "Checking privileges for the current user '$SOURCE_USER'..."
 
     # Check the user grants for the currently authenticated user using mysqlsh
-    result=$(mysqlsh --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --sql -e "
+    result=$(mysqlsh --host="$SOURCE_HOST" --port="$SOURCE_PORT" --user="$SOURCE_USER" --password="$SOURCE_PASSWORD" --sql -e "
     SHOW GRANTS FOR CURRENT_USER();
     ")
 
@@ -73,11 +73,11 @@ check_user_privileges() {
 
     # Check if the required privileges are granted or if GRANT ALL is present
     if echo "$result" | grep -q -E "GRANT (SELECT|RELOAD|REPLICATION CLIENT|REPLICATION SLAVE|SHOW VIEW|EVENT)"; then
-        echo "Current user '$MYSQL_USER' has all required privileges."
+        echo "Current user '$SOURCE_USER' has all required privileges."
     elif echo "$result" | grep -q "GRANT ALL"; then
-        echo "Current user '$MYSQL_USER' has 'GRANT ALL' privileges."
+        echo "Current user '$SOURCE_USER' has 'GRANT ALL' privileges."
     else
-        echo "Error: Current user '$MYSQL_USER' is missing some required privileges."
+        echo "Error: Current user '$SOURCE_USER' is missing some required privileges."
         return 1
     fi
 
@@ -98,7 +98,7 @@ check_mysql_config() {
 # Function to check if source MySQL server is empty
 check_if_source_mysql_is_empty() {
     # Run the query using mysqlsh and capture the output
-    OUTPUT=$(mysqlsh --uri "$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST:$MYSQL_PORT" --sql -e "SHOW DATABASES;" 2>/dev/null)
+    OUTPUT=$(mysqlsh --uri "$SOURCE_DSN" --sql -e "SHOW DATABASES;" 2>/dev/null)
 
     check_command "retrieving database list"
 
@@ -117,11 +117,11 @@ check_if_myduck_has_replica() {
     REPLICA_STATUS=$(mysqlsh --sql --host=$MYDUCK_HOST --port=$MYDUCK_PORT --user=root --password='' -e "SHOW REPLICA STATUS\G")
     check_command "retrieving replica status"
 
-    SOURCE_HOST=$(echo "$REPLICA_STATUS" | awk '/Source_Host/ {print $2}')
+    SOURCE_HOST_EXISTS=$(echo "$REPLICA_STATUS" | awk '/Source_Host/ {print $2}')
 
     # Check if Source_Host is not null or empty
-    if [[ -n "$SOURCE_HOST" ]]; then
-        echo "Replication has already been started. Source Host: $SOURCE_HOST"
+    if [[ -n "$SOURCE_HOST_EXISTS" ]]; then
+        echo "Replication has already been started. Source Host: $SOURCE_HOST_EXISTS"
         return 1
     else
         return 0

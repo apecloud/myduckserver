@@ -544,76 +544,130 @@ func DropPublication(primaryDns, slotName string) error {
 	return err
 }
 
-// CreatePublication creates a publication with the given name if it does not already exist. Mostly useful for testing.
+// CreatePublicationIfNotExists creates a publication with the given name if it does not already exist. Mostly useful for testing.
 // Customers should run the CREATE PUBLICATION command on their primary server manually, specifying whichever tables
 // they want to replicate.
-func CreatePublication(primaryDns, slotName string) error {
-	conn, err := pgconn.Connect(context.Background(), primaryDns)
+func CreatePublicationIfNotExists(primaryDns, publicationName string) error {
+	// Connect to the primary PostgreSQL server
+	conn, err := pgx.Connect(context.Background(), primaryDns)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to primary database: %w", err)
 	}
 	defer conn.Close(context.Background())
 
-	result := conn.Exec(context.Background(), fmt.Sprintf("CREATE PUBLICATION %s FOR ALL TABLES;", slotName))
-	_, err = result.ReadAll()
-	return err
-}
-
-// DropReplicationSlot drops the replication slot with the given name. Any error from the slot not existing is ignored.
-func (r *LogicalReplicator) DropReplicationSlot(slotName string) error {
-	conn, err := pgconn.Connect(context.Background(), r.ReplicationDns())
-	if err != nil {
-		return err
+	// Check if the publication exists
+	query := `SELECT EXISTS(SELECT 1 FROM pg_publication WHERE pubname = $1)`
+	var exists bool
+	if err := conn.QueryRow(context.Background(), query, publicationName).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to check publication existence: %w", err)
 	}
 
-	_ = pglogrepl.DropReplicationSlot(context.Background(), conn, slotName, pglogrepl.DropReplicationSlotOptions{})
+	// Create the publication if it does not exist
+	if !exists {
+		createQuery := fmt.Sprintf("CREATE PUBLICATION %s FOR ALL TABLES", publicationName)
+		if _, err := conn.Exec(context.Background(), createQuery); err != nil {
+			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "42710" {
+				// Ignore "publication already exists" error
+				return nil
+			}
+			return fmt.Errorf("failed to create publication: %w", err)
+		}
+	}
+
 	return nil
 }
 
-// CreateReplicationSlotIfNecessary creates the replication slot named if it doesn't already exist.
-func (r *LogicalReplicator) CreateReplicationSlotIfNecessary(slotName string) error {
+// DropReplicationSlotIfExists drops the replication slot with the given name. Any error from the slot not existing is ignored.
+func (r *LogicalReplicator) DropReplicationSlotIfExists(slotName string) error {
+	// Check if the replication slot exists
+	exists, err := r.replicationSlotExists(slotName)
+	if err != nil {
+		return fmt.Errorf("failed to check replication slot existence: %w", err)
+	}
+
+	if !exists {
+		r.logger.Infof("Replication slot '%s' does not exist.", slotName)
+		return nil
+	}
+
+	// Connect to the replication database
+	conn, err := pgconn.Connect(context.Background(), r.ReplicationDns())
+	if err != nil {
+		return fmt.Errorf("failed to connect to replication database: %w", err)
+	}
+	defer conn.Close(context.Background())
+
+	if err := pglogrepl.DropReplicationSlot(context.Background(), conn, slotName, pglogrepl.DropReplicationSlotOptions{}); err != nil {
+		return fmt.Errorf("failed to drop replication slot '%s': %w", slotName, err)
+	}
+
+	r.logger.Infof("Replication slot '%s' successfully dropped.", slotName)
+	return nil
+}
+
+// CreateReplicationSlotIfNotExists creates the replication slot named if it doesn't already exist.
+func (r *LogicalReplicator) CreateReplicationSlotIfNotExists(slotName string) error {
+	// Check if the replication slot already exists
+	exists, err := r.replicationSlotExists(slotName)
+	if err != nil {
+		return fmt.Errorf("error checking replication slot existence: %w", err)
+	}
+
+	// If the slot already exists, no further action is needed
+	if exists {
+		r.logger.Infof("Replication slot '%s' already exists.", slotName)
+		return nil
+	}
+
+	// Create the replication slot
+	err = r.createReplicationSlot(slotName)
+	if err != nil {
+		return fmt.Errorf("error creating replication slot '%s': %w", slotName, err)
+	}
+
+	r.logger.Infof("Replication slot '%s' created successfully.", slotName)
+	return nil
+}
+
+// Helper method to check if a replication slot exists
+func (r *LogicalReplicator) replicationSlotExists(slotName string) (bool, error) {
 	conn, err := pgx.Connect(context.Background(), r.PrimaryDns())
 	if err != nil {
-		return err
+		return false, fmt.Errorf("failed to connect to primary database: %w", err)
 	}
+	defer conn.Close(context.Background())
 
-	rows, err := conn.Query(context.Background(), "select * from pg_replication_slots where slot_name = $1", slotName)
+	var exists bool
+	query := `SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)`
+	err = conn.QueryRow(context.Background(), query, slotName).Scan(&exists)
 	if err != nil {
-		return err
+		return false, fmt.Errorf("error querying replication slots: %w", err)
 	}
 
-	slotExists := false
-	defer rows.Close()
-	for rows.Next() {
-		_, err := rows.Values()
-		if err != nil {
-			return err
-		}
-		slotExists = true
-	}
+	return exists, nil
+}
 
-	if rows.Err() != nil {
-		return rows.Err()
-	}
-
-	// We need a different connection to create the replication slot
-	conn, err = pgx.Connect(context.Background(), r.ReplicationDns())
+// Helper method to create a replication slot
+func (r *LogicalReplicator) createReplicationSlot(slotName string) error {
+	conn, err := pgx.Connect(context.Background(), r.ReplicationDns())
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to replication database: %w", err)
 	}
+	defer conn.Close(context.Background())
 
-	if !slotExists {
-		_, err = pglogrepl.CreateReplicationSlot(context.Background(), conn.PgConn(), slotName, outputPlugin, pglogrepl.CreateReplicationSlotOptions{})
-		if err != nil {
-			pgErr, ok := err.(*pgconn.PgError)
-			if ok && pgErr.Code == "42710" {
-				// replication slot already exists, we can ignore this error
-			} else {
-				return err
-			}
+	_, err = pglogrepl.CreateReplicationSlot(
+		context.Background(),
+		conn.PgConn(),
+		slotName,
+		outputPlugin,
+		pglogrepl.CreateReplicationSlotOptions{},
+	)
+	if err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "42710" {
+			// Replication slot already exists; ignore this error
+			return nil
 		}
-
-		r.logger.Infoln("Created replication slot:", slotName)
+		return fmt.Errorf("error creating replication slot: %w", err)
 	}
 
 	return nil
@@ -841,8 +895,8 @@ func (r *LogicalReplicator) readWALPosition(ctx *sql.Context, slotName string) (
 	return pglogrepl.ParseLSN(lsn)
 }
 
-// writeWALPosition writes the recorded WAL position to the WAL position table
-func (r *LogicalReplicator) writeWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
+// WriteWALPosition writes the recorded WAL position to the WAL position table
+func (r *LogicalReplicator) WriteWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
 	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgReplicationLSN.UpsertStmt(), slotName, lsn.String())
 	return err
 }
@@ -942,7 +996,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	}
 
 	r.logger.Debugf("Writing LSN %s\n", state.lastCommitLSN)
-	if err = r.writeWALPosition(state.replicaCtx, state.slotName, state.lastCommitLSN); err != nil {
+	if err = r.WriteWALPosition(state.replicaCtx, state.slotName, state.lastCommitLSN); err != nil {
 		return err
 	}
 

@@ -62,6 +62,8 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 	bootQueries := []string{
 		"INSTALL arrow",
 		"LOAD arrow",
+		"INSTALL postgres_scanner",
+		"LOAD postgres_scanner",
 	}
 	for _, q := range bootQueries {
 		if _, err := storage.ExecContext(context.Background(), q); err != nil {

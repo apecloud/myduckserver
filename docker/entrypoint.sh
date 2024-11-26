@@ -2,32 +2,90 @@
 
 export DATA_PATH="${HOME}/data"
 export LOG_PATH="${HOME}/log"
-export REPLICA_SETUP_PATH="${HOME}/replica-setup-mysql"
+export MYSQL_REPLICA_SETUP_PATH="${HOME}/replica-setup-mysql"
+export POSTGRES_REPLICA_SETUP_PATH="${HOME}/replica-setup-postgres"
 export PID_FILE="${LOG_PATH}/myduck.pid"
 
-if [ -n "$PGSQL_PRIMARY_DSN" ]; then
-    export PGSQL_PRIMARY_DSN_ARG="-pg-primary-dsn $PGSQL_PRIMARY_DSN"
-fi
+parse_dsn() {
+    local dsn="$SOURCE_DSN"
 
-if [ -n "$PGSQL_SLOT_NAME" ]; then
-    export PGSQL_SLOT_NAME_ARG="-pg-slot-name $PGSQL_SLOT_NAME"
-fi
+    # Initialize variables
+    SOURCE_TYPE=""
+    SOURCE_USER=""
+    SOURCE_PASSWORD=""
+    SOURCE_HOST=""
+    SOURCE_PORT=""
+    SOURCE_DATABASE=""
 
-if [ -n "$LOG_LEVEL" ]; then
-    export LOG_LEVEL="-loglevel $LOG_LEVEL"
-fi
+    # Detect type
+    if [[ "$dsn" =~ ^postgres:// ]]; then
+        SOURCE_TYPE="POSTGRES"
+        # Strip the prefix
+        dsn="${dsn#postgres://}"
+    elif [[ "$dsn" =~ ^mysql:// ]]; then
+        SOURCE_TYPE="MYSQL"
+        # Strip the prefix
+        dsn="${dsn#mysql://}"
+    else
+        echo "Error: Unsupported DSN format"
+        return 1
+    fi
+
+    # Extract credentials and host/port/dbname
+    if [[ "$dsn" =~ ^([^:@]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?(/(.+))?$ ]]; then
+        export SOURCE_USER="${BASH_REMATCH[1]}"
+        export SOURCE_PASSWORD="${BASH_REMATCH[3]}"
+        export SOURCE_HOST="${BASH_REMATCH[4]}"
+        export SOURCE_PORT="${BASH_REMATCH[6]}"
+        export SOURCE_DATABASE="${BASH_REMATCH[8]}"
+    else
+        echo "Error: Failed to parse DSN"
+        return 1
+    fi
+
+    # Handle empty SOURCE_DATABASE
+    if [[ -z "$SOURCE_DATABASE" ]]; then
+        if [[ "$SOURCE_TYPE" == "POSTGRES" ]]; then
+            export SOURCE_DATABASE="postgres"
+        elif [[ "$SOURCE_TYPE" == "MYSQL" ]]; then
+            export SOURCE_DATABASE="mysql"
+        fi
+    fi
+
+    # Debugging (Optional: Comment out in production)
+    echo "SOURCE_TYPE=$SOURCE_TYPE"
+    echo "SOURCE_USER=$SOURCE_USER"
+    echo "SOURCE_PASSWORD=$SOURCE_PASSWORD"
+    echo "SOURCE_HOST=$SOURCE_HOST"
+    echo "SOURCE_PORT=$SOURCE_PORT"
+    echo "SOURCE_DATABASE=$SOURCE_DATABASE"
+}
 
 # Function to run replica setup
-run_mysql_replica_setup() {
-    if [ -z "$MYSQL_HOST" ] || [ -z "$MYSQL_PORT" ] || [ -z "$MYSQL_USER" ]; then
-        echo "Error: Missing required MySQL connection variables for replica setup."
-        exit 1
-    fi
-    echo "Creating replica with MySQL server at $MYSQL_HOST:$MYSQL_PORT..."
-    cd "$REPLICA_SETUP_PATH" || { echo "Error: Could not change directory to ${REPLICA_SETUP_PATH}"; exit 1; }
+run_replica_setup() {
+    case "$SOURCE_TYPE" in
+        MYSQL)
+            echo "Creating replica with MySQL server at $SOURCE_DSN..."
+            cd "$MYSQL_REPLICA_SETUP_PATH" || {
+                echo "Error: Could not change directory to ${MYSQL_REPLICA_SETUP_PATH}";
+                exit 1;
+            }
+            ;;
+        POSTGRES)
+            echo "Creating replica with Postgres server at $SOURCE_DSN..."
+            cd "$POSTGRES_REPLICA_SETUP_PATH" || {
+                echo "Error: Could not change directory to ${POSTGRES_REPLICA_SETUP_PATH}";
+                exit 1;
+            }
+            ;;
+        *)
+            echo "Error: Invalid SOURCE_TYPE value: ${SOURCE_TYPE}. Valid options are: MYSQL, POSTGRES."
+            exit 1
+            ;;
+    esac
 
     # Run replica_setup.sh and check for errors
-    if bash replica_setup.sh; then
+    if source replica_setup.sh; then
         echo "Replica setup completed."
     else
         echo "Error: Replica setup failed."
@@ -37,13 +95,13 @@ run_mysql_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
+      nohup myduckserver $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
 run_server_in_foreground() {
     cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-    myduckserver $PGSQL_PRIMARY_DSN_ARG $PGSQL_SLOT_NAME_ARG $LOG_LEVEL
+    myduckserver $LOG_LEVEL
 }
 
 wait_for_my_duck_server_ready() {
@@ -93,28 +151,24 @@ check_process_alive() {
 
 # Handle the setup_mode
 setup() {
-    mkdir -p "${DATA_PATH}"
-    mkdir -p "${LOG_PATH}"
+    if [ -n "$LOG_LEVEL" ]; then
+        export LOG_LEVEL="-loglevel $LOG_LEVEL"
+    fi
+    parse_dsn
+    # Ensure required directories exist
+    mkdir -p "${DATA_PATH}" "${LOG_PATH}"
+
     case "$SETUP_MODE" in
         "" | "SERVER")
             echo "Starting MyDuck Server in SERVER mode..."
             run_server_in_foreground
             ;;
-
-        "MYSQL_REPLICA")
-            echo "Starting MyDuck Server and running replica setup in MySQL REPLICA mode..."
+        "REPLICA")
+            echo "Starting MyDuck Server and running replica setup in REPLICA mode..."
             run_server_in_background
             wait_for_my_duck_server_ready
-            run_mysql_replica_setup
+            run_replica_setup
             ;;
-
-        "PGSQL_REPLICA")
-            echo "Starting MyDuck Server and running replica setup in PGSQL REPLICA mode..."
-            run_server_in_background
-            wait_for_my_duck_server_ready
-            # TODO: run pgsql replica setup
-            ;;
-
         *)
             echo "Error: Invalid SETUP_MODE value. Valid options are: SERVER, REPLICA."
             exit 1
@@ -124,7 +178,7 @@ setup() {
 
 setup
 
-while [[ "$SETUP_MODE" == "MYSQL_REPLICA" ]]; do
+while [[ "$SETUP_MODE" == "REPLICA" ]]; do
     # Check if the processes have started
     check_process_alive "$PID_FILE" "MyDuck Server"
     MY_DUCK_SERVER_STATUS=$?

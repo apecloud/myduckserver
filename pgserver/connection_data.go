@@ -53,10 +53,11 @@ const (
 // version of the converted query, and is the recommended form to use. If AST is nil, then use the String version,
 // otherwise always prefer to AST.
 type ConvertedQuery struct {
-	String       string
-	AST          tree.Statement
-	StatementTag string
-	PgParsable   bool
+	String             string
+	AST                tree.Statement
+	StatementTag       string
+	PgParsable         bool
+	SubscriptionConfig *SubscriptionConfig
 }
 
 // copyFromStdinState tracks the metadata for an import of data into a table using a COPY FROM STDIN statement. When

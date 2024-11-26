@@ -642,12 +642,12 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 		require.NoError(t, err)
 	}()
 
-	primaryDns := dsn + "?sslmode=disable&replication=database"
+	primaryDns := dsn + "?sslmode=disable"
 
 	// We drop and recreate the replication slot once at the beginning of the test suite. Postgres seems to do a little
 	// work in the background with a publication, so we need to wait a little bit before running any test scripts.
 	require.NoError(t, logrepl.DropPublication(primaryDns, slotName))
-	require.NoError(t, logrepl.CreatePublication(primaryDns, slotName))
+	require.NoError(t, logrepl.CreatePublicationIfNotExists(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
 	for i, script := range scripts {
@@ -813,10 +813,10 @@ func connectionForQuery(t *testing.T, query string, connections map[string]*pgx.
 func handlePseudoQuery(t *testing.T, server *pgserver.Server, query string, r *logrepl.LogicalReplicator) bool {
 	switch query {
 	case createReplicationSlot:
-		require.NoError(t, r.CreateReplicationSlotIfNecessary(slotName))
+		require.NoError(t, r.CreateReplicationSlotIfNotExists(slotName))
 		return true
 	case dropReplicationSlot:
-		require.NoError(t, r.DropReplicationSlot(slotName))
+		require.NoError(t, r.DropReplicationSlotIfExists(slotName))
 		return true
 	case startReplication:
 		go func() {
