@@ -52,7 +52,7 @@ func (config *SubscriptionConfig) ToDNS() string {
 func (config *SubscriptionConfig) ToDuckDBQuery() []string {
 	return []string{
 		fmt.Sprintf("ATTACH '%s' AS pg_postgres (TYPE POSTGRES);", config.ToConnectionInfo()),
-		"BEGIN ISOLATION LEVEL REPEATABLE READ;",
+		"BEGIN;",
 		"COPY FROM DATABASE pg_postgres TO mysql;",
 		"SELECT * FROM postgres_query('pg_postgres', 'SELECT pg_current_wal_lsn()');",
 		"COMMIT;",
