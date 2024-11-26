@@ -42,6 +42,8 @@ import (
 // The included MySQL client is used in this example, however any MySQL-compatible client will work.
 
 var (
+	initMode = false
+
 	address       = "0.0.0.0"
 	port          = 3306
 	socket        string
@@ -55,6 +57,8 @@ var (
 )
 
 func init() {
+	flag.BoolVar(&initMode, "init", initMode, "Initialize the program and exit. The necessary extensions will be installed.")
+
 	flag.StringVar(&address, "address", address, "The address to bind to.")
 	flag.IntVar(&port, "port", port, "The port to bind to.")
 	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
@@ -94,6 +98,12 @@ func main() {
 	logrus.SetLevel(logrus.Level(logLevel))
 
 	ensureSQLTranslate()
+
+	if initMode {
+		provider := catalog.NewInMemoryDBProvider()
+		provider.Close()
+		return
+	}
 
 	provider, err := catalog.NewDBProvider(dataDirectory, dbFileName)
 	if err != nil {

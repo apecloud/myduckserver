@@ -46,14 +46,15 @@ FROM debian:bookworm-slim
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y debian-archive-keyring \
+    && apt-get update && apt-get install -y \
     vim \
     procps \
     curl \
     unzip \
     libstdc++6 \
-    python3 \
-    python3-pip \
+    python3 python3-pip \
+    libpq-dev postgresql-client \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -68,6 +69,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     curl -LJO https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit.tar.gz \
     && tar -zxvf mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit.tar.gz \
+    && rm mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit.tar.gz \
     && mv mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit /usr/local/mysqlsh \
     && ln -s /usr/local/mysqlsh/bin/mysqlsh /usr/local/bin/mysqlsh \
     && mysqlsh --version
@@ -84,13 +86,6 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     && mv duckdb /usr/local/bin \
     && rm duckdb_cli-linux-$ARCH.zip \
     && duckdb -c 'SELECT extension_name, loaded, install_path FROM duckdb_extensions() where installed'
-
-RUN apt-get update && \
-    apt-get install -y debian-archive-keyring && \
-    apt-get update && \
-    apt-get install -y libpq-dev postgresql-client \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
 
 RUN duckdb -version
 
@@ -110,6 +105,9 @@ COPY --chown=admin:admin --chmod=755 devtools/replica-setup-postgres ./replica-s
 
 # ENV LC_CTYPE="en_US.UTF-8"
 # ENV LANG="en_US.UTF-8"
+
+# Install the required DuckDB extensions
+RUN myduckserver --init
 
 # Expose the ports your server will run on (if applicable)
 EXPOSE 3306
