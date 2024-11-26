@@ -33,6 +33,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
+	duckConfig "github.com/apecloud/myduckserver/config"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
@@ -80,6 +81,9 @@ var showVariablesRegex = regexp.MustCompile(`(?i)^\s*SHOW\s+(ALL|[a-zA-Z_][a-zA-
 
 // precompile a regex to match "SET xxx TO 'yyy';" or "SET xxx = 'yyy';" or "SET xxx TO DEFAULT;" or "SET xxx = DEFAULT;".
 var setStmtRegex = regexp.MustCompile(`(?i)^\s*SET\s+(SESSION|LOCAL)?\s*([a-zA-Z_][a-zA-Z0-9_]+)\s*(TO|=)\s*(DEFAULT|'([^']*)'|"([^"]*)"|[^'"\s;]+)\s*;?\s*$`)
+
+// precompile a regex to match "RESET xxx;".
+var resetStmtRegex = regexp.MustCompile(`(?i)^\s*RESET\s+([a-zA-Z_][a-zA-Z0-9_]+)\s*;?\s*$`)
 
 // precompile a regex to match any "from pg_catalog.xxx" in the query.
 var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.`)
@@ -579,28 +583,41 @@ func getSettingValue(matches []string) (string, bool) {
 	return matches[4], strings.ToLower(matches[4]) == "default"
 }
 
-// setSessionVar will set the session variable to the value provided
-func (h *ConnectionHandler) setSessionVar(name string, value any, useDefault bool) (any, error) {
+// setPgSessionVar will set the session variable to the value provided for pg.
+// And reply with the CommandComplete and ParameterStatus messages.
+func (h *ConnectionHandler) setPgSessionVar(name string, value any, useDefault bool, tag string) (bool, error) {
 	sysVar, _, ok := sql.SystemVariables.GetGlobal(name)
 	if !ok {
-		return nil, fmt.Errorf("error: %s variable was not found", name)
+		return false, fmt.Errorf("error: %s variable was not found", name)
 	}
 	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	if useDefault {
 		value = sysVar.GetDefault()
 	}
 	err = sysVar.GetSessionScope().SetValue(ctx, name, value)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	v, err := sysVar.GetSessionScope().GetValue(ctx, name, sql.Collation_Default)
 	if err != nil {
-		return nil, fmt.Errorf("error: %s variable was not found, err: %w", name, err)
+		return false, fmt.Errorf("error: %s variable was not found, err: %w", name, err)
 	}
-	return v, nil
+	// Sent CommandComplete message
+	err = h.send(makeCommandComplete(tag, 0))
+	if err != nil {
+		return true, err
+	}
+	// Sent ParameterStatus message
+	if err := h.send(&pgproto3.ParameterStatus{
+		Name:  name,
+		Value: fmt.Sprintf("%v", v),
+	}); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
@@ -627,6 +644,10 @@ func (h *ConnectionHandler) handlePgCatalogQueries(statement string) (bool, erro
 		})
 	}
 	if matches := currentSettingRegex.FindStringSubmatch(statement); len(matches) == 3 {
+		if duckConfig.IsValidConfig(matches[2]) {
+			// This is a configuration of DuckDB, it should be bypassed to DuckDB
+			return false, nil
+		}
 		setting, err := h.queryPGSetting(matches[2])
 		if err != nil {
 			return false, err
@@ -653,25 +674,30 @@ func (h *ConnectionHandler) handlePgCatalogQueries(statement string) (bool, erro
 	if matches := setStmtRegex.FindStringSubmatch(statement); len(matches) == 7 {
 		key := matches[2]
 		value, isDefault := getSettingValue(matches)
-		newVal, err := h.setSessionVar(key, value, isDefault)
-		if err != nil {
-			return false, err
-		}
-		// Sent CommandComplete message
-		err = h.send(makeCommandComplete("SET", 0))
-		if err != nil {
-			return true, err
-		}
-		// Sent ParameterStatus message
-		if err := h.send(&pgproto3.ParameterStatus{
-			Name:  key,
-			Value: fmt.Sprintf("%v", newVal),
-		}); err != nil {
-			return true, err
-		}
-		return true, nil
-	}
 
+		if duckConfig.IsValidConfig(key) {
+			// This is a configuration of DuckDB, it should be bypassed to DuckDB
+			if isDefault {
+				// We should change the Query to "RESET key"
+				query := fmt.Sprintf("RESET %s;", key)
+				return true, h.query(ConvertedQuery{
+					String:       query,
+					StatementTag: "SET",
+				})
+			}
+			return false, nil
+		}
+
+		return h.setPgSessionVar(key, value, isDefault, "SET")
+	}
+	if matches := resetStmtRegex.FindStringSubmatch(statement); len(matches) == 2 {
+		key := matches[1]
+		if duckConfig.IsValidConfig(key) {
+			// This is a configuration of DuckDB, it should be bypassed to DuckDB
+			return false, nil
+		}
+		return h.setPgSessionVar(key, nil, true, "RESET")
+	}
 	if pgCatalogRegex.MatchString(statement) {
 		return true, h.query(ConvertedQuery{
 			String:       pgCatalogRegex.ReplaceAllString(statement, " FROM __sys__."),

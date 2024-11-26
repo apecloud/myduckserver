@@ -105,9 +105,6 @@ var InternalTables = struct {
 	//             Once we add 'pg_catalog' and support views for PG, replace this by a view.
 	//             https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-REPLICATION-VIEW
 	PGStatReplication InternalTable
-	// This is a mock table of pg_catalog.current_setting(...)
-	// https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-SET
-	PGCurrentSetting InternalTable
 }{
 	PersistentVariable: InternalTable{
 		Schema:       "__sys__",
@@ -225,21 +222,6 @@ var InternalTables = struct {
 		},
 		DDL: "pid INTEGER PRIMARY KEY, usesysid TEXT, usename TEXT, application_name TEXT, client_addr TEXT, client_hostname TEXT, client_port INTEGER, backend_start TIMESTAMP, backend_xmin INTEGER, state TEXT, sent_lsn TEXT, write_lsn TEXT, flush_lsn TEXT, replay_lsn TEXT, write_lag INTERVAL, flush_lag INTERVAL, replay_lag INTERVAL, sync_priority INTEGER, sync_state TEXT, reply_time TIMESTAMP",
 	},
-	// pg_catalog.current_setting(...)
-	PGCurrentSetting: InternalTable{
-		Schema: "__sys__",
-		Name:   "current_setting",
-		KeyColumns: []string{
-			"name",
-		},
-		ValueColumns: []string{
-			"setting",
-		},
-		DDL: "name TEXT PRIMARY KEY, setting TEXT",
-		InitialData: [][]any{
-			{"server_version_num", "170000"},
-		},
-	},
 }
 
 var internalTables = []InternalTable{
@@ -249,5 +231,4 @@ var internalTables = []InternalTable{
 	InternalTables.PgSubscription,
 	InternalTables.GlobalStatus,
 	InternalTables.PGStatReplication,
-	InternalTables.PGCurrentSetting,
 }

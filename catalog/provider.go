@@ -15,6 +15,7 @@ import (
 	_ "github.com/marcboeker/go-duckdb"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/config"
 	"github.com/apecloud/myduckserver/configuration"
 )
 
@@ -58,6 +59,7 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 	}
 
 	storage := stdsql.OpenDB(connector)
+	config.Init(storage)
 
 	bootQueries := []string{
 		"INSTALL arrow",
