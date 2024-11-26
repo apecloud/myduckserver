@@ -22,8 +22,6 @@ services:
     container_name: htap-pg-setup
     command: >
       sh -c "
-             PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"CREATE PUBLICATION myduck_subscription FOR ALL TABLES;\" &&
-             PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"SELECT PG_CREATE_LOGICAL_REPLICATION_SLOT('myduck_subscription', 'pgoutput');\" &&
              PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"CREATE TABLE test (id INT PRIMARY KEY, name VARCHAR(255));\" &&
              PGPASSWORD=postgres psql -h pgsql -p 5432 -U postgres -d postgres -c \"INSERT INTO test (id, name) VALUES (1, 'test');\"
              "
@@ -37,8 +35,8 @@ services:
     pull_policy: always
     container_name: htap-myduck
     environment:
-      PGSQL_PRIMARY_DSN: postgres://postgres:postgres@pgsql:5432/postgres?sslmode=disable
-      PGSQL_SLOT_NAME: myduck_subscription
+      SETUP_MODE: REPLICA
+      SOURCE_DSN: postgres://postgres:postgres@pgsql:5432/postgres
     depends_on:
       pgsql:
         condition: service_healthy
