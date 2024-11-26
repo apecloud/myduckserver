@@ -56,6 +56,7 @@ func (config *SubscriptionConfig) ToDuckDBQuery() []string {
 		"COPY FROM DATABASE pg_postgres TO mysql;",
 		"SELECT * FROM postgres_query('pg_postgres', 'SELECT pg_current_wal_lsn()');",
 		"COMMIT;",
+		"DETACH pg_postgres;",
 	}
 }
 
