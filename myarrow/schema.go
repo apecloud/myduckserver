@@ -40,7 +40,7 @@ func ToArrowType(t sql.Type) (arrow.DataType, error) {
 
 func toArrowType(t sql.Type) arrow.DataType {
 	if pgType, ok := t.(pgtypes.PostgresType); ok {
-		return pgtypes.PostgresTypeToArrowType(pgType.PG.OID)
+		return pgtypes.PostgresTypeToArrowType(pgType)
 	}
 	switch t.Type() {
 	case query.Type_UINT8:
