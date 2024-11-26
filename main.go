@@ -51,9 +51,7 @@ var (
 
 	replicaOptions replica.ReplicaOptions
 
-	postgresPort       = 5432
-	postgresPrimaryDsn string
-	postgresSlotName   = "myduck"
+	postgresPort = 5432
 )
 
 func init() {
@@ -77,8 +75,6 @@ func init() {
 	// The following options are used to configure the Postgres server.
 
 	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
-	flag.StringVar(&postgresPrimaryDsn, "pg-primary-dsn", postgresPrimaryDsn, "The DSN of the primary server for logical replication.")
-	flag.StringVar(&postgresSlotName, "pg-slot-name", postgresSlotName, "The name of the logical replication slot to use.")
 }
 
 func ensureSQLTranslate() {
@@ -151,9 +147,6 @@ func main() {
 		)
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to create Postgres-protocol server")
-		}
-		if postgresPrimaryDsn != "" && postgresSlotName != "" {
-			go pgServer.StartReplication(postgresPrimaryDsn, postgresSlotName)
 		}
 		go pgServer.Start()
 	}
