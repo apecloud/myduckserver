@@ -8,6 +8,7 @@ import (
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/jackc/pglogrepl"
 	"regexp"
+	"strings"
 )
 
 // This file implements the logic for handling CREATE SUBSCRIPTION SQL statements.
@@ -33,7 +34,7 @@ type SubscriptionConfig struct {
 
 var lsnQueryIndex = 5
 
-var subscriptionRegex = regexp.MustCompile(`CREATE SUBSCRIPTION\s+(\w+)\s+CONNECTION\s+'([^']+)'\s+PUBLICATION\s+(\w+);`)
+var subscriptionRegex = regexp.MustCompile(`(?i)CREATE SUBSCRIPTION\s+(\w+)\s+CONNECTION\s+'([^']+)'\s+PUBLICATION\s+(\w+);`)
 var connectionRegex = regexp.MustCompile(`(\b\w+)=([\w\.\d]*)`)
 
 // ToConnectionInfo Format SubscriptionConfig into a ConnectionInfo
@@ -50,10 +51,8 @@ func (config *SubscriptionConfig) ToDNS() string {
 
 func (config *SubscriptionConfig) ToDuckDBQuery() []string {
 	return []string{
-		"INSTALL postgres_scanner;",
-		"LOAD postgres_scanner;",
 		fmt.Sprintf("ATTACH '%s' AS pg_postgres (TYPE POSTGRES);", config.ToConnectionInfo()),
-		"BEGIN;",
+		"BEGIN ISOLATION LEVEL REPEATABLE READ;",
 		"COPY FROM DATABASE pg_postgres TO mysql;",
 		"SELECT * FROM postgres_query('pg_postgres', 'SELECT pg_current_wal_lsn()');",
 		"COMMIT;",
@@ -84,7 +83,8 @@ func parseSubscriptionSQL(sql string) (*SubscriptionConfig, error) {
 
 	// Map the matches to struct fields
 	for _, match := range matches {
-		switch match[1] {
+		key := strings.ToLower(match[1])
+		switch key {
 		case "dbname":
 			config.DBName = match[2]
 		case "host":

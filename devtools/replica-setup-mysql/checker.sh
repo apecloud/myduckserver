@@ -117,11 +117,11 @@ check_if_myduck_has_replica() {
     REPLICA_STATUS=$(mysqlsh --sql --host=$MYDUCK_HOST --port=$MYDUCK_PORT --user=root --password='' -e "SHOW REPLICA STATUS\G")
     check_command "retrieving replica status"
 
-    EXISTED_SOURCE_HOST=$(echo "$REPLICA_STATUS" | awk '/Source_Host/ {print $2}')
+    SOURCE_HOST_EXISTS=$(echo "$REPLICA_STATUS" | awk '/Source_Host/ {print $2}')
 
     # Check if Source_Host is not null or empty
-    if [[ -n "$EXISTED_SOURCE_HOST" ]]; then
-        echo "Replication has already been started. Source Host: $EXISTED_SOURCE_HOST"
+    if [[ -n "$SOURCE_HOST_EXISTS" ]]; then
+        echo "Replication has already been started. Source Host: $SOURCE_HOST_EXISTS"
         return 1
     else
         return 0

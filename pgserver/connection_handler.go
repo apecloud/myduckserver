@@ -1047,10 +1047,14 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
 	if query.SubscriptionConfig != nil {
 		return executeCreateSubscriptionSQL(h, query.SubscriptionConfig)
-	} else {
-		if err := h.duckHandler.ComQuery(context.Background(), h.mysqlConn, query.String, query.AST, callback); err != nil {
-			return fmt.Errorf("fallback query execution failed: %w", err)
-		}
+	} else if err := h.duckHandler.ComQuery(
+		context.Background(),
+		h.mysqlConn,
+		query.String,
+		query.AST,
+		callback,
+	); err != nil {
+		return fmt.Errorf("fallback query execution failed: %w", err)
 	}
 
 	return h.send(makeCommandComplete(query.StatementTag, rowsAffected))
