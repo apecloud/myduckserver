@@ -119,11 +119,13 @@ docker run \
   --detach=true \
   apecloud/myduckserver:latest
 ```
+`SOURCE_DSN` specifies the connection string to the primary database server, which can be either MySQL or PostgreSQL.
 
-`SOURCE_DSN` is the connection string of the primary (MySQL|Postgres) server. 
-Use the mysql URI scheme to connect to a MySQL primary and use the postgres URI scheme to connect to a Postgres primary. 
-For example, 
-`--env=SOURCE_DSN=mysql://root:password@example.com:3306` or `--env=SOURCE_DSN=postgres://postgres:password@example.com:5432.`
+- **MySQL Primary:** Use the MySQL URI scheme, e.g.,  
+  `--env=SOURCE_DSN=mysql://root:password@example.com:3306`
+
+- **PostgreSQL Primary:** Use the PostgreSQL URI scheme, e.g.,  
+  `--env=SOURCE_DSN=postgres://postgres:password@example.com:5432`
 
 ### Connecting to Cloud MySQL & Postgres
 
