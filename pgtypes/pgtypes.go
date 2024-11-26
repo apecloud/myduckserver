@@ -16,7 +16,11 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
-var DefaultTypeMap = pgtype.NewMap()
+var DefaultTypeMap *pgtype.Map
+
+func init() {
+	DefaultTypeMap = pgtype.NewMap()
+}
 
 var DuckdbTypeStrToPostgresTypeStr = map[string]string{
 	"INVALID":      "unknown",
@@ -46,8 +50,8 @@ var DuckdbTypeStrToPostgresTypeStr = map[string]string{
 	"ENUM":         "text",
 	"UUID":         "uuid",
 	"BIT":          "bit",
-	"TIME_TZ":      "timetz",
-	"TIMESTAMP_TZ": "timestamptz",
+	"TIMETZ":       "timetz",
+	"TIMESTAMPTZ":  "timestamptz",
 	"ANY":          "text",    // Generic ANY type approximated to text
 	"VARINT":       "numeric", // Variable integer, mapped to numeric
 }
@@ -166,7 +170,7 @@ func PostgresTypeToArrowType(p PostgresType) arrow.DataType {
 		return arrow.FixedWidthTypes.Boolean
 	case pgtype.ByteaOID:
 		return arrow.BinaryTypes.Binary
-	case pgtype.NameOID, pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.JSONOID, pgtype.XMLOID:
+	case pgtype.NameOID, pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.JSONOID, pgtype.JSONBOID, pgtype.XMLOID:
 		return arrow.BinaryTypes.String
 	case pgtype.Int8OID:
 		return arrow.PrimitiveTypes.Int64
@@ -182,15 +186,12 @@ func PostgresTypeToArrowType(p PostgresType) arrow.DataType {
 		return arrow.PrimitiveTypes.Float32
 	case pgtype.Float8OID:
 		return arrow.PrimitiveTypes.Float64
-	case pgtype.PointOID:
-		return arrow.StructOf(arrow.Field{Name: "x", Type: arrow.PrimitiveTypes.Float64},
-			arrow.Field{Name: "y", Type: arrow.PrimitiveTypes.Float64})
 	case pgtype.DateOID:
 		return arrow.FixedWidthTypes.Date32
-	case pgtype.TimeOID:
-		return arrow.FixedWidthTypes.Time64ns
+	case pgtype.TimeOID, pgtype.TimetzOID:
+		return arrow.FixedWidthTypes.Time64us
 	case pgtype.TimestampOID, pgtype.TimestamptzOID:
-		return arrow.FixedWidthTypes.Timestamp_s
+		return arrow.FixedWidthTypes.Timestamp_us
 	case pgtype.NumericOID:
 		if p.Precision > 0 && p.Scale >= 0 {
 			if p.Precision <= 38 {
@@ -211,6 +212,11 @@ func PostgresTypeToArrowType(p PostgresType) arrow.DataType {
 		//   so we use a string type for UUIDs.
 		// return &arrow.FixedSizeBinaryType{ByteWidth: 16}
 		return arrow.BinaryTypes.String
+	case pgtype.PointOID:
+		return arrow.StructOf(
+			arrow.Field{Name: "x", Type: arrow.PrimitiveTypes.Float64},
+			arrow.Field{Name: "y", Type: arrow.PrimitiveTypes.Float64},
+		)
 	default:
 		return arrow.BinaryTypes.Binary // fall back for unknown types
 	}

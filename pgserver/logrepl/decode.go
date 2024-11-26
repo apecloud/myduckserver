@@ -2,6 +2,7 @@ package logrepl
 
 import (
 	"fmt"
+	"log"
 	"math/big"
 	"time"
 
@@ -29,6 +30,8 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 		}
 		return 0, fmt.Errorf("column %s: unsupported type conversion for OID %d to %T", columnType.Name, columnType.DataType, builder)
 	}
+
+	log.Printf("decodeToArrow: columnType=%+v, data=%s, format=%d, builder=%T, dt=%+v\n", columnType, data, format, builder, dt)
 
 	var (
 		oid   = dt.OID
@@ -143,6 +146,17 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 			return 4, nil
 		}
 
+	case pgtype.TimeOID, pgtype.TimetzOID:
+		if b, ok := builder.(*array.Time64Builder); ok {
+			var v pgtype.Time
+			var codec pgtype.TimeCodec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(arrow.Time64(v.Microseconds * 1000))
+			return 8, nil
+		}
+
 	case pgtype.NumericOID:
 		// Fast path for text format & string destination
 		if format == pgtype.TextFormatCode {
@@ -232,7 +246,32 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 			b.Append(buf[:])
 			return 36, nil
 		}
+
+	case pgtype.JSONOID:
+		if b, ok := builder.(*array.BinaryBuilder); ok {
+			var buf [32]byte // Stack-allocated buffer for small JSON
+			v := pgtype.PreallocBytes(buf[:])
+			var codec pgtype.JSONCodec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return len(v), nil
+		}
+
+	case pgtype.JSONBOID:
+		if b, ok := builder.(*array.BinaryBuilder); ok {
+			var buf [32]byte // Stack-allocated buffer for small JSON
+			v := pgtype.PreallocBytes(buf[:])
+			var codec pgtype.JSONBCodec
+			if err := codec.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
+				return 0, err
+			}
+			b.Append(v)
+			return len(v), nil
+		}
 	}
+
 	// TODO(fan): add support for other types
 
 	// Fallback
