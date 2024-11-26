@@ -32,7 +32,7 @@ type SubscriptionConfig struct {
 	LSN              pglogrepl.LSN
 }
 
-var lsnQueryIndex = 5
+var lsnQueryIndex = 1
 
 var subscriptionRegex = regexp.MustCompile(`(?i)CREATE SUBSCRIPTION\s+(\w+)\s+CONNECTION\s+'([^']+)'\s+PUBLICATION\s+(\w+);`)
 var connectionRegex = regexp.MustCompile(`(\b\w+)=([\w\.\d]*)`)
@@ -52,9 +52,9 @@ func (config *SubscriptionConfig) ToDNS() string {
 func (config *SubscriptionConfig) ToDuckDBQuery() []string {
 	return []string{
 		fmt.Sprintf("ATTACH '%s' AS pg_postgres (TYPE POSTGRES);", config.ToConnectionInfo()),
+		"SELECT * FROM postgres_query('pg_postgres', 'SELECT pg_current_wal_lsn()');",
 		"BEGIN;",
 		"COPY FROM DATABASE pg_postgres TO mysql;",
-		"SELECT * FROM postgres_query('pg_postgres', 'SELECT pg_current_wal_lsn()');",
 		"COMMIT;",
 		"DETACH pg_postgres;",
 	}
