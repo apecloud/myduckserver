@@ -189,8 +189,10 @@ func PostgresTypeToArrowType(p PostgresType) arrow.DataType {
 	case pgtype.DateOID:
 		return arrow.FixedWidthTypes.Date32
 	case pgtype.TimeOID, pgtype.TimetzOID:
-		return arrow.FixedWidthTypes.Time64us
-	case pgtype.TimestampOID, pgtype.TimestamptzOID:
+		return arrow.FixedWidthTypes.Time64ns
+	case pgtype.TimestampOID:
+		return &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: ""}
+	case pgtype.TimestamptzOID:
 		return arrow.FixedWidthTypes.Timestamp_us
 	case pgtype.NumericOID:
 		if p.Precision > 0 && p.Scale >= 0 {

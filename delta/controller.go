@@ -13,8 +13,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
 )
 
@@ -208,7 +210,7 @@ func (c *DeltaController) updateTable(
 			builder.WriteString(", r[")
 			builder.WriteString(strconv.Itoa(i + 2))
 			builder.WriteString("]")
-			if types.IsTimestampType(col.Type) {
+			if isTimestampType(col.Type) {
 				builder.WriteString("::TIMESTAMP")
 			}
 			builder.WriteString(" AS ")
@@ -339,4 +341,14 @@ func (c *DeltaController) updateTable(
 	}
 
 	return nil
+}
+
+func isTimestampType(t sql.Type) bool {
+	if types.IsTimestampType(t) {
+		return true
+	}
+	if pgt, ok := t.(pgtypes.PostgresType); ok {
+		return pgt.PG.OID == pgtype.TimestampOID
+	}
+	return false
 }

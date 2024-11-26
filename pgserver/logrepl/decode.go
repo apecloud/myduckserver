@@ -2,7 +2,6 @@ package logrepl
 
 import (
 	"fmt"
-	"log"
 	"math/big"
 	"time"
 
@@ -30,8 +29,6 @@ func decodeToArrow(typeMap *pgtype.Map, columnType *pglogrepl.RelationMessageCol
 		}
 		return 0, fmt.Errorf("column %s: unsupported type conversion for OID %d to %T", columnType.Name, columnType.DataType, builder)
 	}
-
-	log.Printf("decodeToArrow: columnType=%+v, data=%s, format=%d, builder=%T, dt=%+v\n", columnType, data, format, builder, dt)
 
 	var (
 		oid   = dt.OID

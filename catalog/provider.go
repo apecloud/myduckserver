@@ -62,6 +62,8 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 	bootQueries := []string{
 		"INSTALL arrow",
 		"LOAD arrow",
+		"INSTALL icu",
+		"LOAD icu",
 		"INSTALL postgres_scanner",
 		"LOAD postgres_scanner",
 	}

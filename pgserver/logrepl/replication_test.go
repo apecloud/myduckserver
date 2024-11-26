@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pgx/v5"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -550,7 +549,7 @@ var replicationTests = []ReplicationTest{
 				Query: "/* replica */ SELECT * EXCLUDE (birth_timestamptz), birth_timestamptz AT TIME ZONE 'UTC' FROM public.test order by id",
 				Expected: []sql.Row{
 					{int32(1), "one", int16(1), true, float32(1.1),
-						"2021-01-01", "12:00:00",
+						"2021-01-01", "12:00:00.000000",
 						// "12:00:00+00",
 						"2021-01-01 12:00:00",
 						pgtest.Numeric("12345678.9"),
@@ -610,7 +609,7 @@ var replicationTests = []ReplicationTest{
 }
 
 func TestReplication(t *testing.T) {
-	logrus.SetLevel(logrus.DebugLevel)
+	// logrus.SetLevel(logrus.DebugLevel)
 	RunReplicationScripts(t, replicationTests)
 }
 
@@ -650,14 +649,14 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 	require.NoError(t, logrepl.CreatePublicationIfNotExists(primaryDns, slotName))
 	time.Sleep(500 * time.Millisecond)
 
-	for i, script := range scripts {
-		if i == 10 {
-			RunReplicationScript(t, dsn, script)
-		}
-	}
-	// for _, script := range scripts {
-	// 	RunReplicationScript(t, dsn, script)
+	// for i, script := range scripts {
+	// 	if i == 10 {
+	// 		RunReplicationScript(t, dsn, script)
+	// 	}
 	// }
+	for _, script := range scripts {
+		RunReplicationScript(t, dsn, script)
+	}
 }
 
 const slotName = "myduck_slot"
