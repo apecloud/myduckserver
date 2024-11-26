@@ -33,6 +33,7 @@ type SubscriptionConfig struct {
 }
 
 var lsnQueryIndex = 1
+var transactionalIndex = 2
 
 var subscriptionRegex = regexp.MustCompile(`(?i)CREATE SUBSCRIPTION\s+(\w+)\s+CONNECTION\s+'([^']+)'\s+PUBLICATION\s+(\w+);`)
 var connectionRegex = regexp.MustCompile(`(\b\w+)=([\w\.\d]*)`)
@@ -53,9 +54,7 @@ func (config *SubscriptionConfig) ToDuckDBQuery() []string {
 	return []string{
 		fmt.Sprintf("ATTACH '%s' AS pg_postgres (TYPE POSTGRES);", config.ToConnectionInfo()),
 		"SELECT * FROM postgres_query('pg_postgres', 'SELECT pg_current_wal_lsn()');",
-		"BEGIN;",
 		"COPY FROM DATABASE pg_postgres TO mysql;",
-		"COMMIT;",
 		"DETACH pg_postgres;",
 	}
 }
@@ -135,22 +134,44 @@ func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) er
 			return fmt.Errorf("failed to create context for query at index %d: %w", index, err)
 		}
 
-		// Execute the query
-		rows, err := adapter.Query(sqlCtx, duckDBQuery)
-		if err != nil {
-			return fmt.Errorf("query execution failed at index %d: %w", index, err)
-		}
-		defer func() {
-			closeErr := rows.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("failed to close rows at index %d: %w", index, closeErr)
+		if index == transactionalIndex {
+			conn, err := adapter.GetConn(sqlCtx)
+			if err != nil {
+				return fmt.Errorf("failed to get connection: %w", err)
 			}
-		}()
 
-		// Process LSN query only for the specific index
-		if index == lsnQueryIndex {
-			if err := processLSN(rows, subscriptionConfig); err != nil {
-				return fmt.Errorf("failed to process LSN query at index %d: %w", index, err)
+			txn, err := conn.BeginTx(sqlCtx, nil)
+			if err != nil {
+				return fmt.Errorf("failed to begin transaction: %w", err)
+			}
+
+			_, err = txn.Query(duckDBQuery, nil)
+			if err != nil {
+				return fmt.Errorf("failed to execute query: %w", err)
+			}
+
+			err = txn.Commit()
+			if err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
+			}
+		} else {
+			// Execute the query
+			rows, err := adapter.Query(sqlCtx, duckDBQuery)
+			if err != nil {
+				return fmt.Errorf("query execution failed at index %d: %w", index, err)
+			}
+			defer func() {
+				closeErr := rows.Close()
+				if closeErr != nil {
+					err = fmt.Errorf("failed to close rows at index %d: %w", index, closeErr)
+				}
+			}()
+
+			// Process LSN query only for the specific index
+			if index == lsnQueryIndex {
+				if err := processLSN(rows, subscriptionConfig); err != nil {
+					return fmt.Errorf("failed to process LSN query at index %d: %w", index, err)
+				}
 			}
 		}
 	}
@@ -184,12 +205,20 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 		return fmt.Errorf("failed to write WAL position: %w", err)
 	}
 
-	sqlCtx, err = h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
-	if err != nil {
-		return fmt.Errorf("failed to create context for query: %w", err)
+	txn, err := adapter.GetTxn(sqlCtx, nil)
+	if txn != nil {
+		err = txn.Commit()
+		if err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
 	}
 
-	go replicator.StartReplication(sqlCtx, subscriptionConfig.PublicationName)
+	go func() {
+		err := replicator.StartReplication(sqlCtx, subscriptionConfig.PublicationName)
+		if err != nil {
+			fmt.Printf("failed to start replication: %v\n", err)
+		}
+	}()
 
 	return nil
 }
