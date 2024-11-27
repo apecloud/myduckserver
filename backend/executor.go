@@ -26,6 +26,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql/transform"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/sirupsen/logrus"
+	"vitess.io/vitess/go/mysql"
 )
 
 type DuckBuilder struct {
@@ -202,9 +203,11 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 
 	var info fmt.Stringer
 	if _, ok := n.(*plan.Update); ok {
-		info = plan.UpdateInfo{
-			Matched: int(affected),
-			Updated: int(affected),
+		if (ctx.Client().Capabilities & mysql.CapabilityClientFoundRows) > 0 {
+			info = plan.UpdateInfo{
+				Matched: int(affected),
+				Updated: int(affected),
+			}
 		}
 	}
 
