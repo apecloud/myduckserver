@@ -173,25 +173,25 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to 'myDUCK'
 				{
-					SQL:      "SET application_name TO 'myDUCK';",
+					SQL:      " \t\r\nSET application_name TO 'myDUCK'; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Set the application_name to "MYduck"
 				{
-					SQL:      "SET application_NAME TO \"MYduck\";",
+					SQL:      " \t\r\nSET application_NAME TO \"MYduck\"; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be 'MYduck'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"MYduck"}},
 					WantErr:  false,
 				},
@@ -202,25 +202,25 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to 'myDUCK'
 				{
-					SQL:      "SET application_name TO 'myDUCK';",
+					SQL:      " \t\r\nSET application_name TO 'myDUCK'; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Set the application_name to 'default'
 				{
-					SQL:      "SET application_NAME TO 'default';",
+					SQL:      " \t\r\nSET application_NAME TO 'default'; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be 'default'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"default"}},
 					WantErr:  false,
 				},
@@ -231,25 +231,25 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to myDUCK
 				{
-					SQL:      "SET application_name TO myDUCK;",
+					SQL:      " \t\r\nSET application_name TO myDUCK; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Set the application_name to default
 				{
-					SQL:      "SET application_NAME TO default;",
+					SQL:      " \t\r\nSET application_NAME TO default; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be default value 'psql'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"psql"}},
 					WantErr:  false,
 				},
@@ -262,25 +262,25 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to 'myDUCK'
 				{
-					SQL:      "SET http_proxy_username TO 'myDUCK';",
+					SQL:      " \t\r\nSET http_proxy_username TO 'myDUCK'; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Set the application_name to "MYduck"
 				{
-					SQL:      "SET http_proxy_USERNAME TO \"MYduck\";",
+					SQL:      " \t\r\nSET http_proxy_USERNAME TO \"MYduck\"; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"MYduck"}},
 					WantErr:  false,
 				},
@@ -291,25 +291,25 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to myDUCK
 				{
-					SQL:      "SET http_proxy_username TO myDUCK;",
+					SQL:      " \t\r\nSET http_proxy_username TO myDUCK; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Set the application_name to 'default'
 				{
-					SQL:      "SET http_proxy_USERNAME TO 'default';",
+					SQL:      " \t\r\nSET http_proxy_USERNAME TO 'default'; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be 'default'
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"default"}},
 					WantErr:  false,
 				},
@@ -320,25 +320,25 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to myDUCK
 				{
-					SQL:      "SET http_proxy_username TO myDUCK;",
+					SQL:      " \t\r\nSET http_proxy_username TO myDUCK; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Set the application_name to default
 				{
-					SQL:      "SET http_proxy_USERNAME TO default;",
+					SQL:      " \t\r\nSET http_proxy_USERNAME TO default; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be ''
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"<nil>"}},
 					WantErr:  false,
 				},
@@ -351,25 +351,25 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to myDUCK
 				{
-					SQL:      "SET application_name TO myDUCK;",
+					SQL:      " \t\r\nSET application_name TO myDUCK; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Reset the application_name to default
 				{
-					SQL:      "reSET application_NAME;",
+					SQL:      " \t\r\nreSET application_NAME; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of application_name, it should be default value 'psql'
 				{
-					SQL:      "SELECT CURRENT_SETTING('application_name');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
 					Expected: [][]string{{"psql"}},
 					WantErr:  false,
 				},
@@ -382,27 +382,38 @@ func TestSessParam(t *testing.T) {
 			executions: []Execution{
 				// Set the application_name to myDUCK
 				{
-					SQL:      "SET http_proxy_username TO myDUCK;",
+					SQL:      " \t\r\nSET http_proxy_username TO myDUCK; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be 'myDUCK'
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"myDUCK"}},
 					WantErr:  false,
 				},
 				// Reset the application_name to default
 				{
-					SQL:      "reSET http_proxy_USERNAME;",
+					SQL:      " \t\r\nreSET http_proxy_USERNAME; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},
 				// Get the value of http_proxy_username, it should be ''
 				{
-					SQL:      "SELECT CURRENT_SETTING('http_proxy_username');",
+					SQL:      " \t\r\nSELECT CURRENT_SETTING('http_proxy_username'); \t\r\n",
 					Expected: [][]string{{"<nil>"}},
 					WantErr:  false,
+				},
+			},
+		},
+		{
+			name: "Reset ALL",
+			executions: []Execution{
+				{
+					// RESET ALL is not supported yet.
+					SQL:      "RESET ALL;",
+					Expected: nil,
+					WantErr:  true,
 				},
 			},
 		},

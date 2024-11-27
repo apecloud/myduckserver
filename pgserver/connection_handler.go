@@ -83,7 +83,7 @@ var showVariablesRegex = regexp.MustCompile(`(?i)^\s*SHOW\s+(ALL|[a-zA-Z_][a-zA-
 var setStmtRegex = regexp.MustCompile(`(?i)^\s*SET\s+(SESSION|LOCAL)?\s*([a-zA-Z_][a-zA-Z0-9_]+)\s*(TO|=)\s*(DEFAULT|'([^']*)'|"([^"]*)"|[^'"\s;]+)\s*;?\s*$`)
 
 // precompile a regex to match "RESET xxx;".
-var resetStmtRegex = regexp.MustCompile(`(?i)^\s*RESET\s+([a-zA-Z_][a-zA-Z0-9_]+)\s*;?\s*$`)
+var resetStmtRegex = regexp.MustCompile(`(?i)^\s*RESET\s+(ALL|[a-zA-Z_][a-zA-Z0-9_]+)\s*;?\s*$`)
 
 // precompile a regex to match any "from pg_catalog.xxx" in the query.
 var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.`)
@@ -767,7 +767,16 @@ var pgCatalogHandlers = map[*regexp.Regexp]PGCatalogHandler{
 				// This is a configuration of DuckDB, it should be bypassed to DuckDB
 				return false, nil
 			}
-			return h.setPgSessionVar(key, nil, true, "RESET")
+			if key != "all" {
+				return h.setPgSessionVar(key, nil, true, "RESET")
+			}
+			// TODO(sean): Implement RESET ALL
+			_ = h.send(&pgproto3.ErrorResponse{
+				Severity: string(ErrorResponseSeverity_Error),
+				Code:     "0A000",
+				Message:  "Statement 'RESET ALL' is not supported yet.",
+			})
+			return true, nil
 		},
 	},
 	pgCatalogRegex: {
