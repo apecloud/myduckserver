@@ -9,8 +9,8 @@ require (
 	github.com/cockroachdb/cockroachdb-parser v0.23.2
 	github.com/cockroachdb/errors v1.9.0
 	github.com/dolthub/doltgresql v0.13.0
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2
-	github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9
+	github.com/dolthub/go-mysql-server v0.18.2-0.20241127000145-a1809677932e
+	github.com/dolthub/vitess v0.0.0-20241126223332-cd8f828f26ac
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
@@ -29,8 +29,8 @@ require (
 )
 
 replace (
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241112002228-81b13e8034f2 => github.com/apecloud/go-mysql-server v0.0.0-20241113072459-9ad423c065f8
-	github.com/dolthub/vitess v0.0.0-20241111235433-a20a5ab9d7c9 => github.com/apecloud/dolt-vitess v0.0.0-20241113031931-99ad35228a58
+	github.com/dolthub/go-mysql-server v0.18.2-0.20241127000145-a1809677932e => github.com/apecloud/go-mysql-server v0.0.0-20241127073935-94c04f2f750d
+	github.com/dolthub/vitess v0.0.0-20241126223332-cd8f828f26ac => github.com/apecloud/dolt-vitess v0.0.0-20241127063501-5c7c985f0e57
 	github.com/marcboeker/go-duckdb v1.8.3 => github.com/apecloud/go-duckdb v0.0.0-20241113073916-47619770e595
 )
 
@@ -95,8 +95,8 @@ require (
 	github.com/twpayne/go-kml v1.5.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
-	go.opentelemetry.io/otel v1.30.0 // indirect
-	go.opentelemetry.io/otel/trace v1.30.0 // indirect
+	go.opentelemetry.io/otel v1.31.0 // indirect
+	go.opentelemetry.io/otel/trace v1.31.0 // indirect
 	golang.org/x/crypto v0.27.0 // indirect
 	golang.org/x/exp v0.0.0-20240909161429-701f63a606c0 // indirect
 	golang.org/x/mod v0.21.0 // indirect

@@ -119,9 +119,9 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	case sql.Expressioner:
 		return b.executeExpressioner(ctx, node, conn)
 	case *plan.DeleteFrom:
-		return b.executeDML(ctx, conn)
+		return b.executeDML(ctx, node, conn)
 	case *plan.Truncate:
-		return b.executeDML(ctx, conn)
+		return b.executeDML(ctx, node, conn)
 	default:
 		return b.base.Build(ctx, n, r)
 	}
@@ -131,9 +131,9 @@ func (b *DuckBuilder) executeExpressioner(ctx *sql.Context, n sql.Expressioner, 
 	node := n.(sql.Node)
 	switch n.(type) {
 	case *plan.InsertInto:
-		return b.executeDML(ctx, conn)
+		return b.executeDML(ctx, node, conn)
 	case *plan.Update:
-		return b.executeDML(ctx, conn)
+		return b.executeDML(ctx, node, conn)
 	default:
 		return b.executeQuery(ctx, node, conn)
 	}
@@ -172,7 +172,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	return NewSQLRowIter(rows, n.Schema())
 }
 
-func (b *DuckBuilder) executeDML(ctx *sql.Context, conn *stdsql.Conn) (sql.RowIter, error) {
+func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn) (sql.RowIter, error) {
 	// Translate the MySQL query to a DuckDB query
 	duckSQL, err := transpiler.TranslateWithSQLGlot(ctx.Query())
 	if err != nil {
@@ -200,9 +200,18 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, conn *stdsql.Conn) (sql.RowIt
 		return nil, err
 	}
 
+	var info fmt.Stringer
+	if _, ok := n.(*plan.Update); ok {
+		info = plan.UpdateInfo{
+			Matched: int(affected),
+			Updated: int(affected),
+		}
+	}
+
 	return sql.RowsToRowIter(sql.NewRow(types.OkResult{
 		RowsAffected: uint64(affected),
 		InsertID:     uint64(insertId),
+		Info:         info,
 	})), nil
 }
 
