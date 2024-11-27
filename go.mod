@@ -31,7 +31,7 @@ require (
 replace (
 	github.com/dolthub/go-mysql-server v0.18.2-0.20241127000145-a1809677932e => github.com/apecloud/go-mysql-server v0.0.0-20241127073935-94c04f2f750d
 	github.com/dolthub/vitess v0.0.0-20241126223332-cd8f828f26ac => github.com/apecloud/dolt-vitess v0.0.0-20241127063501-5c7c985f0e57
-	github.com/marcboeker/go-duckdb v1.8.3 => github.com/apecloud/go-duckdb v0.0.0-20241113073916-47619770e595
+	github.com/marcboeker/go-duckdb v1.8.3 => github.com/apecloud/go-duckdb v0.0.0-20241127093618-047c1a233928
 )
 
 require (
