@@ -54,6 +54,7 @@ func TestBinlogReplicationServerRestart(t *testing.T) {
 	setupTestEnv(testEnv)
 	err = test.StartDuckSqlServer(t, testDir, nil, testEnv)
 	require.NoError(t, err)
+	loadEnvFromTestEnv(testEnv)
 
 	// Check replication status on the replica and assert configuration persisted
 	status := showReplicaStatus(t)
