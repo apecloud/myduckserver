@@ -3241,13 +3241,13 @@ var postgresConfigParameters = map[string]sql.SystemVariable{
 	},
 	"standard_conforming_strings": &Parameter{
 		Name:      "standard_conforming_strings",
-		Default:   int8(1),
+		Default:   "on",
 		Category:  "Version and Platform Compatibility / Previous PostgreSQL Versions",
 		ShortDesc: "Causes '...' strings to treat backslashes literally.",
 		Context:   ParameterContextUser,
-		Type:      types.NewSystemBoolType("standard_conforming_strings"),
+		Type:      types.NewSystemStringType("standard_conforming_strings"),
 		Source:    ParameterSourceDefault,
-		ResetVal:  int8(1),
+		ResetVal:  "on",
 		Scope:     GetPgsqlScope(PsqlScopeSession),
 	},
 	"statement_timeout": &Parameter{

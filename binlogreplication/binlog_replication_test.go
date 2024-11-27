@@ -19,20 +19,18 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
+	"github.com/apecloud/myduckserver/test"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
@@ -41,7 +39,7 @@ import (
 )
 
 var mySqlContainer string
-var mySqlPort, duckPort int
+var mySqlPort, duckPort, duckPgPort int
 var primaryDatabase, replicaDatabase *sqlx.DB
 var duckProcess *os.Process
 var duckLogFilePath, oldDuckLogFilePath string
@@ -72,7 +70,7 @@ func teardown(t *testing.T) {
 		stopMySqlServer(t)
 	}
 	if duckProcess != nil {
-		stopDuckSqlServer(t)
+		test.StopDuckSqlServer(t, duckProcess)
 	}
 	if mysqlLogFile != nil {
 		mysqlLogFile.Close()
@@ -101,6 +99,36 @@ func teardown(t *testing.T) {
 			value.Delete()
 		}
 	}
+}
+
+func setupTestEnv(testEnv *test.TestEnv) {
+	testEnv.MySqlContainer = mySqlContainer
+	testEnv.MySqlPort = mySqlPort
+	testEnv.DuckPort = duckPort
+	testEnv.DuckPgPort = duckPgPort
+	testEnv.MyDuckServer = replicaDatabase
+	testEnv.DuckProcess = duckProcess
+	testEnv.DuckLogFilePath = duckLogFilePath
+	testEnv.OldDuckLogFilePath = oldDuckLogFilePath
+	testEnv.DuckLogFile = duckLogFile
+	testEnv.MysqlLogFile = mysqlLogFile
+	testEnv.TestDir = testDir
+	testEnv.OriginalWorkingDir = originalWorkingDir
+}
+
+func loadEnvFromTestEnv(testEnv *test.TestEnv) {
+	mySqlContainer = testEnv.MySqlContainer
+	mySqlPort = testEnv.MySqlPort
+	duckPort = testEnv.DuckPort
+	duckPgPort = testEnv.DuckPgPort
+	replicaDatabase = testEnv.MyDuckServer
+	duckProcess = testEnv.DuckProcess
+	duckLogFilePath = testEnv.DuckLogFilePath
+	oldDuckLogFilePath = testEnv.OldDuckLogFilePath
+	duckLogFile = testEnv.DuckLogFile
+	mysqlLogFile = testEnv.MysqlLogFile
+	testDir = testEnv.TestDir
+	originalWorkingDir = testEnv.OriginalWorkingDir
 }
 
 // TestBinlogReplicationSanityCheck performs the simplest possible binlog replication test. It starts up
@@ -157,10 +185,13 @@ func TestAutoRestartReplica(t *testing.T) {
 	require.True(t, fileExists(filepath.Join(testDir, duckSubdir, ".replica", "replica-running")))
 
 	// Restart the Dolt replica
-	stopDuckSqlServer(t)
+	test.StopDuckSqlServer(t, duckProcess)
 	var err error
-	duckPort, duckProcess, err = startDuckSqlServer(testDir, nil)
+	testEnv := test.NewTestEnv()
+	setupTestEnv(testEnv)
+	err = test.StartDuckSqlServer(t, testDir, nil, testEnv)
 	require.NoError(t, err)
+	loadEnvFromTestEnv(testEnv)
 
 	// Assert that some test data replicates correctly
 	primaryDatabase.MustExec("insert into db01.autoRestartTest values (200);")
@@ -183,9 +214,11 @@ func TestAutoRestartReplica(t *testing.T) {
 	require.False(t, fileExists(filepath.Join(testDir, duckSubdir, ".replica", "replica-running")))
 
 	// Restart the Dolt replica
-	stopDuckSqlServer(t)
-	duckPort, duckProcess, err = startDuckSqlServer(testDir, nil)
+	test.StopDuckSqlServer(t, duckProcess)
+	setupTestEnv(testEnv)
+	err = test.StartDuckSqlServer(t, testDir, nil, testEnv)
 	require.NoError(t, err)
+	loadEnvFromTestEnv(testEnv)
 
 	// SHOW REPLICA STATUS should show that replication is NOT running, with no errors
 	status = queryReplicaStatus(t)
@@ -630,23 +663,17 @@ func startSqlServersWithSystemVars(t *testing.T, persistentSystemVars map[string
 		t.Skip("Skipping binlog replication integ tests in CI environment on Mac OS")
 	}
 
-	testDir = filepath.Join(os.TempDir(), fmt.Sprintf("%s-%v", t.Name(), time.Now().Unix()))
-	err := os.MkdirAll(testDir, 0777)
-
-	cmd := exec.Command("chmod", "777", testDir)
-	_, err = cmd.Output()
-	if err != nil {
-		panic(err)
-	}
-
-	require.NoError(t, err)
-	fmt.Printf("temp dir: %v \n", testDir)
+	testDir = test.CreateTestDir(t)
+	var err error
 
 	// Start up primary and replica databases
 	mySqlPort, mySqlContainer, err = startMySqlServer(testDir)
 	require.NoError(t, err)
-	duckPort, duckProcess, err = startDuckSqlServer(testDir, persistentSystemVars)
+	testEnv := test.NewTestEnv()
+	setupTestEnv(testEnv)
+	err = test.StartDuckSqlServer(t, testDir, persistentSystemVars, testEnv)
 	require.NoError(t, err)
+	loadEnvFromTestEnv(testEnv)
 }
 
 // stopMySqlServer stops the running MySQL server. If any errors are encountered while stopping
@@ -658,21 +685,6 @@ func stopMySqlServer(t *testing.T) error {
 		return fmt.Errorf("unable to stop MySQL container: %v - %s", err, output)
 	}
 	return nil
-}
-
-// stopDuckSqlServer stops the running Dolt sql-server. If any errors are encountered while
-// stopping the Dolt sql-server, this function will fail the current test.
-func stopDuckSqlServer(t *testing.T) {
-	// Use the negative process ID so that we grab the entire process group.
-	// This is necessary to kill all the processes the child spawns.
-	// Note that we use os.FindProcess, instead of syscall.Kill, since syscall.Kill
-	// is not available on windows.
-	p, err := os.FindProcess(-duckProcess.Pid)
-	require.NoError(t, err)
-
-	err = p.Signal(syscall.SIGKILL)
-	require.NoError(t, err)
-	time.Sleep(250 * time.Millisecond)
 }
 
 func getPrimaryLogPosition(t *testing.T, gtidEnabled bool) (string, string) {
@@ -774,26 +786,6 @@ func sanitizeCreateTableString(statement string) string {
 	return regex.ReplaceAllString(statement, " ")
 }
 
-// findFreePort returns an available port that can be used for a server. If any errors are
-// encountered, this function will panic and fail the current test.
-func findFreePort() int {
-	listener, err := net.Listen("tcp", ":0")
-	if err != nil {
-		panic(fmt.Sprintf("unable to find available TCP port: %v", err.Error()))
-	}
-	freePort := listener.Addr().(*net.TCPAddr).Port
-	err = listener.Close()
-	if err != nil {
-		panic(fmt.Sprintf("unable to find available TCP port: %v", err.Error()))
-	}
-
-	if freePort < 0 {
-		panic(fmt.Sprintf("unable to find available TCP port; found port %v", freePort))
-	}
-
-	return freePort
-}
-
 func getGtidEnabled() bool {
 	gtidEnabled := strings.ToLower(os.Getenv("GTID_ENABLED"))
 	if gtidEnabled == "" {
@@ -808,7 +800,7 @@ func getGtidEnabled() bool {
 // startMySqlServer configures a starts a fresh MySQL server instance in a Docker container
 // and returns the port it is running on. If unable to start up the MySQL server, an error is returned.
 func startMySqlServer(dir string) (int, string, error) {
-	mySqlPort = findFreePort()
+	mySqlPort = test.FindFreePort()
 
 	// Use a random name for the container to avoid conflicts
 	mySqlContainer = "mysql-test-" + strconv.Itoa(rand.Int())
@@ -846,7 +838,7 @@ func startMySqlServer(dir string) (int, string, error) {
 	dsn := fmt.Sprintf("root:password@tcp(127.0.0.1:%v)/", mySqlPort)
 	primaryDatabase = sqlx.MustOpen("mysql", dsn)
 
-	err = waitForSqlServerToStart(primaryDatabase)
+	err = test.WaitForSqlServerToStart(primaryDatabase)
 	if err != nil {
 		return -1, "", err
 	}
@@ -869,152 +861,10 @@ func directoryExists(path string) bool {
 	return info.IsDir()
 }
 
-var cachedDevBuildPath = ""
-
-func initializeDevBuild(dir string, goDirPath string) string {
-	if cachedDevBuildPath != "" {
-		return cachedDevBuildPath
-	}
-
-	// If we're not in a CI environment, don't worry about building a dev build
-	if os.Getenv("CI") != "true" {
-		return ""
-	}
-
-	basedir := filepath.Dir(filepath.Dir(dir))
-	fullpath := filepath.Join(basedir, fmt.Sprintf("dev-build-%d", os.Getpid()))
-
-	_, err := os.Stat(fullpath)
-	if err == nil {
-		return fullpath
-	}
-
-	fmt.Printf("building dev build at: %s \n", fullpath)
-	cmd := exec.Command("go", "build", "-o", fullpath)
-	cmd.Dir = goDirPath
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		panic("unable to build dolt for binlog integration tests: " + err.Error() + "\nFull output: " + string(output) + "\n")
-	}
-	cachedDevBuildPath = fullpath
-
-	return cachedDevBuildPath
-}
-
-// startDuckSqlServer starts a sql-server on a free port from the specified directory |dir|. If
-// |peristentSystemVars| is populated, then those system variables will be set, persistently, for
-// the database, before the sql-server is started.
-func startDuckSqlServer(dir string, persistentSystemVars map[string]string) (int, *os.Process, error) {
-	dir = filepath.Join(dir, duckSubdir)
-	err := os.MkdirAll(dir, 0777)
-	if err != nil {
-		return -1, nil, err
-	}
-
-	// If we already assigned a port, re-use it. This is useful when testing restarting a primary, since
-	// we want the primary to come back up on the same port, so the replica can reconnect.
-	if duckPort < 1 {
-		duckPort = findFreePort()
-	}
-	fmt.Printf("Starting MyDuck Server on port: %d, with data dir %s\n", duckPort, dir)
-
-	// take the CWD and move up four directories to find the go directory
-	if originalWorkingDir == "" {
-		var err error
-		originalWorkingDir, err = os.Getwd()
-		if err != nil {
-			panic(err)
-		}
-	}
-	goDirPath := filepath.Join(originalWorkingDir, "..")
-	err = os.Chdir(goDirPath)
-	if err != nil {
-		panic(err)
-	}
-
-	args := []string{"go", "run", ".",
-		fmt.Sprintf("--port=%v", duckPort),
-		fmt.Sprintf("--datadir=%s", dir),
-		"--pg-port=-1",
-		"--default-time-zone=UTC",
-		"--loglevel=6", // TRACE
-	}
-
-	// If we're running in CI, use a precompiled dolt binary instead of go run
-	devBuildPath := initializeDevBuild(dir, goDirPath)
-	if devBuildPath != "" {
-		args[2] = devBuildPath
-		args = args[2:]
-	}
-	cmd := exec.Command(args[0], args[1:]...)
-
-	// Set a unique process group ID so that we can cleanly kill this process, as well as
-	// any spawned child processes later. Mac/Unix can set the "Setpgid" field directly, but
-	// on windows, this field isn't present, so we need to use reflection so that this code
-	// can still compile for windows, even though we don't run it there.
-	procAttr := &syscall.SysProcAttr{}
-	ps := reflect.ValueOf(procAttr)
-	s := ps.Elem()
-	f := s.FieldByName("Setpgid")
-	f.SetBool(true)
-	cmd.SysProcAttr = procAttr
-
-	// Some tests restart the Dolt sql-server, so if we have a current log file, save a reference
-	// to it so we can print the results later if the test fails.
-	if duckLogFilePath != "" {
-		oldDuckLogFilePath = duckLogFilePath
-	}
-
-	duckLogFilePath = filepath.Join(dir, fmt.Sprintf("dolt-%d.out.log", time.Now().Unix()))
-	duckLogFile, err = os.Create(duckLogFilePath)
-	if err != nil {
-		return -1, nil, err
-	}
-	fmt.Printf("MyDuck Server logs at: %s \n", duckLogFilePath)
-	cmd.Stdout = duckLogFile
-	cmd.Stderr = duckLogFile
-	err = cmd.Start()
-	if err != nil {
-		return -1, nil, fmt.Errorf("unable to execute command %v: %v", cmd.String(), err.Error())
-	}
-
-	fmt.Printf("MyDuck CMD: %s\n", cmd.String())
-
-	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%v)/", "root", duckPort)
-	replicaDatabase = sqlx.MustOpen("mysql", dsn)
-
-	err = waitForSqlServerToStart(replicaDatabase)
-	if err != nil {
-		return -1, nil, err
-	}
-
-	mustCreateReplicatorUser(replicaDatabase)
-	fmt.Printf("Dolt server started on port %v \n", duckPort)
-
-	return duckPort, cmd.Process, nil
-}
-
 // mustCreateReplicatorUser creates the replicator user on the specified |db| and grants them replication slave privs.
 func mustCreateReplicatorUser(db *sqlx.DB) {
 	db.MustExec("CREATE USER if not exists 'replicator'@'%' IDENTIFIED BY 'Zqr8_blrGm1!';")
 	db.MustExec("GRANT REPLICATION SLAVE ON *.* TO 'replicator'@'%';")
-}
-
-// waitForSqlServerToStart polls the specified database to wait for it to become available, pausing
-// between retry attempts, and returning an error if it is not able to verify that the database is
-// available.
-func waitForSqlServerToStart(database *sqlx.DB) error {
-	fmt.Printf("Waiting for server to start...\n")
-	for counter := 0; counter < 50; counter++ {
-		if database.Ping() == nil {
-			return nil
-		}
-		fmt.Printf("not up yet; waiting...\n")
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	return database.Ping()
 }
 
 // printFile opens the specified filepath |path| and outputs the contents of that file to stdout.

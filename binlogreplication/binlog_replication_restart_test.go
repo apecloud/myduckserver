@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apecloud/myduckserver/test"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,11 +46,13 @@ func TestBinlogReplicationServerRestart(t *testing.T) {
 
 	// Let the replica process a few transactions, then stop the server and pause a second
 	waitForReplicaToReachGtid(t, 3)
-	stopDuckSqlServer(t)
+	test.StopDuckSqlServer(t, duckProcess)
 	time.Sleep(1000 * time.Millisecond)
 
 	var err error
-	duckPort, duckProcess, err = startDuckSqlServer(testDir, nil)
+	testEnv := test.NewTestEnv()
+	setupTestEnv(testEnv)
+	err = test.StartDuckSqlServer(t, testDir, nil, testEnv)
 	require.NoError(t, err)
 
 	// Check replication status on the replica and assert configuration persisted

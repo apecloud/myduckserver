@@ -2,6 +2,7 @@ package config
 
 import (
 	stdsql "database/sql"
+	"strings"
 )
 
 // A static map that contains all available configuration names on DuckDB.
@@ -23,12 +24,12 @@ func Init(db *stdsql.DB) {
 		if err := rows.Scan(&name); err != nil {
 			panic(err)
 		}
-		duckConfigNames[name] = struct{}{}
+		duckConfigNames[strings.ToLower(name)] = struct{}{}
 	}
 }
 
 // Check if the given configuration name is valid on DuckDB.
 func IsValidConfig(name string) bool {
-	_, ok := duckConfigNames[name]
+	_, ok := duckConfigNames[strings.ToLower(name)]
 	return ok
 }
