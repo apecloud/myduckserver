@@ -23,6 +23,7 @@ var _ sql.TableRenamer = (*Database)(nil)
 var _ sql.ViewDatabase = (*Database)(nil)
 var _ sql.TriggerDatabase = (*Database)(nil)
 var _ sql.CollatedDatabase = (*Database)(nil)
+var _ sql.TemporaryTableCreator = (*Database)(nil)
 
 func NewDatabase(name string, catalogName string) *Database {
 	return &Database{
@@ -109,75 +110,14 @@ func (d *Database) Name() string {
 func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.CreateAllTable(ctx, name, schema, collation, comment)
+}
 
-	var columns []string
-	var columnCommentSQLs []string
-	for _, col := range schema.Schema {
-		typ, err := DuckdbDataType(col.Type)
-		if err != nil {
-			return err
-		}
-		colDef := fmt.Sprintf(`"%s" %s`, col.Name, typ.name)
-		if col.Nullable {
-			colDef += " NULL"
-		} else {
-			colDef += " NOT NULL"
-		}
-
-		if col.Default != nil {
-			columnDefault, err := typ.mysql.withDefault(col.Default.String())
-			if err != nil {
-				return err
-			}
-			colDef += " DEFAULT " + columnDefault
-		}
-
-		columns = append(columns, colDef)
-
-		if col.Comment != "" || typ.mysql.Name != "" || col.Default != nil {
-			columnCommentSQLs = append(columnCommentSQLs,
-				fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
-					NewCommentWithMeta[MySQLType](col.Comment, typ.mysql).Encode()))
-		}
-	}
-
-	var sqlsBuild strings.Builder
-
-	sqlsBuild.WriteString(fmt.Sprintf(`CREATE TABLE %s (%s`, FullTableName(d.catalog, d.name, name), strings.Join(columns, ", ")))
-
-	var primaryKeys []string
-	for _, pkord := range schema.PkOrdinals {
-		primaryKeys = append(primaryKeys, schema.Schema[pkord].Name)
-	}
-
-	if len(primaryKeys) > 0 {
-		sqlsBuild.WriteString(fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
-	}
-
-	sqlsBuild.WriteString(")")
-
-	// Add comment to the table
-	if comment != "" {
-		sqlsBuild.WriteString(fmt.Sprintf("; COMMENT ON TABLE %s IS '%s'", FullTableName(d.catalog, d.name, name), NewComment[any](comment).Encode()))
-	}
-
-	// Add column comments
-	for _, s := range columnCommentSQLs {
-		sqlsBuild.WriteString(";")
-		sqlsBuild.WriteString(s)
-	}
-
-	_, err := adapter.Exec(ctx, sqlsBuild.String())
-	if err != nil {
-		if IsDuckDBTableAlreadyExistsError(err) {
-			return sql.ErrTableAlreadyExists.New(name)
-		}
-		return ErrDuckDB.New(err)
-	}
-
-	// TODO: support collation
-
-	return nil
+// CreateTemporaryTable implements sql.CreateTemporaryTable.
+func (d *Database) CreateTemporaryTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.CreateAllTable(ctx, name, schema, collation, "")
 }
 
 // DropTable implements sql.TableDropper.
@@ -306,6 +246,79 @@ func (d *Database) DropView(ctx *sql.Context, name string) error {
 		}
 		return ErrDuckDB.New(err)
 	}
+	return nil
+}
+
+// CreateTable implements sql.TableCreator.
+func (d *Database) CreateAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string) error {
+
+	var columns []string
+	var columnCommentSQLs []string
+	for _, col := range schema.Schema {
+		typ, err := DuckdbDataType(col.Type)
+		if err != nil {
+			return err
+		}
+		colDef := fmt.Sprintf(`"%s" %s`, col.Name, typ.name)
+		if col.Nullable {
+			colDef += " NULL"
+		} else {
+			colDef += " NOT NULL"
+		}
+
+		if col.Default != nil {
+			columnDefault, err := typ.mysql.withDefault(col.Default.String())
+			if err != nil {
+				return err
+			}
+			colDef += " DEFAULT " + columnDefault
+		}
+
+		columns = append(columns, colDef)
+
+		if col.Comment != "" || typ.mysql.Name != "" || col.Default != nil {
+			columnCommentSQLs = append(columnCommentSQLs,
+				fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, FullColumnName(d.catalog, d.name, name, col.Name),
+					NewCommentWithMeta[MySQLType](col.Comment, typ.mysql).Encode()))
+		}
+	}
+
+	var sqlsBuild strings.Builder
+
+	sqlsBuild.WriteString(fmt.Sprintf(`CREATE TABLE %s (%s`, FullTableName(d.catalog, d.name, name), strings.Join(columns, ", ")))
+
+	var primaryKeys []string
+	for _, pkord := range schema.PkOrdinals {
+		primaryKeys = append(primaryKeys, schema.Schema[pkord].Name)
+	}
+
+	if len(primaryKeys) > 0 {
+		sqlsBuild.WriteString(fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
+	}
+
+	sqlsBuild.WriteString(")")
+
+	// Add comment to the table
+	if comment != "" {
+		sqlsBuild.WriteString(fmt.Sprintf("; COMMENT ON TABLE %s IS '%s'", FullTableName(d.catalog, d.name, name), NewComment[any](comment).Encode()))
+	}
+
+	// Add column comments
+	for _, s := range columnCommentSQLs {
+		sqlsBuild.WriteString(";")
+		sqlsBuild.WriteString(s)
+	}
+
+	_, err := adapter.Exec(ctx, sqlsBuild.String())
+	if err != nil {
+		if IsDuckDBTableAlreadyExistsError(err) {
+			return sql.ErrTableAlreadyExists.New(name)
+		}
+		return ErrDuckDB.New(err)
+	}
+
+	// TODO: support collation
+
 	return nil
 }
 
