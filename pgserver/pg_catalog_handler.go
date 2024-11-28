@@ -25,8 +25,8 @@ var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current
 // precompile a regex to match "select pg_catalog.current_setting('xxx');".
 var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+(pg_catalog.)?current_setting\(\s*'([^']+)'\s*\)\s*;?\s*$`)
 
-// precompile a regex to match any "from pg_catalog.xxx" in the query.
-var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.`)
+// precompile a regex to match any "from pg_catalog.pg_stat_replication" in the query.
+var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.(pg_stat_replication)`)
 
 // isInRecovery will get the count of
 func (h *ConnectionHandler) isInRecovery() (string, error) {
@@ -166,7 +166,7 @@ func (h *ConnectionHandler) handleCurrentSetting(query ConvertedQuery) (bool, er
 func (h *ConnectionHandler) handlePgCatalog(query ConvertedQuery) (bool, error) {
 	sql := RemoveComments(query.String)
 	return true, h.query(ConvertedQuery{
-		String:       pgCatalogRegex.ReplaceAllString(sql, " FROM __sys__."),
+		String:       pgCatalogRegex.ReplaceAllString(sql, " FROM __sys__.$1"),
 		StatementTag: "SELECT",
 	})
 }
@@ -212,6 +212,7 @@ func isSpecialPgCatalog(query ConvertedQuery) bool {
 var pgCatalogHandlers = map[string]PGCatalogHandler{
 	"SELECT": {
 		HandledInPlace: func(query ConvertedQuery) (bool, error) {
+			// TODO(sean): Evaluate the conditions by iterating over the AST.
 			if isPgIsInRecovery(query) {
 				return true, nil
 			}

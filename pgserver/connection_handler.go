@@ -567,49 +567,47 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	if err != nil {
 		return err
 	}
-
-	if !handledOutsideEngine {
-		stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
-		if err != nil {
-			return err
-		}
-
-		if !query.PgParsable {
-			query.StatementTag = GetStatementTag(stmt)
-		}
-
-		// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
-		// > A parameter data type can be left unspecified by setting it to zero,
-		// > or by making the array of parameter type OIDs shorter than the number of
-		// > parameter symbols ($n)used in the query string.
-		// > ...
-		// > Parameter data types can be specified by OID;
-		// > if not given, the parser attempts to infer the data types in the same way
-		// > as it would do for untyped literal string constants.
-		bindVarTypes := message.ParameterOIDs
-		if len(bindVarTypes) < len(params) {
-			bindVarTypes = append(bindVarTypes, params[len(bindVarTypes):]...)
-		}
-		for i := range params {
-			if bindVarTypes[i] == 0 {
-				bindVarTypes[i] = params[i]
-			}
-		}
+	if handledOutsideEngine {
 		h.preparedStatements[message.Name] = PreparedStatementData{
-			Query:                query,
-			ReturnFields:         fields,
-			BindVarTypes:         bindVarTypes,
-			Stmt:                 stmt,
-			HandledOutsideEngine: false,
+			Query:        query,
+			ReturnFields: nil,
+			BindVarTypes: nil,
+			Stmt:         nil,
 		}
-	} else {
-		h.preparedStatements[message.Name] = PreparedStatementData{
-			Query:                query,
-			ReturnFields:         nil,
-			BindVarTypes:         nil,
-			Stmt:                 nil,
-			HandledOutsideEngine: true,
+		return h.send(&pgproto3.ParseComplete{})
+	}
+
+	stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
+	if err != nil {
+		return err
+	}
+
+	if !query.PgParsable {
+		query.StatementTag = GetStatementTag(stmt)
+	}
+
+	// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
+	// > A parameter data type can be left unspecified by setting it to zero,
+	// > or by making the array of parameter type OIDs shorter than the number of
+	// > parameter symbols ($n)used in the query string.
+	// > ...
+	// > Parameter data types can be specified by OID;
+	// > if not given, the parser attempts to infer the data types in the same way
+	// > as it would do for untyped literal string constants.
+	bindVarTypes := message.ParameterOIDs
+	if len(bindVarTypes) < len(params) {
+		bindVarTypes = append(bindVarTypes, params[len(bindVarTypes):]...)
+	}
+	for i := range params {
+		if bindVarTypes[i] == 0 {
+			bindVarTypes[i] = params[i]
 		}
+	}
+	h.preparedStatements[message.Name] = PreparedStatementData{
+		Query:        query,
+		ReturnFields: fields,
+		BindVarTypes: bindVarTypes,
+		Stmt:         stmt,
 	}
 
 	return h.send(&pgproto3.ParseComplete{})
@@ -631,7 +629,7 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 		// https://www.postgresql.org/docs/current/protocol-flow.html
 		// > Note that since Bind has not yet been issued, the formats to be used for returned columns are not yet known to the backend;
 		// > the format code fields in the RowDescription message will be zeroes in this case.
-		if !preparedStatementData.HandledOutsideEngine {
+		if preparedStatementData.Stmt != nil {
 			fields = slices.Clone(preparedStatementData.ReturnFields)
 			for i := range fields {
 				fields[i].Format = 0
@@ -646,7 +644,7 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 			return fmt.Errorf("portal %s does not exist", message.Name)
 		}
 
-		if !portalData.HandledOutsideEngine {
+		if portalData.Stmt != nil {
 			fields = portalData.Fields
 			tag = portalData.Query.StatementTag
 		}
@@ -667,41 +665,40 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 		return fmt.Errorf("prepared statement %s does not exist", message.PreparedStatement)
 	}
 
-	if !preparedData.HandledOutsideEngine {
-		if preparedData.Query.AST == nil {
-			// special case: empty query
-			h.portals[message.DestinationPortal] = PortalData{
-				Query:        preparedData.Query,
-				IsEmptyQuery: true,
-			}
-			return h.send(&pgproto3.BindComplete{})
-		}
-
-		bindVars, err := h.convertBindParameters(preparedData.BindVarTypes, message.ParameterFormatCodes, message.Parameters)
-		if err != nil {
-			return err
-		}
-
-		fields, err := h.duckHandler.ComBind(context.Background(), h.mysqlConn, preparedData, bindVars)
-		if err != nil {
-			return err
-		}
-
+	if preparedData.Stmt == nil {
 		h.portals[message.DestinationPortal] = PortalData{
-			Query:                preparedData.Query,
-			Fields:               fields,
-			Stmt:                 preparedData.Stmt,
-			Vars:                 bindVars,
-			HandledOutsideEngine: false,
+			Query:  preparedData.Query,
+			Fields: nil,
+			Stmt:   nil,
+			Vars:   nil,
 		}
-	} else {
+		return h.send(&pgproto3.BindComplete{})
+	}
+
+	if preparedData.Query.AST == nil {
+		// special case: empty query
 		h.portals[message.DestinationPortal] = PortalData{
-			Query:                preparedData.Query,
-			Fields:               nil,
-			Stmt:                 nil,
-			Vars:                 nil,
-			HandledOutsideEngine: true,
+			Query:        preparedData.Query,
+			IsEmptyQuery: true,
 		}
+		return h.send(&pgproto3.BindComplete{})
+	}
+
+	bindVars, err := h.convertBindParameters(preparedData.BindVarTypes, message.ParameterFormatCodes, message.Parameters)
+	if err != nil {
+		return err
+	}
+
+	fields, err := h.duckHandler.ComBind(context.Background(), h.mysqlConn, preparedData, bindVars)
+	if err != nil {
+		return err
+	}
+
+	h.portals[message.DestinationPortal] = PortalData{
+		Query:  preparedData.Query,
+		Fields: fields,
+		Stmt:   preparedData.Stmt,
+		Vars:   bindVars,
 	}
 	return h.send(&pgproto3.BindComplete{})
 }

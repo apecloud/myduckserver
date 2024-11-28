@@ -85,20 +85,18 @@ type copyFromStdinState struct {
 }
 
 type PortalData struct {
-	Query                ConvertedQuery
-	IsEmptyQuery         bool
-	Fields               []pgproto3.FieldDescription
-	Stmt                 *duckdb.Stmt
-	Vars                 []any
-	HandledOutsideEngine bool
+	Query        ConvertedQuery
+	IsEmptyQuery bool
+	Fields       []pgproto3.FieldDescription
+	Stmt         *duckdb.Stmt
+	Vars         []any
 }
 
 type PreparedStatementData struct {
-	Query                ConvertedQuery
-	ReturnFields         []pgproto3.FieldDescription
-	BindVarTypes         []uint32
-	Stmt                 *duckdb.Stmt
-	HandledOutsideEngine bool
+	Query        ConvertedQuery
+	ReturnFields []pgproto3.FieldDescription
+	BindVarTypes []uint32
+	Stmt         *duckdb.Stmt
 }
 
 // VitessTypeToObjectID returns a type, as defined by Vitess, into a type as defined by Postgres.
