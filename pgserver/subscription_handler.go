@@ -4,11 +4,12 @@ import (
 	"context"
 	stdsql "database/sql"
 	"fmt"
+	"regexp"
+	"strings"
+
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/jackc/pglogrepl"
-	"regexp"
-	"strings"
 )
 
 // This file implements the logic for handling CREATE SUBSCRIPTION SQL statements.
@@ -116,10 +117,12 @@ func executeCreateSubscriptionSQL(h *ConnectionHandler, subscriptionConfig *Subs
 		return fmt.Errorf("failed to execute snapshot in CREATE SUBSCRIPTION: %w", err)
 	}
 
-	err = doCreateSubscription(h, subscriptionConfig)
+	replicator, err := doCreateSubscription(h, subscriptionConfig)
 	if err != nil {
 		return fmt.Errorf("failed to execute CREATE SUBSCRIPTION: %w", err)
 	}
+
+	go replicator.StartReplication(h.server.NewInternalCtx(), subscriptionConfig.PublicationName)
 
 	return nil
 }
@@ -158,40 +161,47 @@ func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) er
 	return nil
 }
 
-func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) error {
+func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) (*logrepl.LogicalReplicator, error) {
 	replicator, err := logrepl.NewLogicalReplicator(subscriptionConfig.ToDNS())
 	if err != nil {
-		return fmt.Errorf("failed to create logical replicator: %w", err)
+		return nil, fmt.Errorf("failed to create logical replicator: %w", err)
 	}
 
 	err = logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
 	if err != nil {
-		return fmt.Errorf("failed to create publication: %w", err)
+		return nil, fmt.Errorf("failed to create publication: %w", err)
 	}
 
 	err = replicator.CreateReplicationSlotIfNotExists(subscriptionConfig.PublicationName)
 	if err != nil {
-		return fmt.Errorf("failed to create replication slot: %w", err)
+		return nil, fmt.Errorf("failed to create replication slot: %w", err)
 	}
 
 	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		return fmt.Errorf("failed to create context for query: %w", err)
+		return nil, fmt.Errorf("failed to create context for query: %w", err)
 	}
+
+	// `WriteWALPosition` and `WriteSubscription` execute in a transaction internally,
+	// so we start a transaction here and commit it after writing the WAL position.
+	tx, err := adapter.GetCatalogTxn(sqlCtx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	}
+	defer tx.Rollback()
+	defer adapter.CloseTxn(sqlCtx)
 
 	err = replicator.WriteWALPosition(sqlCtx, subscriptionConfig.PublicationName, subscriptionConfig.LSN)
 	if err != nil {
-		return fmt.Errorf("failed to write WAL position: %w", err)
+		return nil, fmt.Errorf("failed to write WAL position: %w", err)
 	}
 
-	sqlCtx, err = h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	err = logrepl.WriteSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
 	if err != nil {
-		return fmt.Errorf("failed to create context for query: %w", err)
+		return nil, fmt.Errorf("failed to write subscription: %w", err)
 	}
 
-	go replicator.StartReplication(sqlCtx, subscriptionConfig.PublicationName)
-
-	return nil
+	return replicator, tx.Commit()
 }
 
 // processLSN scans the rows for the LSN value and updates the subscriptionConfig.

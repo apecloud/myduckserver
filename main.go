@@ -23,6 +23,7 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
+	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/apecloud/myduckserver/plugin"
 	"github.com/apecloud/myduckserver/replica"
 	"github.com/apecloud/myduckserver/transpiler"
@@ -158,6 +159,19 @@ func main() {
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to create Postgres-protocol server")
 		}
+
+		// Check if there is a replication subscription and start replication if there is.
+		_, conn, pub, ok, err := logrepl.FindReplication(pool.DB)
+		if err != nil {
+			logrus.WithError(err).Warnln("Failed to find replication")
+		} else if ok {
+			replicator, err := logrepl.NewLogicalReplicator(conn)
+			if err != nil {
+				logrus.WithError(err).Fatalln("Failed to create logical replicator")
+			}
+			replicator.StartReplication(pgServer.NewInternalCtx(), pub)
+		}
+
 		go pgServer.Start()
 	}
 
