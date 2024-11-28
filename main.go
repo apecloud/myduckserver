@@ -186,7 +186,7 @@ func main() {
 			if err != nil {
 				logrus.WithError(err).Fatalln("Failed to create logical replicator")
 			}
-			replicator.StartReplication(pgServer.NewInternalCtx(), pub)
+			go replicator.StartReplication(pgServer.NewInternalCtx(), pub)
 		}
 
 		go pgServer.Start()
