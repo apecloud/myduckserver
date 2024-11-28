@@ -109,8 +109,11 @@ func (h *ConnectionHandler) executeCreateSubscriptionSQL(subscriptionConfig *Sub
 	}
 
 	// Do a checkpoint here to merge the WAL logs
-	if _, err := adapter.ExecCatalog(sqlCtx, "CHECKPOINT"); err != nil {
-		return fmt.Errorf("failed to execute CHECKPOINT: %w", err)
+	if _, err := adapter.ExecCatalog(sqlCtx, "FORCE CHECKPOINT"); err != nil {
+		return fmt.Errorf("failed to execute FORCE CHECKPOINT: %w", err)
+	}
+	if _, err := adapter.ExecCatalog(sqlCtx, "PRAGMA force_checkpoint;"); err != nil {
+		return fmt.Errorf("failed to execute PRAGMA force_checkpoint: %w", err)
 	}
 
 	replicator, err := h.doCreateSubscription(sqlCtx, subscriptionConfig, lsn)
@@ -137,7 +140,7 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 
 	connInfo := subscriptionConfig.ToConnectionInfo()
 	attachName := fmt.Sprintf("__pg_src_%d__", sqlCtx.ID())
-	if _, err := adapter.ExecCatalog(sqlCtx, fmt.Sprintf("ATTACH '%s' AS %s (TYPE POSTGRES)", connInfo, attachName)); err != nil {
+	if _, err := adapter.ExecCatalog(sqlCtx, fmt.Sprintf("ATTACH '%s' AS %s (TYPE POSTGRES, READ_ONLY)", connInfo, attachName)); err != nil {
 		return 0, fmt.Errorf("failed to attach connection: %w", err)
 	}
 
