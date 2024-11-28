@@ -8,18 +8,19 @@
 
 ## ❓ Why MyDuck ❓
 
-While MySQL and Postgres are the most popular open-source databases for OLTP, their performances in analytics often fall short. DuckDB, on the other hand, is built for fast, embedded analytical processing. MyDuck Server lets you enjoy DuckDB's high-speed analytics without leaving the (MySQL|Postgres) ecosystem.
+While MySQL and Postgres are the most popular open-source databases for OLTP, their performance in analytics often falls short. DuckDB, on the other hand, is built for fast, embedded analytical processing. MyDuck Server lets you enjoy DuckDB's high-speed analytics without leaving the (MySQL|Postgres) ecosystem.
 
 With MyDuck Server, you can:
 
-- **Accelerate analytics** by running queries on your MySQL & Postgres data at speeds several orders of magnitude faster 🚀
-- **Keep familiar tools**—there's no need to change your existing (MySQL|Postgres)-based data analysis toolchains 🛠️
-- **Go beyond MySQL & Postgres syntax** through DuckDB's full power to expand your analytics potential 💥
+- **Set up an isolated, fast, and real-time replica** dedicated to ad-hoc analytics, batch jobs, and LLM-generated queries, without exhausting or corrupting your primary database 🔥
+- **Accelerate existing MySQL & Postgres analytics** to new heights through DuckDB's high-speed engine with minimal changes 🚀
+- **Enable richer & faster connectivity** between modern data manipulation & analysis tools and your MySQL & Postgres data 🛠️
+- **Go beyond MySQL & Postgres syntax** with DuckDB's advanced SQL features to expand your analytics potential 🦆
 - **Run DuckDB in server mode** to share a DuckDB instance with your team or among your applications 🌩️
 - **Build HTAP systems** by combining (MySQL|Postgres) for transactions with MyDuck for analytics 🔄
 - and much more! See below for a full list of feature highlights.
 
-MyDuck Server isn't here to replace MySQL & Postgres — it's here to help MySQL & Postgres users do more with their data. This open-source project gives you a convenient way to integrate high-speed analytics into your workflow, all while embracing the flexibility and efficiency of DuckDB.
+MyDuck Server isn't here to replace MySQL & Postgres — it's here to help MySQL & Postgres users do more with their data. This open-source project provides a convenient way to integrate high-speed analytics into your workflow while embracing the flexibility and efficiency of DuckDB.
 
 ## ✨ Key Features
 
@@ -27,27 +28,29 @@ MyDuck Server isn't here to replace MySQL & Postgres — it's here to help MySQL
     <img alt="duck under dolphin" style="margin-right: 0.2em" src="logo/MyDuck.svg">
 </h1>
 
-- **Blazing Fast OLAP with DuckDB**: MyDuck stores data in DuckDB, an OLAP-optimized database known for lightning-fast analytical queries. With DuckDB, MyDuck executes queries up to 1000x faster than traditional MySQL & Postgres setups, enabling complex analytics that were impractical with MySQL or Postgres alone.
+- **Blazing Fast OLAP with DuckDB**: MyDuck stores data in DuckDB, an OLAP-optimized database known for lightning-fast analytical queries. DuckDB enables MyDuck to execute queries up to 1000x faster than traditional MySQL & Postgres setups, making complex analytics practical that were previously unfeasible.
 
-- **MySQL-Compatible Interface**: MyDuck speaks MySQL wire protocol and understands MySQL syntax, so you can connect to it with any MySQL client and run MySQL-style SQL. MyDuck translates your queries on the fly and executes them in DuckDB.
+- **MySQL-Compatible Interface**: MyDuck implements the MySQL wire protocol and understands MySQL syntax, allowing you to connect with any MySQL client and run MySQL-style SQL. MyDuck automatically translates your queries and executes them in DuckDB.
 
-- **Postgres-Compatible Interface**: MyDuck speaks Postgres wire protocol as well, allowing you to send DuckDB SQL directly with any Postgres client. DuckDB's SQL dialect [closely resembles PostgreSQL](https://duckdb.org/docs/sql/dialect/postgresql_compatibility.html), enabling you to speed up existing Postgres queries with minimal changes.
+- **Postgres-Compatible Interface**: MyDuck implements the Postgres wire protocol, enabling you to send DuckDB SQL directly using any Postgres client. Since DuckDB's SQL dialect [closely resembles PostgreSQL](https://duckdb.org/docs/sql/dialect/postgresql_compatibility.html), you can speed up existing Postgres queries with minimal changes.
 
-- **Raw DuckDB Power**: MyDuck's support for raw DuckDB SQL opens up DuckDB’s full analytical capabilities, including [friendly SQL syntax](https://duckdb.org/docs/sql/dialect/friendly_sql.html), [advanced aggregates](https://duckdb.org/docs/sql/functions/aggregates), [accessing remote data sources](https://duckdb.org/docs/data/data_sources), and more. 
+- **Raw DuckDB Power**: MyDuck provides full access to DuckDB's analytical capabilities through raw DuckDB SQL, including [friendly SQL syntax](https://duckdb.org/docs/sql/dialect/friendly_sql.html), [advanced aggregates](https://duckdb.org/docs/sql/functions/aggregates), [remote data source access](https://duckdb.org/docs/data/data_sources), [nested data types](https://duckdb.org/docs/sql/data_types/overview#nested--composite-types), and more.
 
-- **Zero-ETL**: Just start replication and go! MyDuck can act as a MySQL replica or a Postgres standby that replicates data from your primary server in real-time, so you can start querying immediately. There’s no need to set up complex ETL pipelines.
+- **Zero-ETL**: Simply start replication and begin querying! MyDuck can function as a MySQL replica or Postgres standby, replicating data from your primary server in real-time. It works like standard MySQL & Postgres replication - using MySQL's `START REPLICA` or Postgres' `CREATE SUBSCRIPTION` commands, eliminating the need for complex ETL pipelines.
 
 - **Consistent and Efficient Replication**: Thanks to DuckDB's [solid ACID support](https://duckdb.org/2024/09/25/changing-data-with-confidence-and-acid.html), we've carefully managed transaction boundaries in the replication stream to ensure a **consistent data view** — you'll never see dirty data mid-transaction. Plus, MyDuck's **transaction batching** collects updates from multiple transactions and applies them to DuckDB in batches, significantly reducing write overhead (since DuckDB isn’t designed for high-frequency OLTP writes).
 
 - **HTAP Architecture Support**: MyDuck works well with database proxy tools to enable hybrid transactional/analytical processing setups. You can route DML operations to (MySQL|Postgres) and analytical queries to MyDuck, creating a powerful HTAP architecture that combines the best of both worlds.
 
-- **Seamless Integration with Dump & Copy Utilities**: MyDuck plays well with modern MySQL & Postgres data migration tools, especially the [MySQL Shell](https://dev.mysql.com/doc/mysql-shell/en/) and [pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html). For MySQL, you can load data into MyDuck in parallel from a MySQL Shell dump, or leverage the Shell’s `copy-instance` utility to copy a consistent snapshot of your running MySQL server to MyDuck. For Postgres, MyDuck can load data from a `pg_dump` archive.
-
 - **Bulk Upload & Download**: MyDuck supports fast bulk data loading from the client side with the standard MySQL `LOAD DATA LOCAL INFILE` command or the  PostgreSQL `COPY FROM STDIN` command. You can also extract data from MyDuck using the PostgreSQL `COPY TO STDOUT` command.
+
+- **End-to-End Columnar IO**: In addition to the traditional row-oriented data transfer in MySQL & Postgres protocol, MyDuck can also send query results and receive data uploads in columnar format, which can be significantly faster for high-volume data. This is implemented on top of the standard Postgres `COPY` protocol with extended columnar format support, e.g., `COPY ... TO STDOUT (FORMAT parquet | arrow)`, allowing you to use the standard Postgres client library to interact with MyDuck in an optimized way.
 
 - **Standalone Mode**: MyDuck can run in standalone mode without replication. In this mode, it is a drop-in replacement for (MySQL|Postgres), but with a DuckDB heart. You can `CREATE TABLE`, transactionally `INSERT`, `UPDATE`, and `DELETE` data, and run blazingly fast `SELECT` queries.
 
 - **DuckDB in Server Mode**: If you aren't interested in MySQL & Postgres but just want to share a DuckDB instance with your team or among your applications, MyDuck is also a great solution. You can deploy MyDuck to a server, connect to it with the Postgres client library in your favorite programming language, and start running DuckDB SQL queries directly.
+
+- **Seamless Integration with Dump & Copy Utilities**: MyDuck plays well with modern MySQL & Postgres data migration tools, especially the [MySQL Shell](https://dev.mysql.com/doc/mysql-shell/en/) and [pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html). For MySQL, you can load data into MyDuck in parallel from a MySQL Shell dump, or leverage the Shell’s `copy-instance` utility to copy a consistent snapshot of your running MySQL server to MyDuck. For Postgres, MyDuck can load data from a `pg_dump` archive.
 
 ## 📊 Performance
 
@@ -121,10 +124,10 @@ docker run \
 ```
 `SOURCE_DSN` specifies the connection string to the primary database server, which can be either MySQL or PostgreSQL.
 
-- **MySQL Primary:** Use the MySQL URI scheme, e.g.,  
+- **MySQL Primary:** Use the `mysql` URI scheme, e.g.,  
   `--env=SOURCE_DSN=mysql://root:password@example.com:3306`
 
-- **PostgreSQL Primary:** Use the PostgreSQL URI scheme, e.g.,  
+- **PostgreSQL Primary:** Use the `postgres` URI scheme, e.g.,  
   `--env=SOURCE_DSN=postgres://postgres:password@example.com:5432`
 
 ### Connecting to Cloud MySQL & Postgres
@@ -147,7 +150,7 @@ Already have a DuckDB file? You can seamlessly bootstrap MyDuck Server with it. 
 
 ## 💡 Contributing
 
-Let’s make (MySQL|Postgres) analytics fast and powerful — together!
+Let’s make MySQL & Postgres analytics fast and powerful — together!
 
 MyDuck Server is open-source, and we’d love your help to keep it growing! Check out our [CONTRIBUTING.md](CONTRIBUTING.md) for ways to get involved. From bug reports to feature requests, all contributions are welcome!
 
