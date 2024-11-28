@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	stdsql "database/sql"
+
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
@@ -108,33 +109,4 @@ func ExecInTxn(ctx *sql.Context, query string, args ...any) (stdsql.Result, erro
 		return nil, err
 	}
 	return tx.ExecContext(ctx, query, args...)
-}
-
-func ExecInternalSqlInTxn(sqlCtx *sql.Context, query string) error {
-	// Get the connection
-	conn, err := GetConn(sqlCtx)
-	if err != nil {
-		return err
-	}
-
-	// Begin a new transaction
-	txn, err := conn.BeginTx(sqlCtx, nil)
-	if err != nil {
-		return err
-	}
-
-	// Ensure that the transaction is committed or rolled back
-	defer func() {
-		if err != nil {
-			// If there was an error, we roll back the transaction
-			txn.Rollback()
-		} else {
-			// Commit the transaction if there was no error
-			err = txn.Commit()
-		}
-	}()
-
-	// Execute the query within the transaction
-	_, err = txn.Query(query, nil)
-	return err
 }
