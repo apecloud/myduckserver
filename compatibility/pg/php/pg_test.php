@@ -87,8 +87,12 @@ class Test {
             $st = $conn->prepare($this->query);
             $st->execute();
             if ($st->columnCount() == 0) {
+                if (count($this->expectedResults) != 0) {
+                    echo "Expected " . count($this->expectedResults) . " rows, got 0\n";
+                    return false;
+                }
                 echo "Returns 0 rows\n";
-                return count($this->expectedResults) == 0;
+                return true;
             }
             $rows = $st->fetchAll(PDO::FETCH_NUM);
             if (count($rows[0]) != count($this->expectedResults[0])) {

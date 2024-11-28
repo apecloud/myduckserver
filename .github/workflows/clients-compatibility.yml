@@ -107,7 +107,7 @@ jobs:
 
           cd compatibility/pg/
           sudo apt-get install --yes --no-install-recommends postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0
-          curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
+          # curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
           npm install pg
           sudo cpanm DBD::Pg
           pip3 install psycopg2

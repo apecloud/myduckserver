@@ -73,8 +73,12 @@ public class PGTest {
                 try {
                     System.out.println("Running test: " + query);
                     if (!st.execute(query)) {
+                        if (expectedResults.length != 0) {
+                            System.err.println("Expected " + expectedResults.length + " rows, got 0");
+                            return false;
+                        }
                         System.out.println("Returns 0 rows");
-                        return expectedResults.length == 0;
+                        return true;
                     }
                     ResultSet rs = st.getResultSet();
                     if (rs.getMetaData().getColumnCount() != expectedResults[0].length) {

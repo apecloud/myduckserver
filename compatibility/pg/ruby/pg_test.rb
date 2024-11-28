@@ -70,8 +70,12 @@ class PGTest
           puts "Running test: #{@query}"
           result = conn.exec(@query)
           if result.ntuples == 0
-            puts "Returns 0 rows"
-            return @expected_results.empty?
+            if @expected_results.empty?
+              puts "Returns 0 rows"
+              return true
+            end
+            puts "Expected #{@expected_results.length} rows, got 0"
+            return false
           end
           if result.nfields != @expected_results[0].length
             puts "Expected #{@expected_results[0].length} columns, got #{result.nfields}"

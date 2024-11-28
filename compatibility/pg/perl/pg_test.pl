@@ -77,16 +77,24 @@ sub run_test {
     $st->execute();
     my $rows = $st->rows;
     if ($rows == 0 || $rows == -1) {
-        print "No rows returned\n";
-        return defined $expected_results && @$expected_results == 0;
+        if (defined $expected_results && @$expected_results == 0) {
+            print "No rows returned\n";
+            return 1;
+        }
+        print "Expected " . @$expected_results . " rows, got 0 rows\n";
+        return 0;
     }
     my $cols = $st->{NUM_OF_FIELDS};
     if (!defined $cols) {
-        print "No columns returned\n";
-        return defined $expected_results && @$expected_results == 0;
+        if (defined $expected_results && @$expected_results == 0) {
+            print "No columns returned\n";
+            return 1;
+        }
+        print "Expected " . @{$expected_results->[0]} . " columns, got 0\n";
+        return 0;
     }
     if ($cols != @{$expected_results->[0]}) {
-        print "Expected " . @{$expected_results->[0]} . " columns\n";
+        print "Expected " . @{$expected_results->[0]} . " columns, got $cols\n";
         return 0;
     }
     my $row_num = 0;

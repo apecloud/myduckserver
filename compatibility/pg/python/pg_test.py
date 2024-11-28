@@ -10,8 +10,11 @@ class PGTest:
             print(f"Running test: {self.query}")
             cursor.execute(self.query)
             if cursor.description is None:
+                if len(self.expected_results) != 0:
+                    print(f"Expected {len(self.expected_results)} rows, got 0")
+                    return False
                 print("Returns 0 rows")
-                return len(self.expected_results) == 0
+                return True
 
             rows = cursor.fetchall()
             if len(rows[0]) != len(self.expected_results[0]):
@@ -32,7 +35,6 @@ class PGTest:
 
     def __init__(self):
         self.conn = None
-        self.cursor = None
         self.tests = []
 
     def connect(self, ip, port, user, password):
@@ -44,12 +46,10 @@ class PGTest:
                 user=user,
                 password=password
             )
-            self.cursor = self.conn.cursor()
         except Exception as e:
             raise RuntimeError(e)
 
     def disconnect(self):
-        self.cursor.close()
         self.conn.close()
 
     def add_test(self, query, expected_results):
@@ -57,16 +57,18 @@ class PGTest:
 
     def run_tests(self):
         for test in self.tests:
+            cursor = None
             try:
                 self.conn.autocommit = False
-                if not test.run(self.cursor):
-                    self.conn.rollback()
+                cursor = self.conn.cursor()
+                if not test.run(cursor):
                     return False
-                self.conn.commit()
             except Exception as e:
                 print(f"Error running test: {e}")
-                self.conn.rollback()
                 return False
+            finally:
+                if cursor:
+                    cursor.close()
         return True
 
     def read_tests_from_file(self, filename):

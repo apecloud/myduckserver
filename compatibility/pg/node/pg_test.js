@@ -12,8 +12,12 @@ class Test {
             console.log(`Running test: ${this.query}`);
             const res = await client.query(this.query);
             if (res.rows.length === 0) {
+                if (this.expectedResults.length !== 0) {
+                    console.error(`Expected ${this.expectedResults.length} rows, got 0`);
+                    return false;
+                }
                 console.log("Returns 0 rows");
-                return this.expectedResults.length === 0;
+                return true;
             }
             if (res.fields.length !== this.expectedResults[0].length) {
                 console.error(`Expected ${this.expectedResults[0].length} columns, got ${res.fields.length}`);

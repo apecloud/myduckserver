@@ -1,0 +1,9 @@
+[package]
+name = "pg_test"
+
+[dependencies]
+postgres = "*"
+
+[[bin]]
+name = "pg_test"
+path = "./pg_test.rs"

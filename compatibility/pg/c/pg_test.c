@@ -16,6 +16,13 @@ typedef struct {
     int testCount;
 } PGTest;
 
+void connectDB(PGTest *pgTest, const char *ip, int port, const char *user, const char *password);
+void disconnectDB(PGTest *pgTest);
+void addTest(PGTest *pgTest, const char *query, char **expectedResults, int expectedRows, int expectedCols);
+int runTests(PGTest *pgTest);
+void readTestsFromFile(PGTest *pgTest, const char *filename);
+size_t removeNewline(char *line);
+
 void connectDB(PGTest *pgTest, const char *ip, int port, const char *user, const char *password) {
     char conninfo[256];
     snprintf(conninfo, sizeof(conninfo), "host=%s port=%d dbname=postgres user=%s password=%s", ip, port, user, password);
@@ -81,10 +88,7 @@ int runTests(PGTest *pgTest) {
 
 size_t removeNewline(char *line) {
     size_t len = strlen(line);
-    if (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-        line[--len] = '\0';
-    }
-    if (len > 0 && line[len - 1] == '\r') {
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
         line[--len] = '\0';
     }
     return len;
