@@ -135,12 +135,14 @@ func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) er
 		}
 
 		if index == transactionalIndex {
-			conn, err := adapter.GetConn(sqlCtx)
+			internalSqlCtx := GetServerInstance().NewInternalCtx()
+
+			conn, err := adapter.GetConn(internalSqlCtx)
 			if err != nil {
 				return fmt.Errorf("failed to get connection: %w", err)
 			}
 
-			txn, err := conn.BeginTx(sqlCtx, nil)
+			txn, err := conn.BeginTx(internalSqlCtx, nil)
 			if err != nil {
 				return fmt.Errorf("failed to begin transaction: %w", err)
 			}
@@ -154,6 +156,9 @@ func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) er
 			if err != nil {
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
+
+			adapter.CloseTxn(internalSqlCtx)
+			adapter.CloseBackendConn(internalSqlCtx)
 		} else {
 			// Execute the query
 			rows, err := adapter.Query(sqlCtx, duckDBQuery)
@@ -211,6 +216,7 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 		if err != nil {
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
+		defer adapter.CloseTxn(sqlCtx)
 	}
 
 	go func() {

@@ -1047,6 +1047,18 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
 	if query.SubscriptionConfig != nil {
 		return executeCreateSubscriptionSQL(h, query.SubscriptionConfig)
+	} else if query.StatementTag == "COPY" {
+		internalSqlCtx := GetServerInstance().NewInternalCtx()
+
+		err := adapter.ExecInternalSqlInTxn(internalSqlCtx, query.String)
+		if err != nil {
+			return fmt.Errorf("failed to execute sql: %w", err)
+		}
+
+		err = adapter.ExecInternalSqlInTxn(internalSqlCtx, "CHECKPOINT;")
+		if err != nil {
+			return fmt.Errorf("failed to do CHECKPOINT: %w", err)
+		}
 	} else if err := h.duckHandler.ComQuery(
 		context.Background(),
 		h.mysqlConn,
