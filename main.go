@@ -54,6 +54,8 @@ var (
 	replicaOptions replica.ReplicaOptions
 
 	postgresPort = 5432
+
+	defaultTimeZone = ""
 )
 
 func init() {
@@ -79,6 +81,10 @@ func init() {
 	// The following options are used to configure the Postgres server.
 
 	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
+
+	// The following options configure default DuckDB settings.
+
+	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
 }
 
 func ensureSQLTranslate() {
@@ -112,6 +118,13 @@ func main() {
 	defer provider.Close()
 
 	pool := backend.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
+
+	if defaultTimeZone != "" {
+		_, err := pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, defaultTimeZone))
+		if err != nil {
+			logrus.WithError(err).Fatalln("Failed to set the default time zone")
+		}
+	}
 
 	engine := sqle.NewDefault(provider)
 
