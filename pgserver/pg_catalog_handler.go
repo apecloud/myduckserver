@@ -282,7 +282,13 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				key := strings.ToLower(stmt.Name)
+				if key == "database" {
+					// This is the statement of `USE xxx`, which is used for changing the schema.
+					// Route it to the engine directly.
+					return false, nil
+				}
 				if duckConfig.IsValidConfig(key) {
+					// This is a configuration of DuckDB, it should be bypassed to DuckDB
 					return false, nil
 				}
 				if len(stmt.Values) > 1 {
@@ -301,16 +307,13 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 			value := setVar.Values[0]
 			_, isDefault := value.(tree.DefaultVal)
 
+			if key == "database" {
+				// This is the statement of `USE xxx`, which is used for changing the schema.
+				// Route it to the engine directly.
+				return false, nil
+			}
 			if duckConfig.IsValidConfig(key) {
-				//// This is a configuration of DuckDB, it should be bypassed to DuckDB
-				//if isDefault {
-				//	// We should change the Query to "RESET key"
-				//	query := fmt.Sprintf("RESET %s;", key)
-				//	return true, h.query(ConvertedQuery{
-				//		String:       query,
-				//		StatementTag: "SET",
-				//	})
-				//}
+				// This is a configuration of DuckDB, it should be bypassed to DuckDB
 				return false, nil
 			}
 
