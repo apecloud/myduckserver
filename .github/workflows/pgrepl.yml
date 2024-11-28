@@ -96,12 +96,12 @@ jobs:
         # Verify replication of new data
         psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 3 AND name = 'new data 3';" | grep -q 1
 
-    - name: Test Replication Recovery
-      run: |
         # Kill MyDuck
         pkill myduckserver
         sleep 2
 
+    - name: Test Replication Recovery
+      run: |
         # Insert more data in primary while MyDuck is down
         psql "postgres://postgres:password@localhost:15432/testdb" \
           -c "INSERT INTO test_table VALUES (4, 'offline data 4');"
@@ -112,6 +112,9 @@ jobs:
 
         # Verify replication catches up
         psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
+
+        # Kill MyDuck
+        pkill myduckserver
 
     - name: Cleanup
       if: always()

@@ -165,7 +165,11 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 		return 0, fmt.Errorf("failed to parse LSN: %w", err)
 	}
 
-	// COPY DATABASE is buggy, so we need to copy tables one by one
+	// COPY DATABASE is buggy - it corrupts the WAL so the server cannot be restarted.
+	// So we need to copy tables one by one.
+	// if _, err := adapter.ExecCatalogInTxn(sqlCtx, fmt.Sprintf("COPY FROM DATABASE %s TO mysql", attachName)); err != nil {
+	// 	return 0, fmt.Errorf("failed to copy from database: %w", err)
+	// }
 
 	type table struct {
 		schema string
@@ -216,10 +220,6 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 			return 0, fmt.Errorf("failed to create table: %w", err)
 		}
 	}
-
-	// if _, err := adapter.ExecCatalogInTxn(sqlCtx, fmt.Sprintf("COPY FROM DATABASE %s TO mysql", attachName)); err != nil {
-	// 	return 0, fmt.Errorf("failed to copy from database: %w", err)
-	// }
 
 	return lsn, txn.Commit()
 }
