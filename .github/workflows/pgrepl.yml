@@ -1,4 +1,4 @@
-name: PostgreSQL Replication Test
+name: PostgreSQL Replication E2E Test
 
 on:
   push:

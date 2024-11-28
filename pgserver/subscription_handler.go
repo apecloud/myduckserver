@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
@@ -109,12 +110,12 @@ func (h *ConnectionHandler) executeCreateSubscriptionSQL(subscriptionConfig *Sub
 	}
 
 	// Do a checkpoint here to merge the WAL logs
-	if _, err := adapter.ExecCatalog(sqlCtx, "FORCE CHECKPOINT"); err != nil {
-		return fmt.Errorf("failed to execute FORCE CHECKPOINT: %w", err)
-	}
-	if _, err := adapter.ExecCatalog(sqlCtx, "PRAGMA force_checkpoint;"); err != nil {
-		return fmt.Errorf("failed to execute PRAGMA force_checkpoint: %w", err)
-	}
+	// if _, err := adapter.ExecCatalog(sqlCtx, "FORCE CHECKPOINT"); err != nil {
+	// 	return fmt.Errorf("failed to execute FORCE CHECKPOINT: %w", err)
+	// }
+	// if _, err := adapter.ExecCatalog(sqlCtx, "PRAGMA force_checkpoint;"); err != nil {
+	// 	return fmt.Errorf("failed to execute PRAGMA force_checkpoint: %w", err)
+	// }
 
 	replicator, err := h.doCreateSubscription(sqlCtx, subscriptionConfig, lsn)
 	if err != nil {
@@ -164,6 +165,42 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 		return 0, fmt.Errorf("failed to parse LSN: %w", err)
 	}
 
+	// COPY DATABASE is buggy, so we need to copy tables one by one
+
+	type table struct {
+		schema string
+		name   string
+	}
+	var tables []table
+
+	// Get all tables from the source database
+	if err := func() error {
+		rows, err := adapter.QueryCatalog(sqlCtx, `SELECT database, schema, name FROM (SHOW ALL TABLES) WHERE database = '`+attachName+`'`)
+		if err != nil {
+			return fmt.Errorf("failed to query tables: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var database, schema, tableName string
+			if err := rows.Scan(&database, &schema, &tableName); err != nil {
+				return fmt.Errorf("failed to scan table: %w", err)
+			}
+			tables = append(tables, table{schema: schema, name: tableName})
+		}
+
+		return nil
+	}(); err != nil {
+		return 0, err
+	}
+
+	// Create all schemas in the target database
+	for _, t := range tables {
+		if _, err := adapter.ExecCatalogInTxn(sqlCtx, `CREATE SCHEMA IF NOT EXISTS `+catalog.QuoteIdentifierANSI(t.schema)); err != nil {
+			return 0, fmt.Errorf("failed to create schema: %w", err)
+		}
+	}
+
 	txn, err := adapter.GetCatalogTxn(sqlCtx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get transaction: %w", err)
@@ -171,9 +208,18 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 	defer txn.Rollback()
 	defer adapter.CloseTxn(sqlCtx)
 
-	if _, err := adapter.ExecCatalogInTxn(sqlCtx, fmt.Sprintf("COPY FROM DATABASE %s TO mysql", attachName)); err != nil {
-		return 0, fmt.Errorf("failed to copy from database: %w", err)
+	for _, t := range tables {
+		if _, err := adapter.ExecCatalogInTxn(
+			sqlCtx,
+			`CREATE TABLE `+catalog.ConnectIdentifiersANSI(t.schema, t.name)+` AS FROM `+catalog.ConnectIdentifiersANSI(attachName, t.schema, t.name),
+		); err != nil {
+			return 0, fmt.Errorf("failed to create table: %w", err)
+		}
 	}
+
+	// if _, err := adapter.ExecCatalogInTxn(sqlCtx, fmt.Sprintf("COPY FROM DATABASE %s TO mysql", attachName)); err != nil {
+	// 	return 0, fmt.Errorf("failed to copy from database: %w", err)
+	// }
 
 	return lsn, txn.Commit()
 }
