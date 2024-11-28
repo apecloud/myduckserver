@@ -246,6 +246,7 @@ var internalTables = []InternalTable{
 	InternalTables.PersistentVariable,
 	InternalTables.BinlogPosition,
 	InternalTables.PgReplicationLSN,
+	InternalTables.PgSubscription,
 	InternalTables.GlobalStatus,
 	InternalTables.PGStatReplication,
 	InternalTables.PGCurrentSetting,

@@ -15,7 +15,6 @@ type Server struct {
 }
 
 func NewServer(host string, port int, newCtx func() *sql.Context, options ...ListenerOpt) (*Server, error) {
-	// Ensure the instance is created only once
 	addr := fmt.Sprintf("%s:%d", host, port)
 	l, err := server.NewListener("tcp", addr, "")
 	if err != nil {
@@ -30,11 +29,9 @@ func NewServer(host string, port int, newCtx func() *sql.Context, options ...Lis
 		options...,
 	)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-
 	return &Server{Listener: listener, NewInternalCtx: newCtx}, nil
-
 }
 
 func (s *Server) Start() {
