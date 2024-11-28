@@ -8,6 +8,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
+	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
 )
 
@@ -96,13 +97,23 @@ func parseSubscriptionSQL(sql string) (*SubscriptionConfig, error) {
 	return config, nil
 }
 
-func executeCreateSubscriptionSQL(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) error {
-	lsn, err := doSnapshot(h, subscriptionConfig)
+func (h *ConnectionHandler) executeCreateSubscriptionSQL(subscriptionConfig *SubscriptionConfig) error {
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
+
+	lsn, err := h.doSnapshot(sqlCtx, subscriptionConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot for CREATE SUBSCRIPTION: %w", err)
 	}
 
-	replicator, err := doCreateSubscription(h, subscriptionConfig, lsn)
+	// Do a checkpoint here to merge the WAL logs
+	if _, err := adapter.ExecCatalog(sqlCtx, "CHECKPOINT"); err != nil {
+		return fmt.Errorf("failed to execute CHECKPOINT: %w", err)
+	}
+
+	replicator, err := h.doCreateSubscription(sqlCtx, subscriptionConfig, lsn)
 	if err != nil {
 		return fmt.Errorf("failed to execute CREATE SUBSCRIPTION: %w", err)
 	}
@@ -112,12 +123,7 @@ func executeCreateSubscriptionSQL(h *ConnectionHandler, subscriptionConfig *Subs
 	return nil
 }
 
-func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) (pglogrepl.LSN, error) {
-	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
-	if err != nil {
-		return 0, fmt.Errorf("failed to create context for query: %w", err)
-	}
-
+func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig) (pglogrepl.LSN, error) {
 	// If there is ongoing transcation, commit it
 	if txn := adapter.TryGetTxn(sqlCtx); txn != nil {
 		if err := func() error {
@@ -135,8 +141,14 @@ func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) (p
 		return 0, fmt.Errorf("failed to attach connection: %w", err)
 	}
 
+	defer func() {
+		if _, err := adapter.ExecCatalog(sqlCtx, fmt.Sprintf("DETACH %s", attachName)); err != nil {
+			h.logger.Warnf("failed to detach connection: %v", err)
+		}
+	}()
+
 	var currentLSN string
-	err = adapter.QueryRowCatalog(
+	err := adapter.QueryRowCatalog(
 		sqlCtx,
 		fmt.Sprintf("SELECT * FROM postgres_query('%s', 'SELECT pg_current_wal_lsn()')", attachName),
 	).Scan(&currentLSN)
@@ -149,22 +161,21 @@ func doSnapshot(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig) (p
 		return 0, fmt.Errorf("failed to parse LSN: %w", err)
 	}
 
-	if _, err := adapter.ExecCatalog(sqlCtx, fmt.Sprintf("COPY FROM DATABASE %s TO mysql", attachName)); err != nil {
+	txn, err := adapter.GetCatalogTxn(sqlCtx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get transaction: %w", err)
+	}
+	defer txn.Rollback()
+	defer adapter.CloseTxn(sqlCtx)
+
+	if _, err := adapter.ExecCatalogInTxn(sqlCtx, fmt.Sprintf("COPY FROM DATABASE %s TO mysql", attachName)); err != nil {
 		return 0, fmt.Errorf("failed to copy from database: %w", err)
 	}
 
-	if _, err := adapter.ExecCatalog(sqlCtx, fmt.Sprintf("DETACH %s", attachName)); err != nil {
-		return 0, fmt.Errorf("failed to detach connection: %w", err)
-	}
-
-	if _, err := adapter.ExecCatalog(sqlCtx, "CHECKPOINT"); err != nil {
-		return 0, fmt.Errorf("failed to do checkpoint: %w", err)
-	}
-
-	return lsn, nil
+	return lsn, txn.Commit()
 }
 
-func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) (*logrepl.LogicalReplicator, error) {
+func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) (*logrepl.LogicalReplicator, error) {
 	replicator, err := logrepl.NewLogicalReplicator(subscriptionConfig.ToDNS())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create logical replicator: %w", err)
@@ -178,11 +189,6 @@ func doCreateSubscription(h *ConnectionHandler, subscriptionConfig *Subscription
 	err = replicator.CreateReplicationSlotIfNotExists(subscriptionConfig.PublicationName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create replication slot: %w", err)
-	}
-
-	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create context for query: %w", err)
 	}
 
 	// `WriteWALPosition` and `WriteSubscription` execute in a transaction internally,
