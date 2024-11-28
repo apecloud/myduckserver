@@ -63,8 +63,8 @@ func TestSessParam(t *testing.T) {
 				{
 					// Double quotes are not allowed in SHOW statement
 					SQL:      "SHOW \"application_name\";",
-					Expected: nil,
-					WantErr:  true,
+					Expected: [][]string{{"psql"}},
+					WantErr:  false,
 				},
 			},
 		},
@@ -235,10 +235,10 @@ func TestSessParam(t *testing.T) {
 					Expected: nil,
 					WantErr:  false,
 				},
-				// Get the value of application_name, it should be 'myDUCK'
+				// Get the value of application_name, it should be 'myduck'
 				{
 					SQL:      " \t\r\nSELECT CURRENT_SETTING('application_name'); \t\r\n",
-					Expected: [][]string{{"myDUCK"}},
+					Expected: [][]string{{"myduck"}},
 					WantErr:  false,
 				},
 				// Set the application_name to default
@@ -349,9 +349,9 @@ func TestSessParam(t *testing.T) {
 		{
 			name: "Reset application_name to default",
 			executions: []Execution{
-				// Set the application_name to myDUCK
+				// Set the application_name to 'myDUCK'
 				{
-					SQL:      " \t\r\nSET application_name TO myDUCK; \t\r\n",
+					SQL:      " \t\r\nSET application_name TO 'myDUCK'; \t\r\n",
 					Expected: nil,
 					WantErr:  false,
 				},

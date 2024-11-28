@@ -18,14 +18,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	stdsql "database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"regexp"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -33,7 +31,6 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
-	duckConfig "github.com/apecloud/myduckserver/config"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
@@ -66,27 +63,6 @@ type ConnectionHandler struct {
 
 // Set this env var to disable panic handling in the connection, which is useful when debugging a panic
 const disablePanicHandlingEnvVar = "DOLT_PGSQL_PANIC"
-
-// precompile a regex to match "select pg_catalog.pg_is_in_recovery();"
-var pgIsInRecoveryRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.pg_is_in_recovery\(\s*\)\s*;?\s*$`)
-
-// precompile a regex to match "select pg_catalog.pg_current_wal_lsn();" or "select pg_catalog.pg_last_wal_replay_lsn();"
-var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current_wal_lsn|pg_last_wal_replay_lsn)\(\s*\)\s*;?\s*$`)
-
-// precompile a regex to match "select pg_catalog.current_setting('xxx');".
-var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+(pg_catalog.)?current_setting\(\s*'([^']+)'\s*\)\s*;?\s*$`)
-
-// precompile a regex to match "SHOW {ALL | var_name};".
-var showVariablesRegex = regexp.MustCompile(`(?i)^\s*SHOW\s+(ALL|[a-zA-Z_][a-zA-Z0-9_]*)\s*;?\s*$`)
-
-// precompile a regex to match "SET xxx TO 'yyy';" or "SET xxx = 'yyy';" or "SET xxx TO DEFAULT;" or "SET xxx = DEFAULT;".
-var setStmtRegex = regexp.MustCompile(`(?i)^\s*SET\s+(SESSION|LOCAL)?\s*([a-zA-Z_][a-zA-Z0-9_]+)\s*(TO|=)\s*(DEFAULT|'([^']*)'|"([^"]*)"|[^'"\s;]+)\s*;?\s*$`)
-
-// precompile a regex to match "RESET xxx;".
-var resetStmtRegex = regexp.MustCompile(`(?i)^\s*RESET\s+(ALL|[a-zA-Z_][a-zA-Z0-9_]+)\s*;?\s*$`)
-
-// precompile a regex to match any "from pg_catalog.xxx" in the query.
-var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.`)
 
 // HandlePanics determines whether panics should be handled in the connection handler. See |disablePanicHandlingEnvVar|.
 var HandlePanics = true
@@ -513,312 +489,6 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	return true, h.query(query)
 }
 
-// isInRecovery will get the count of
-func (h *ConnectionHandler) isInRecovery() (string, error) {
-	// Grab a sql.Context.
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
-	if err != nil {
-		return "f", err
-	}
-	var count int
-	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.CountAllStmt()).Scan(&count); err != nil {
-		return "f", err
-	}
-
-	if count == 0 {
-		return "f", nil
-	} else {
-		return "t", nil
-	}
-}
-
-// readOneWALPositionStr reads one of the recorded WAL position from the WAL position table
-func (h *ConnectionHandler) readOneWALPositionStr() (string, error) {
-	// Grab a sql.Context.
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
-	if err != nil {
-		return "0/0", err
-	}
-	var slotName string
-	var lsn string
-	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.SelectAllStmt()).Scan(&slotName, &lsn); err != nil {
-		if errors.Is(err, stdsql.ErrNoRows) {
-			// if no lsn is stored, return 0
-			return "0/0", nil
-		}
-		return "0/0", err
-	}
-
-	return lsn, nil
-}
-
-// queryPGSetting will query the system variable value from the system variable map
-func (h *ConnectionHandler) queryPGSetting(name string) (any, error) {
-	sysVar, _, ok := sql.SystemVariables.GetGlobal(name)
-	if !ok {
-		return nil, fmt.Errorf("error: %s variable was not found", name)
-	}
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
-	v, err := sysVar.GetSessionScope().GetValue(ctx, name, sql.Collation_Default)
-	if err != nil {
-		return nil, fmt.Errorf("error: %s variable was not found, err: %w", name, err)
-	}
-	return v, nil
-}
-
-// getSettingValue will get the value of the setting from the matching groups
-func getSettingValue(matches []string) (string, bool) {
-	if matches[6] != "" {
-		return matches[6], false
-	}
-	if matches[5] != "" {
-		return matches[5], false
-	}
-	return matches[4], strings.ToLower(matches[4]) == "default"
-}
-
-// setPgSessionVar will set the session variable to the value provided for pg.
-// And reply with the CommandComplete and ParameterStatus messages.
-func (h *ConnectionHandler) setPgSessionVar(name string, value any, useDefault bool, tag string) (bool, error) {
-	sysVar, _, ok := sql.SystemVariables.GetGlobal(name)
-	if !ok {
-		return false, fmt.Errorf("error: %s variable was not found", name)
-	}
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
-	if err != nil {
-		return false, err
-	}
-	if useDefault {
-		value = sysVar.GetDefault()
-	}
-	err = sysVar.GetSessionScope().SetValue(ctx, name, value)
-	if err != nil {
-		return false, err
-	}
-	v, err := sysVar.GetSessionScope().GetValue(ctx, name, sql.Collation_Default)
-	if err != nil {
-		return false, fmt.Errorf("error: %s variable was not found, err: %w", name, err)
-	}
-	// Sent CommandComplete message
-	err = h.send(makeCommandComplete(tag, 0))
-	if err != nil {
-		return true, err
-	}
-	// Sent ParameterStatus message
-	if err := h.send(&pgproto3.ParameterStatus{
-		Name:  name,
-		Value: fmt.Sprintf("%v", v),
-	}); err != nil {
-		return true, err
-	}
-	return true, nil
-}
-
-type PGCatalogHandler struct {
-	// HandledInPlace is a function that determines if the query should be handled in place and not passed to the engine.
-	HandledInPlace func(string) (bool, error)
-	Handler        func(*ConnectionHandler, string) (bool, error)
-}
-
-var pgCatalogHandlers = map[*regexp.Regexp]PGCatalogHandler{
-	pgIsInRecoveryRegex: {
-		HandledInPlace: func(sql string) (bool, error) {
-			return true, nil
-		},
-		Handler: func(h *ConnectionHandler, sql string) (bool, error) {
-			isInRecovery, err := h.isInRecovery()
-			if err != nil {
-				return false, err
-			}
-			return true, h.query(ConvertedQuery{
-				String:       fmt.Sprintf(`SELECT '%s' AS "pg_is_in_recovery";`, isInRecovery),
-				StatementTag: "SELECT",
-			})
-		},
-	},
-	pgWALLSNRegex: {
-		HandledInPlace: func(sql string) (bool, error) {
-			return true, nil
-		},
-		Handler: func(h *ConnectionHandler, sql string) (bool, error) {
-			lsnStr, err := h.readOneWALPositionStr()
-			if err != nil {
-				return false, err
-			}
-			return true, h.query(ConvertedQuery{
-				String:       fmt.Sprintf(`SELECT '%s' AS "%s";`, lsnStr, "pg_current_wal_lsn"),
-				StatementTag: "SELECT",
-			})
-		},
-	},
-	currentSettingRegex: {
-		HandledInPlace: func(sql string) (bool, error) {
-			matches := currentSettingRegex.FindStringSubmatch(sql)
-			if len(matches) != 3 {
-				return false, fmt.Errorf("error: invalid current_setting query")
-			}
-			if duckConfig.IsValidConfig(matches[2]) {
-				// This is a configuration of DuckDB, it should be bypassed to DuckDB
-				return false, nil
-			}
-			return true, nil
-		},
-		Handler: func(h *ConnectionHandler, sql string) (bool, error) {
-			matches := currentSettingRegex.FindStringSubmatch(sql)
-			if len(matches) != 3 {
-				return false, fmt.Errorf("error: invalid current_setting query")
-			}
-			setting, err := h.queryPGSetting(matches[2])
-			if err != nil {
-				return false, err
-			}
-			return true, h.query(ConvertedQuery{
-				String:       fmt.Sprintf(`SELECT '%s' AS "current_setting";`, fmt.Sprintf("%v", setting)),
-				StatementTag: "SELECT",
-			})
-		},
-	},
-	showVariablesRegex: {
-		HandledInPlace: func(sql string) (bool, error) {
-			return true, nil
-		},
-		Handler: func(h *ConnectionHandler, sql string) (bool, error) {
-			matches := showVariablesRegex.FindStringSubmatch(sql)
-			if len(matches) != 2 {
-				return false, fmt.Errorf("error: invalid show_variables query")
-			}
-			key := strings.ToLower(matches[1])
-			if key != "all" {
-				setting, err := h.queryPGSetting(key)
-				if err != nil {
-					return false, err
-				}
-				return true, h.query(ConvertedQuery{
-					String:       fmt.Sprintf(`SELECT '%s' AS "%s";`, fmt.Sprintf("%v", setting), key),
-					StatementTag: "SELECT",
-				})
-			}
-			// TODO(sean): Implement SHOW ALL
-			_ = h.send(&pgproto3.ErrorResponse{
-				Severity: string(ErrorResponseSeverity_Error),
-				Code:     "0A000",
-				Message:  "Statement 'SHOW ALL' is not supported yet.",
-			})
-			return true, nil
-		},
-	},
-	setStmtRegex: {
-		HandledInPlace: func(sql string) (bool, error) {
-			matches := setStmtRegex.FindStringSubmatch(sql)
-			if len(matches) != 7 {
-				return false, fmt.Errorf("error: invalid set statement")
-			}
-			key := matches[2]
-
-			if duckConfig.IsValidConfig(key) {
-				return false, nil
-			}
-			return true, nil
-		},
-		Handler: func(h *ConnectionHandler, sql string) (bool, error) {
-			matches := setStmtRegex.FindStringSubmatch(sql)
-			if len(matches) != 7 {
-				return false, fmt.Errorf("error: invalid set statement")
-			}
-			key := matches[2]
-			value, isDefault := getSettingValue(matches)
-
-			if duckConfig.IsValidConfig(key) {
-				// This is a configuration of DuckDB, it should be bypassed to DuckDB
-				if isDefault {
-					// We should change the Query to "RESET key"
-					query := fmt.Sprintf("RESET %s;", key)
-					return true, h.query(ConvertedQuery{
-						String:       query,
-						StatementTag: "SET",
-					})
-				}
-				return false, nil
-			}
-
-			return h.setPgSessionVar(key, value, isDefault, "SET")
-		},
-	},
-	resetStmtRegex: {
-		HandledInPlace: func(sql string) (bool, error) {
-			matches := resetStmtRegex.FindStringSubmatch(sql)
-			if len(matches) != 2 {
-				return false, fmt.Errorf("error: invalid reset statement")
-			}
-			key := matches[1]
-			if duckConfig.IsValidConfig(key) {
-				// This is a configuration of DuckDB, it should be bypassed to DuckDB
-				return false, nil
-			}
-			return true, nil
-		},
-		Handler: func(h *ConnectionHandler, sql string) (bool, error) {
-			matches := resetStmtRegex.FindStringSubmatch(sql)
-			if len(matches) != 2 {
-				return false, fmt.Errorf("error: invalid reset statement")
-			}
-			key := matches[1]
-			if duckConfig.IsValidConfig(key) {
-				// This is a configuration of DuckDB, it should be bypassed to DuckDB
-				return false, nil
-			}
-			if key != "all" {
-				return h.setPgSessionVar(key, nil, true, "RESET")
-			}
-			// TODO(sean): Implement RESET ALL
-			_ = h.send(&pgproto3.ErrorResponse{
-				Severity: string(ErrorResponseSeverity_Error),
-				Code:     "0A000",
-				Message:  "Statement 'RESET ALL' is not supported yet.",
-			})
-			return true, nil
-		},
-	},
-	pgCatalogRegex: {
-		HandledInPlace: func(sql string) (bool, error) {
-			return true, nil
-		},
-		Handler: func(h *ConnectionHandler, sql string) (bool, error) {
-			return true, h.query(ConvertedQuery{
-				String:       pgCatalogRegex.ReplaceAllString(sql, " FROM __sys__."),
-				StatementTag: "SELECT",
-			})
-		},
-	},
-}
-
-// checkIsPgCatalogStmtAndHandledInPlace checks whether a query matches any regex in the pgCatalogHandlers
-// and the query should be handled in place rather than being passed to the engine.
-func checkIsPgCatalogStmtAndHandledInPlace(sql string) bool {
-	for regex := range pgCatalogHandlers {
-		if regex.MatchString(sql) {
-			handledInPlace, err := pgCatalogHandlers[regex].HandledInPlace(sql)
-			return handledInPlace && err == nil
-		}
-	}
-	return false
-}
-
-// TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
-// Remove this once we add the views for 'pg_catalog'.
-func (h *ConnectionHandler) handlePgCatalogQueries(sql string) (bool, error) {
-	statement := RemoveComments(sql)
-	for regex := range pgCatalogHandlers {
-		if regex.MatchString(statement) {
-			handledInPlace, err := pgCatalogHandlers[regex].HandledInPlace(sql)
-			if handledInPlace && err == nil {
-				return pgCatalogHandlers[regex].Handler(h, sql)
-			}
-		}
-	}
-	return false, nil
-}
-
 // handleQueryOutsideEngine handles any queries that should be handled by the handler directly, rather than being
 // passed to the engine. The response parameter |handled| is true if the query was handled, |endOfMessages| is true
 // if no more messages are expected for this query and server should send the client a READY FOR QUERY message,
@@ -867,19 +537,12 @@ func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (hand
 		}
 	}
 
-	handled, err = h.handlePgCatalogQueries(query.String)
+	handled, err = h.handlePgCatalogQueries(query)
 	if handled || err != nil {
 		return true, true, err
 	}
 
 	return false, true, nil
-}
-
-// shouldQueryBeHandledInPlace determines whether a query should be handled in place, rather than being
-// passed to the engine. This is useful for queries that are not supported by the engine, or that require
-// special handling.
-func shouldQueryBeHandledInPlace(query string) bool {
-	return checkIsPgCatalogStmtAndHandledInPlace(query)
 }
 
 // handleParse handles a parse message, returning any error that occurs
@@ -900,7 +563,10 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		return nil
 	}
 
-	handledOutsideEngine := shouldQueryBeHandledInPlace(query.String)
+	handledOutsideEngine, err := shouldQueryBeHandledInPlace(query)
+	if err != nil {
+		return err
+	}
 
 	if !handledOutsideEngine {
 		stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
