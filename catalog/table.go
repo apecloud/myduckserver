@@ -145,8 +145,8 @@ func (t *Table) PrimaryKeySchema() sql.PrimaryKeySchema {
 
 func getPrimaryKeyOrdinals(ctx *sql.Context, catalogName, dbName, tableName string) []int {
 	rows, err := adapter.QueryCatalog(ctx, `
-		SELECT constraint_column_indexes FROM duckdb_constraints() WHERE database_name = ? AND schema_name = ? AND table_name = ? AND constraint_type = 'PRIMARY KEY' LIMIT 1
-	`, catalogName, dbName, tableName)
+		SELECT constraint_column_indexes FROM duckdb_constraints() WHERE ((database_name = ? AND schema_name = ? AND table_name = ?) OR (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)) AND constraint_type = 'PRIMARY KEY' LIMIT 1
+	`, catalogName, dbName, tableName, tableName)
 	if err != nil {
 		panic(ErrDuckDB.New(err))
 	}
@@ -420,8 +420,8 @@ func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 	defer t.mu.RUnlock()
 
 	// Query to get the indexes for the table
-	rows, err := adapter.QueryCatalog(ctx, `SELECT index_name, is_unique, comment, sql FROM duckdb_indexes() WHERE database_name = ? AND schema_name = ? AND table_name = ?`,
-		t.db.catalog, t.db.name, t.name)
+	rows, err := adapter.QueryCatalog(ctx, `SELECT index_name, is_unique, comment, sql FROM duckdb_indexes() WHERE (database_name = ? AND schema_name = ? AND table_name = ?) or (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)`,
+		t.db.catalog, t.db.name, t.name, t.name)
 	if err != nil {
 		return nil, ErrDuckDB.New(err)
 	}
@@ -500,9 +500,9 @@ func (t *Table) Comment() string {
 func queryColumns(ctx *sql.Context, catalogName, schemaName, tableName string) ([]*ColumnInfo, error) {
 	rows, err := adapter.QueryCatalog(ctx, `
 		SELECT column_name, column_index, data_type, is_nullable, column_default, comment, numeric_precision, numeric_scale
-		FROM duckdb_columns() 
-		WHERE database_name = ? AND schema_name = ? AND table_name = ?
-	`, catalogName, schemaName, tableName)
+		FROM duckdb_columns()
+		WHERE (database_name = ? AND schema_name = ? AND table_name = ?) OR (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)
+	`, catalogName, schemaName, tableName, tableName)
 	if err != nil {
 		return nil, err
 	}
