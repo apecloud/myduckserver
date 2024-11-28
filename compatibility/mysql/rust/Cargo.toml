@@ -1,0 +1,9 @@
+[package]
+name = "mysql_test"
+
+[dependencies]
+mysql = "*"
+
+[[bin]]
+name = "mysql_test"
+path = "./mysql_test.rs"
