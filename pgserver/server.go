@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
@@ -48,15 +47,7 @@ func NewServer(host string, port int, newCtx func() *sql.Context, options ...Lis
 }
 
 func (s *Server) Start() {
-	s.Listener.Accept()
-}
-
-func (s *Server) StartReplication(primaryDsn string, slotName string) error {
-	replicator, err := logrepl.NewLogicalReplicator(primaryDsn)
-	if err != nil {
-		return err
-	}
-	return replicator.StartReplication(s.NewInternalCtx(), slotName)
+	s.Listener.Accept(s)
 }
 
 func (s *Server) Close() {

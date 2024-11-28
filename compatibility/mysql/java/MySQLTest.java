@@ -3,7 +3,7 @@ import java.sql.*;
 import java.util.List;
 import java.util.LinkedList;
 
-public class PGTest {
+public class MySQLTest {
     public static class Tests {
         private Connection conn;
         private Statement st;
@@ -11,7 +11,7 @@ public class PGTest {
 
         public void connect(String ip, int port, String user, String password) {
             try {
-                String url = "jdbc:postgresql://" + ip + ":" + port + "/postgres";
+                String url = "jdbc:mysql://" + ip + ":" + port + "/";
                 conn = DriverManager.getConnection(url, user, password);
                 st = conn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
             } catch (SQLException e) {
@@ -119,7 +119,7 @@ public class PGTest {
 
     public static void main(String[] args) {
         if (args.length < 5) {
-            System.err.println("Usage: java PGTest <ip> <port> <user> <password> <testFile>");
+            System.err.println("Usage: java MySQLTest <ip> <port> <user> <password> <testFile>");
             System.exit(1);
         }
 

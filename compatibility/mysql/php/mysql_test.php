@@ -1,6 +1,6 @@
 <?php
 
-class PGTest {
+class MySQLTest {
     public static function main($args) {
         if (count($args) != 5) {
             echo "Usage: php " . $args[0] . " <ip> <port> <user> <password> <testFile>\n";
@@ -25,7 +25,7 @@ class Tests {
 
     public function connect($ip, $port, $user, $password) {
         try {
-            $url = "pgsql:host=$ip;port=$port;dbname=postgres";
+            $url = "mysql:host=$ip;port=$port";
             $this->conn = new PDO($url, $user, $password);
         } catch (PDOException $e) {
             throw new RuntimeException($e->getMessage());
@@ -118,6 +118,6 @@ class Test {
     }
 }
 
-PGTest::main(array_slice($argv, 1));
+MySQLTest::main(array_slice($argv, 1));
 
 ?>

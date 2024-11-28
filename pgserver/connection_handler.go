@@ -59,6 +59,7 @@ type ConnectionHandler struct {
 	// COPY DATA messages from the client to import data into tables.
 	copyFromStdinState *copyFromStdinState
 
+	server *Server
 	logger *logrus.Entry
 }
 
@@ -87,7 +88,7 @@ func init() {
 }
 
 // NewConnectionHandler returns a new ConnectionHandler for the connection provided
-func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engine, sm *server.SessionManager, connID uint32) *ConnectionHandler {
+func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engine, sm *server.SessionManager, connID uint32, server *Server) *ConnectionHandler {
 	mysqlConn := &mysql.Conn{
 		Conn:        conn,
 		PrepareData: make(map[uint32]*mysql.PrepareData),
@@ -117,6 +118,8 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 		duckHandler:        duckHandler,
 		backend:            pgproto3.NewBackend(conn, conn),
 		pgTypeMap:          pgtype.NewMap(),
+
+		server: server,
 		logger: logrus.WithFields(logrus.Fields{
 			"connectionID": connID,
 			"protocol":     "pg",

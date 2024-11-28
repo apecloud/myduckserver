@@ -1,6 +1,6 @@
-import psycopg2
+import mysql.connector
 
-class PGTest:
+class MySQLTest:
     class Test:
         def __init__(self, query, expected_results):
             self.query = query
@@ -39,10 +39,9 @@ class PGTest:
 
     def connect(self, ip, port, user, password):
         try:
-            self.conn = psycopg2.connect(
+            self.conn = mysql.connector.connect(
                 host=ip,
                 port=port,
-                dbname="postgres",
                 user=user,
                 password=password
             )
@@ -98,12 +97,12 @@ if __name__ == "__main__":
         print(f"Usage: {sys.argv[0]} <ip> <port> <user> <password> <testFile>")
         sys.exit(1)
 
-    pg_test = PGTest()
-    pg_test.connect(sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4])
-    pg_test.read_tests_from_file(sys.argv[5])
+    mysql_test = MySQLTest()
+    mysql_test.connect(sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4])
+    mysql_test.read_tests_from_file(sys.argv[5])
 
-    if not pg_test.run_tests():
-        pg_test.disconnect()
+    if not mysql_test.run_tests():
+        mysql_test.disconnect()
         sys.exit(1)
 
-    pg_test.disconnect()
+    mysql_test.disconnect()

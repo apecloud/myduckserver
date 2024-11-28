@@ -917,7 +917,7 @@ func startDuckSqlServer(dir string, persistentSystemVars map[string]string) (int
 	if duckPort < 1 {
 		duckPort = findFreePort()
 	}
-	fmt.Printf("Starting Dolt sql-server on port: %d, with data dir %s\n", duckPort, dir)
+	fmt.Printf("Starting MyDuck Server on port: %d, with data dir %s\n", duckPort, dir)
 
 	// take the CWD and move up four directories to find the go directory
 	if originalWorkingDir == "" {
@@ -936,7 +936,8 @@ func startDuckSqlServer(dir string, persistentSystemVars map[string]string) (int
 	args := []string{"go", "run", ".",
 		fmt.Sprintf("--port=%v", duckPort),
 		fmt.Sprintf("--datadir=%s", dir),
-		fmt.Sprintf("--pg-port=-1"),
+		"--pg-port=-1",
+		"--default-time-zone=UTC",
 		"--loglevel=6", // TRACE
 	}
 
@@ -970,7 +971,7 @@ func startDuckSqlServer(dir string, persistentSystemVars map[string]string) (int
 	if err != nil {
 		return -1, nil, err
 	}
-	fmt.Printf("dolt sql-server logs at: %s \n", duckLogFilePath)
+	fmt.Printf("MyDuck Server logs at: %s \n", duckLogFilePath)
 	cmd.Stdout = duckLogFile
 	cmd.Stderr = duckLogFile
 	err = cmd.Start()
@@ -978,7 +979,7 @@ func startDuckSqlServer(dir string, persistentSystemVars map[string]string) (int
 		return -1, nil, fmt.Errorf("unable to execute command %v: %v", cmd.String(), err.Error())
 	}
 
-	fmt.Printf("Dolt CMD: %s\n", cmd.String())
+	fmt.Printf("MyDuck CMD: %s\n", cmd.String())
 
 	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%v)/", "root", duckPort)
 	replicaDatabase = sqlx.MustOpen("mysql", dsn)
@@ -1005,7 +1006,7 @@ func mustCreateReplicatorUser(db *sqlx.DB) {
 // available.
 func waitForSqlServerToStart(database *sqlx.DB) error {
 	fmt.Printf("Waiting for server to start...\n")
-	for counter := 0; counter < 30; counter++ {
+	for counter := 0; counter < 50; counter++ {
 		if database.Ping() == nil {
 			return nil
 		}

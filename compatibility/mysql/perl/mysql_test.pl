@@ -16,7 +16,7 @@ sub new {
 
 sub connect {
     my ($self, $ip, $port, $user, $password) = @_;
-    my $dsn = "dbi:Pg:dbname=postgres;host=$ip;port=$port";
+    my $dsn = "DBI:mysql:host=$ip;port=$port";
     $self->{conn} = DBI->connect($dsn, $user, $password, { RaiseError => 1, AutoCommit => 1 });
 }
 
@@ -81,7 +81,7 @@ sub run_test {
             print "No rows returned\n";
             return 1;
         }
-        print "Expected " . @$expected_results . " rows, got 0 rows\n";
+        print "Expected " . @$expected_results . " rows, got 0\n";
         return 0;
     }
     my $cols = $st->{NUM_OF_FIELDS};
@@ -122,7 +122,7 @@ sub run_test {
 package main;
 
 if (@ARGV < 5) {
-    die "Usage: perl PGTest.pl <ip> <port> <user> <password> <testFile>\n";
+    die "Usage: perl mysql_test.pl <ip> <port> <user> <password> <testFile>\n";
 }
 
 my $tests = Tests->new();

@@ -1,6 +1,6 @@
-require 'pg'
+require 'mysql2'
 
-class PGTest
+class MySQLTest
   class Tests
     def initialize
       @conn = nil
@@ -9,8 +9,8 @@ class PGTest
 
     def connect(ip, port, user, password)
       begin
-        @conn = PG.connect(host: ip, port: port, user: user, password: password, dbname: 'postgres')
-      rescue PG::Error => e
+        @conn = Mysql2::Client.new(host: ip, port: port, username: user, password: password)
+      rescue Mysql2::Error => e
         raise "Connection failed: #{e.message}"
       end
     end
@@ -68,8 +68,8 @@ class PGTest
       def run(conn)
         begin
           puts "Running test: #{@query}"
-          result = conn.exec(@query)
-          if result.ntuples == 0
+          result = conn.query(@query)
+          if result.nil? || result.count == 0
             if @expected_results.empty?
               puts "Returns 0 rows"
               return true
@@ -77,28 +77,28 @@ class PGTest
             puts "Expected #{@expected_results.length} rows, got 0"
             return false
           end
-          if result.nfields != @expected_results[0].length
-            puts "Expected #{@expected_results[0].length} columns, got #{result.nfields}"
+          if result.fields.size != @expected_results[0].length
+            puts "Expected #{@expected_results[0].length} columns, got #{result.fields.size}"
             return false
           end
           result.each_with_index do |row, row_num|
             row.each_with_index do |(col_name, value), col_num|
               expected = @expected_results[row_num][col_num]
-              if value != expected
+              if value.to_s != expected.to_s
                 puts "Expected:\n'#{expected}'"
                 puts "Result:\n'#{value}'\nRest of the results:"
-                result.each_row { |r| puts r.join(',') }
+                result.each { |r| puts r.values.join(',') }
                 return false
               end
             end
           end
-          puts "Returns #{result.ntuples} rows"
-          if result.ntuples != @expected_results.length
+          puts "Returns #{result.count} rows"
+          if result.count != @expected_results.length
             puts "Expected #{@expected_results.length} rows"
             return false
           end
           true
-        rescue PG::Error => e
+        rescue Mysql2::Error => e
           puts e.message
           false
         end
@@ -108,7 +108,7 @@ class PGTest
 
   def self.main(args)
     if args.length < 5
-      puts "Usage: ruby PGTest.rb <ip> <port> <user> <password> <testFile>"
+      puts "Usage: ruby MySQLTest.rb <ip> <port> <user> <password> <testFile>"
       exit 1
     end
 
@@ -125,5 +125,5 @@ class PGTest
 end
 
 if __FILE__ == $0
-  PGTest.main(ARGV)
+  MySQLTest.main(ARGV)
 end

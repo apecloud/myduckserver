@@ -42,8 +42,6 @@ type Listener struct {
 	connID *atomic.Uint32
 }
 
-var _ server.ProtocolListener = (*Listener)(nil)
-
 type ListenerOpt func(*Listener)
 
 func WithCertificate(cert tls.Certificate) ListenerOpt {
@@ -89,7 +87,7 @@ func NewListenerWithOpts(listenerCfg mysql.ListenerConfig, opts ...ListenerOpt) 
 }
 
 // Accept handles incoming connections.
-func (l *Listener) Accept() {
+func (l *Listener) Accept(server *Server) {
 	for {
 		conn, err := l.listener.Accept()
 		if err != nil {
@@ -106,7 +104,7 @@ func (l *Listener) Accept() {
 			conn = netutil.NewConnWithTimeouts(conn, l.cfg.ConnReadTimeout, l.cfg.ConnWriteTimeout)
 		}
 
-		connectionHandler := NewConnectionHandler(conn, l.cfg.Handler, l.engine, l.sm, l.connID.Add(1))
+		connectionHandler := NewConnectionHandler(conn, l.cfg.Handler, l.engine, l.sm, l.connID.Add(1), server)
 		go connectionHandler.HandleConnection()
 	}
 }

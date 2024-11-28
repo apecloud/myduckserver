@@ -23,6 +23,7 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
+	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/apecloud/myduckserver/plugin"
 	"github.com/apecloud/myduckserver/replica"
 	"github.com/apecloud/myduckserver/transpiler"
@@ -54,6 +55,8 @@ var (
 	replicaOptions replica.ReplicaOptions
 
 	postgresPort = 5432
+
+	defaultTimeZone = ""
 )
 
 func init() {
@@ -79,6 +82,10 @@ func init() {
 	// The following options are used to configure the Postgres server.
 
 	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
+
+	// The following options configure default DuckDB settings.
+
+	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
 }
 
 func ensureSQLTranslate() {
@@ -112,6 +119,13 @@ func main() {
 	defer provider.Close()
 
 	pool := backend.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
+
+	if defaultTimeZone != "" {
+		_, err := pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, defaultTimeZone))
+		if err != nil {
+			logrus.WithError(err).Fatalln("Failed to set the default time zone")
+		}
+	}
 
 	engine := sqle.NewDefault(provider)
 
@@ -158,6 +172,19 @@ func main() {
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to create Postgres-protocol server")
 		}
+
+		// Check if there is a replication subscription and start replication if there is.
+		_, conn, pub, ok, err := logrepl.FindReplication(pool.DB)
+		if err != nil {
+			logrus.WithError(err).Warnln("Failed to find replication")
+		} else if ok {
+			replicator, err := logrepl.NewLogicalReplicator(conn)
+			if err != nil {
+				logrus.WithError(err).Fatalln("Failed to create logical replicator")
+			}
+			replicator.StartReplication(pgServer.NewInternalCtx(), pub)
+		}
+
 		go pgServer.Start()
 	}
 

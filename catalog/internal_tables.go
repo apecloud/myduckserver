@@ -99,6 +99,7 @@ var InternalTables = struct {
 	PersistentVariable InternalTable
 	BinlogPosition     InternalTable
 	PgReplicationLSN   InternalTable
+	PgSubscription     InternalTable
 	GlobalStatus       InternalTable
 	// TODO(sean): This is a temporary work around for clients that query the 'pg_catalog.pg_stat_replication'.
 	//             Once we add 'pg_catalog' and support views for PG, replace this by a view.
@@ -128,6 +129,13 @@ var InternalTables = struct {
 		KeyColumns:   []string{"slot_name"},
 		ValueColumns: []string{"lsn"},
 		DDL:          "slot_name TEXT PRIMARY KEY, lsn TEXT",
+	},
+	PgSubscription: InternalTable{
+		Schema:       "__sys__",
+		Name:         "pg_subscription",
+		KeyColumns:   []string{"name"},
+		ValueColumns: []string{"connection", "publication"},
+		DDL:          "name TEXT PRIMARY KEY, connection TEXT, publication TEXT",
 	},
 	GlobalStatus: InternalTable{
 		Schema:       "performance_schema",
