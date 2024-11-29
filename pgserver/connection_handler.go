@@ -925,7 +925,7 @@ func (h *ConnectionHandler) deletePreparedStatement(name string) {
 	ps, ok := h.preparedStatements[name]
 	if ok {
 		delete(h.preparedStatements, name)
-		if !ps.Closed.CompareAndSwap(false, true) {
+		if ps.Closed.CompareAndSwap(false, true) {
 			ps.Stmt.Close()
 		}
 	}
