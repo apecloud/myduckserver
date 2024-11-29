@@ -573,7 +573,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 			ReturnFields: nil,
 			BindVarTypes: nil,
 			Stmt:         nil,
-			Closed:       new(bool),
+			Closed:       new(atomic.Bool),
 		}
 		return h.send(&pgproto3.ParseComplete{})
 	}
@@ -609,7 +609,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		ReturnFields: fields,
 		BindVarTypes: bindVarTypes,
 		Stmt:         stmt,
-		Closed:       new(bool),
+		Closed:       new(atomic.Bool),
 	}
 
 	return h.send(&pgproto3.ParseComplete{})
@@ -925,9 +925,9 @@ func (h *ConnectionHandler) deletePreparedStatement(name string) {
 	ps, ok := h.preparedStatements[name]
 	if ok {
 		delete(h.preparedStatements, name)
-		if !*ps.Closed {
+		if !ps.Closed.Load() {
 			ps.Stmt.Close()
-			*ps.Closed = true
+			ps.Closed.Store(true)
 		}
 	}
 }
@@ -936,9 +936,9 @@ func (h *ConnectionHandler) deletePortal(name string) {
 	p, ok := h.portals[name]
 	if ok {
 		delete(h.portals, name)
-		if !*p.Closed {
+		if !p.Closed.Load() {
 			p.Stmt.Close()
-			*p.Closed = true
+			p.Closed.Store(true)
 		}
 	}
 }
