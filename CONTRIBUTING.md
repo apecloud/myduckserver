@@ -25,7 +25,7 @@ Before getting started, ensure that the following dependencies are installed:
          pip3 install "sqlglot[rs]"
          ```
 
-      Make sure to activate the virtual environment each time you work on the project:
+      Make sure to activate the virtual environment when you work on the project:
       ```bash
       source ~/venv/myduck/bin/activate
       ```
