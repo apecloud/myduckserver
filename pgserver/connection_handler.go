@@ -21,8 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/apecloud/myduckserver/adapter"
-	"github.com/apecloud/myduckserver/catalog"
 	"io"
 	"net"
 	"os"
@@ -30,6 +28,9 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/catalog"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
