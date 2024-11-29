@@ -892,13 +892,13 @@ var postgresConfigParameters = map[string]sql.SystemVariable{
 	},
 	"default_transaction_isolation": &Parameter{
 		Name:      "default_transaction_isolation",
-		Default:   "read committed",
+		Default:   "read-committed",
 		Category:  "Client Connection Defaults / Statement Behavior",
 		ShortDesc: "Sets the transaction isolation level of each new transaction.",
 		Context:   ParameterContextUser,
-		Type:      types.NewSystemEnumType("default_transaction_isolation", "serializable", "repeatable read", "read committed", "read uncommitted"),
+		Type:      types.NewSystemEnumType("default_transaction_isolation", "serializable", "repeatable-read", "read-committed", "read-uncommitted"),
 		Source:    ParameterSourceDefault,
-		ResetVal:  "read committed",
+		ResetVal:  "read-committed",
 		Scope:     GetPgsqlScope(PsqlScopeSession),
 	},
 	"default_transaction_read_only": &Parameter{
@@ -3614,13 +3614,13 @@ var postgresConfigParameters = map[string]sql.SystemVariable{
 	},
 	"transaction_isolation": &Parameter{
 		Name:      "transaction_isolation",
-		Default:   "read committed",
+		Default:   "READ-COMMITTED",
 		Category:  "Client Connection Defaults / Statement Behavior",
 		ShortDesc: "Sets the current transaction's isolation level.",
 		Context:   ParameterContextUser,
-		Type:      types.NewSystemEnumType("transaction_isolation", "serializable", "repeatable read", "read committed", "read uncommitted"),
+		Type:      types.NewSystemEnumType("transaction_isolation", "READ-UNCOMMITTED", "READ-COMMITTED", "REPEATABLE-READ", "SERIALIZABLE"),
 		Source:    ParameterSourceOverride,
-		ResetVal:  "read committed",
+		ResetVal:  "READ-COMMITTED",
 		Scope:     GetPgsqlScope(PsqlScopeSession),
 	},
 	"transaction_read_only": &Parameter{

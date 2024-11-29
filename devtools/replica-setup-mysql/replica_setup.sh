@@ -62,6 +62,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# if MYDUCK_PASSWORD is empty, set NO_PASSWORD_OPTION to "--no-password"
+if [[ -z "$MYDUCK_PASSWORD" ]]; then
+    NO_PASSWORD_OPTION="--no-password"
+else
+    NO_PASSWORD_OPTION=""
+fi
+
 # Check if all parameters are set
 if [[ -z "$SOURCE_HOST" || -z "$SOURCE_PORT" || -z "$SOURCE_USER" ]]; then
     echo "Error: Missing required MySQL connection variables: SOURCE_HOST, SOURCE_PORT, SOURCE_USER."

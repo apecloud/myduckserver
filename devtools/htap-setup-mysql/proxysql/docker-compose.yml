@@ -1,4 +1,3 @@
-
 services:
   mysql:
     image: mysql:8
@@ -15,13 +14,18 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   mysql-setup:
     image: mysql:8
     container_name: htap-mysql-setup
-    command: ["mysql", "-h", "mysql", "-u", "root", "-e", "create user 'lol'@'%' identified with 'mysql_native_password' by 'lol'; grant all privileges on *.* to 'lol'@'%';"]
-    restart: "no"
+    command: >
+      sh -c "
+              mysql -h mysql -u root -e \"create database test;\"
+              mysql -h mysql -u root -e \"create table test.test (id bigint primary key, s varchar(100), i int);\"
+              mysql -h mysql -u root -e \"insert into test.test values (1, 'a', 11), (2, 'b', 22);\"
+             "
+    restart: "on-failure"
     depends_on:
       mysql:
         condition: service_healthy
@@ -32,9 +36,7 @@ services:
     container_name: htap-myduck
     environment:
       SETUP_MODE: REPLICA
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
-      MYSQL_USER: root
+      SOURCE_DSN: mysql://root@mysql:3306
     depends_on:
       mysql:
         condition: service_healthy
@@ -44,7 +46,23 @@ services:
       test: ["CMD", "mysqlsh", "-h", "localhost", "-P", "3306", "-u", "root", "--no-password", "-e", "SELECT VERSION();"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+
+  create-account:
+    image: mysql:8
+    container_name: htap-create-account
+    command: >
+      sh -c "
+              mysql -h mysql -u root -e \"create user 'lol'@'%' identified with 'mysql_native_password' by 'lol'; grant all privileges on *.* to 'lol'@'%';\"
+             "
+    restart: "on-failure"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-setup:
+        condition: service_completed_successfully
+      myduck:
+        condition: service_healthy
 
   proxysql:
     image: proxysql/proxysql:latest
@@ -61,5 +79,5 @@ services:
         condition: service_completed_successfully
       myduck:
         condition: service_healthy
-      myduck-tmp-fix:
+      create-account:
         condition: service_completed_successfully
