@@ -1,6 +1,6 @@
-# **Connecting to MyDuckServer using Ibis**
+# **Connecting to MyDuck Server using Ibis**
 
-[ibis](https://ibis-project.org/) offers an efficient way to handle data analysis tasks without loading the entire dataset into memory.This tutorial will guide you through setting up a connection using Ibis and performing basic operations with myduckserver.
+[ibis](https://ibis-project.org/) offers an efficient way to handle data analysis tasks without loading the entire dataset into memory.This tutorial will guide you through setting up a connection using Ibis and performing basic operations with MyDuck Server.
 
 ### Steps
 
@@ -54,22 +54,3 @@
    result = table.execute()
    print(result)
    ```
-
-   
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
