@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/catalog"
 	"io"
 	"net"
 	"os"
@@ -28,9 +30,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-
-	"github.com/apecloud/myduckserver/adapter"
-	"github.com/apecloud/myduckserver/catalog"
 
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
@@ -573,6 +572,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 			ReturnFields: nil,
 			BindVarTypes: nil,
 			Stmt:         nil,
+			Closed:       new(bool),
 		}
 		return h.send(&pgproto3.ParseComplete{})
 	}
@@ -608,6 +608,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		ReturnFields: fields,
 		BindVarTypes: bindVarTypes,
 		Stmt:         stmt,
+		Closed:       new(bool),
 	}
 
 	return h.send(&pgproto3.ParseComplete{})
@@ -698,6 +699,7 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 		Query:  preparedData.Query,
 		Fields: fields,
 		Stmt:   preparedData.Stmt,
+		Closed: preparedData.Closed,
 		Vars:   bindVars,
 	}
 	return h.send(&pgproto3.BindComplete{})
@@ -922,7 +924,10 @@ func (h *ConnectionHandler) deletePreparedStatement(name string) {
 	ps, ok := h.preparedStatements[name]
 	if ok {
 		delete(h.preparedStatements, name)
-		ps.Stmt.Close()
+		if !*ps.Closed {
+			ps.Stmt.Close()
+			*ps.Closed = true
+		}
 	}
 }
 
@@ -930,7 +935,10 @@ func (h *ConnectionHandler) deletePortal(name string) {
 	p, ok := h.portals[name]
 	if ok {
 		delete(h.portals, name)
-		p.Stmt.Close()
+		if !*p.Closed {
+			p.Stmt.Close()
+			*p.Closed = true
+		}
 	}
 }
 

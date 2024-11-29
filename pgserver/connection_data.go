@@ -90,6 +90,7 @@ type PortalData struct {
 	Fields       []pgproto3.FieldDescription
 	Stmt         *duckdb.Stmt
 	Vars         []any
+	Closed       *bool
 }
 
 type PreparedStatementData struct {
@@ -97,6 +98,7 @@ type PreparedStatementData struct {
 	ReturnFields []pgproto3.FieldDescription
 	BindVarTypes []uint32
 	Stmt         *duckdb.Stmt
+	Closed       *bool
 }
 
 // VitessTypeToObjectID returns a type, as defined by Vitess, into a type as defined by Postgres.
