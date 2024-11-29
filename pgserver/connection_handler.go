@@ -925,9 +925,8 @@ func (h *ConnectionHandler) deletePreparedStatement(name string) {
 	ps, ok := h.preparedStatements[name]
 	if ok {
 		delete(h.preparedStatements, name)
-		if !ps.Closed.Load() {
+		if !ps.Closed.CompareAndSwap(false, true) {
 			ps.Stmt.Close()
-			ps.Closed.Store(true)
 		}
 	}
 }
@@ -936,9 +935,8 @@ func (h *ConnectionHandler) deletePortal(name string) {
 	p, ok := h.portals[name]
 	if ok {
 		delete(h.portals, name)
-		if !p.Closed.Load() {
+		if p.Closed.CompareAndSwap(false, true) {
 			p.Stmt.Close()
-			p.Closed.Store(true)
 		}
 	}
 }
