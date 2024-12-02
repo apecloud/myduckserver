@@ -30,13 +30,13 @@ jobs:
       - name: Verify HTAP setup
         run: |
           # Save SELECT count before executing the query
-          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.com_query | jq '.select.total' > select_count_before.txt
+          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.total_connections | tee select_count_before.txt
 
           # Execute READ statement
           mysql -h127.0.0.1 -P14000 -ulol -plol -e "SELECT * FROM db01.test;"
 
           # Save SELECT count after executing the query
-          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.com_query | jq '.select.total' > select_count_after.txt
+          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.total_connections | tee select_count_after.txt
 
           # Read counts from files
           before_count=$(cat select_count_before.txt)
