@@ -90,7 +90,7 @@ jobs:
       - name: Install system packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: bats cpanminus postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core
+          packages: bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core r-cran-rpostgresql
           version: 1.0
 
       - name: Install dependencies
@@ -109,7 +109,7 @@ jobs:
           npm install pg
           sudo cpanm --notest DBD::Pg
           pip3 install psycopg2
-          sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
+          # sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
           sudo gem install pg
 
       - name: Build
