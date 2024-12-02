@@ -1,0 +1,60 @@
+
+name: MySQL HTAP ProxySQL Test
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  htap-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-client
+          curl -LJO https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+          unzip duckdb_cli-linux-amd64.zip
+          chmod +x duckdb
+          sudo mv duckdb /usr/local/bin
+
+      - name: Launch HTAP cluster
+        run: |
+          cd devtools/htap-setup-mysql/proxysql
+          docker-compose up -d
+          sleep 30  # Wait for services to be ready
+
+      - name: Verify HTAP setup
+        run: |
+          # Save stats before SELECT
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters WHERE Command='SELECT';" > stats_before.csv
+
+          # Execute READ statement
+          mysql -h127.0.0.1 -P16033 -ulol -plol -e "SELECT * FROM test;"
+
+          # Save stats after SELECT
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters WHERE Command='SELECT';" > stats_after.csv
+
+          # Use DuckDB to check if SELECT count increased
+          duckdb -c "
+            CREATE TABLE before AS SELECT * FROM read_csv_auto('stats_before.csv');
+            CREATE TABLE after AS SELECT * FROM read_csv_auto('stats_after.csv');
+            SELECT (after.Total_cnt - before.Total_cnt) AS diff FROM before JOIN after USING(Command);
+          " > select_cnt_diff.txt
+
+          # Verify that SELECT count increased by 1
+          if grep -q '^1$' select_cnt_diff.txt; then
+            echo 'HTAP setup verification successful.'
+          else
+            echo 'HTAP setup verification failed.'
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd devtools/htap-setup-mysql/proxysql
+          docker-compose down

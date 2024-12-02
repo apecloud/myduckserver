@@ -2,11 +2,7 @@ This a tutorial to build an HTAP service based on MySQL, MyDuck Server, and Mari
 
 # Prerequisites
 
-* Install `docker-compose`
-    * On MacOS, please run `brew install docker-compose`.
-    * On Linux, please do the following:
-        * Run `sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose`.
-        * And then run `sudo chmod +x /usr/local/bin/docker-compose`.
+* Install [Docker Compose](https://docs.docker.com/compose/install/)
 
 # Launch the HTAP cluster
 

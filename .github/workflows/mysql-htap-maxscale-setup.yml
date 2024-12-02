@@ -1,0 +1,62 @@
+
+name: MySQL HTAP MaxScale Test
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  htap-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-client
+          curl -LJO https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+          unzip duckdb_cli-linux-amd64.zip
+          chmod +x duckdb
+          sudo mv duckdb /usr/local/bin
+
+      - name: Launch HTAP cluster
+        run: |
+          cd devtools/htap-setup-mysql/maxscale
+          docker-compose up -d
+          sleep 30  # Wait for services to be ready
+
+      - name: Verify HTAP setup
+        run: |
+          # Save server stats before SELECT
+          docker exec maxscale maxctrl list servers --tsv > servers_before.tsv
+
+          # Execute READ statement
+          mysql -h127.0.0.1 -P14000 -ulol -plol -e "SELECT * FROM test;"
+
+          # Save server stats after SELECT
+          docker exec maxscale maxctrl list servers --tsv > servers_after.tsv
+
+          # Use DuckDB to check if the Connections count increased
+          duckdb -c "
+            CREATE TABLE before AS SELECT * FROM read_csv_auto('servers_before.tsv', delim='\t', header=True);
+            CREATE TABLE after AS SELECT * FROM read_csv_auto('servers_after.tsv', delim='\t', header=True);
+            SELECT (after.Connections - before.Connections) AS diff 
+            FROM before JOIN after USING(Server)
+            WHERE Server = 'myduck-server';
+          " > connections_diff.txt
+
+          # Verify that Connections increased
+          if grep -q '^[1-9][0-9]*$' connections_diff.txt; then
+            echo 'HTAP setup verification successful.'
+          else
+            echo 'HTAP setup verification failed.'
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd devtools/htap-setup-mysql/maxscale
+          docker-compose down
