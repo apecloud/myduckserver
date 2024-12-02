@@ -26,19 +26,18 @@ jobs:
       - name: Launch HTAP cluster
         run: |
           cd devtools/htap-setup-mysql/maxscale
-          docker compose up -d
-          sleep 30  # Wait for services to be ready
+          docker compose up -d --wait
 
       - name: Verify HTAP setup
         run: |
           # Save server stats before SELECT
-          docker exec maxscale maxctrl list servers --tsv > servers_before.tsv
+          docker exec maxscale maxctrl list servers --tsv | tee servers_before.tsv
 
           # Execute READ statement
-          mysql -h127.0.0.1 -P14000 -ulol -plol -e "SELECT * FROM test;"
+          mysql -h127.0.0.1 -P14000 -ulol -plol -e "SELECT * FROM db01.test;"
 
           # Save server stats after SELECT
-          docker exec maxscale maxctrl list servers --tsv > servers_after.tsv
+          docker exec maxscale maxctrl list servers --tsv | tee servers_after.tsv
 
           # Use DuckDB to check if the Connections count increased
           duckdb -c "
@@ -47,7 +46,8 @@ jobs:
             SELECT (after.Connections - before.Connections) AS diff 
             FROM before JOIN after USING(Server)
             WHERE Server = 'myduck-server';
-          " > connections_diff.txt
+          " | tee connections_diff.txt
+
 
           # Verify that Connections increased
           if grep -q '^[1-9][0-9]*$' connections_diff.txt; then

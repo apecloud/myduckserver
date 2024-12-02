@@ -26,26 +26,25 @@ jobs:
       - name: Launch HTAP cluster
         run: |
           cd devtools/htap-setup-mysql/proxysql
-          docker compose up -d
-          sleep 30  # Wait for services to be ready
+          docker compose up -d --wait
 
       - name: Verify HTAP setup
         run: |
           # Save stats before SELECT
-          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters WHERE Command='SELECT';" > stats_before.csv
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters WHERE Command='SELECT';" | tee stats_before.csv
 
           # Execute READ statement
-          mysql -h127.0.0.1 -P16033 -ulol -plol -e "SELECT * FROM test;"
+          mysql -h127.0.0.1 -P16033 -ulol -plol -e "SELECT * FROM db01.test;"
 
           # Save stats after SELECT
-          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters WHERE Command='SELECT';" > stats_after.csv
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters WHERE Command='SELECT';" | tee stats_after.csv
 
           # Use DuckDB to check if SELECT count increased
           duckdb -c "
             CREATE TABLE before AS SELECT * FROM read_csv_auto('stats_before.csv');
             CREATE TABLE after AS SELECT * FROM read_csv_auto('stats_after.csv');
             SELECT (after.Total_cnt - before.Total_cnt) AS diff FROM before JOIN after USING(Command);
-          " > select_cnt_diff.txt
+          " | tee select_cnt_diff.txt
 
           # Verify that SELECT count increased by 1
           if grep -q '^1$' select_cnt_diff.txt; then

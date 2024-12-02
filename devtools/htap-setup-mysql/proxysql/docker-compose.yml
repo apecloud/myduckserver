@@ -21,9 +21,9 @@ services:
     container_name: htap-mysql-setup
     command: >
       sh -c "
-              mysql -h mysql -u root -e \"create database test;\"
-              mysql -h mysql -u root -e \"create table test.test (id bigint primary key, s varchar(100), i int);\"
-              mysql -h mysql -u root -e \"insert into test.test values (1, 'a', 11), (2, 'b', 22);\"
+              mysql -h mysql -u root -e \"create database db01;\"
+              mysql -h mysql -u root -e \"create table db01.test (id bigint primary key, s varchar(100), i int);\"
+              mysql -h mysql -u root -e \"insert into db01.test values (1, 'a', 11), (2, 'b', 22);\"
              "
     restart: "on-failure"
     depends_on:

@@ -11,7 +11,7 @@ Go the root path of this project and run the following commands:
 
 ```sh
 cd devtools/htap-setup-mysql/proxysql
-docker compose up -d
+docker compose up -d --wait
 ```
 
 Then you'll get a HTAP cluster. And an account 'lol' with password 'lol' has been created for connecting. Have fun!

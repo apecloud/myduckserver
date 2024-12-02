@@ -10,7 +10,7 @@ Go the root path of this project and run the following commands:
 
 ```sh
 cd devtools/htap-setup-pg/pgpool2
-docker compose up -d
+docker compose up -d --wait
 ```
 
 Then you'll get a HTAP cluster. Have fun!

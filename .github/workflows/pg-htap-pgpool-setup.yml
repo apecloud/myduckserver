@@ -26,19 +26,18 @@ jobs:
     - name: Launch HTAP cluster
       run: |
         cd devtools/htap-setup-pg/pgpool2
-        docker compose up -d
-        sleep 30  # Wait for services to be ready
+        docker compose up -d --wait
 
     - name: Verify HTAP setup
       run: |
         # Save SHOW POOL_NODES output before SELECT
-        docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SHOW POOL_NODES;' -F ',' --no-align --field-separator ',' --pset footer=off" > pool_nodes_before.csv
+        docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SHOW POOL_NODES;' -F ',' --no-align --field-separator ',' --pset footer=off" | tee pool_nodes_before.csv
 
         # Execute READ statement
         docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SELECT * FROM test;'"
 
         # Save SHOW POOL_NODES output after SELECT
-        docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SHOW POOL_NODES;' -F ',' --no-align --field-separator ',' --pset footer=off" > pool_nodes_after.csv
+        docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SHOW POOL_NODES;' -F ',' --no-align --field-separator ',' --pset footer=off" | tee pool_nodes_after.csv
 
         # Use DuckDB to check if select_cnt increased
         duckdb -c "
@@ -47,7 +46,7 @@ jobs:
           SELECT (CAST(after.select_cnt AS INTEGER) - CAST(before.select_cnt AS INTEGER)) AS diff
           FROM before JOIN after USING(node_id)
           WHERE node_id = '1';
-        " > select_cnt_diff.txt
+        " | tee select_cnt_diff.txt
 
         # Verify that select_cnt increased by 1
         if grep -q '^1$' select_cnt_diff.txt; then
