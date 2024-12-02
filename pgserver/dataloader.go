@@ -57,6 +57,7 @@ type PipeDataLoader struct {
 	pipePath string
 	read     func()
 	pipe     atomic.Pointer[os.File] // for writing
+	opening  atomic.Bool             // for writing
 	errPipe  atomic.Pointer[os.File] // for error handling
 	rowCount chan int64
 	err      atomic.Pointer[error]
@@ -75,7 +76,9 @@ func (loader *PipeDataLoader) Start() <-chan error {
 		// Open the pipe for writing.
 		// This operation will block until the reader opens the pipe for reading.
 		loader.logger.Debugf("Opening pipe for writing: %s", loader.pipePath)
+		loader.opening.Store(true)
 		pipe, err := os.OpenFile(loader.pipePath, os.O_WRONLY, os.ModeNamedPipe)
+		loader.opening.Store(false)
 		if err != nil {
 			ready <- err
 			return
@@ -256,9 +259,11 @@ func (loader *CsvDataLoader) executeCopy(sql string, pipePath string) {
 	if err != nil {
 		loader.ctx.GetLogger().Error(err)
 		loader.err.Store(&err)
-		// Open the pipe once to unblock the writer
-		pipe, _ := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
-		loader.errPipe.Store(pipe)
+		if loader.opening.Load() {
+			// Open the pipe once to unblock the writer
+			pipe, _ := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
+			loader.errPipe.Store(pipe)
+		}
 		return
 	}
 

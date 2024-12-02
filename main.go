@@ -132,6 +132,9 @@ func main() {
 		}
 	}
 
+	// Clear the pipes directory on startup.
+	backend.RemoveAllPipes(dataDirectory)
+
 	engine := sqle.NewDefault(provider)
 
 	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, pool, provider)

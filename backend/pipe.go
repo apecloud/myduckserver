@@ -23,3 +23,11 @@ func (h *DuckBuilder) CreatePipe(ctx *sql.Context, subdir string) (string, error
 	}
 	return pipePath, nil
 }
+
+func RemoveAllPipes(dataDir string) error {
+	pipesDir := filepath.Join(dataDir, "pipes")
+	if err := os.RemoveAll(pipesDir); err != nil {
+		return err
+	}
+	return nil
+}
