@@ -1,4 +1,3 @@
-
 name: MySQL HTAP ProxySQL Test
 
 on:
@@ -32,23 +31,25 @@ jobs:
       - name: Verify HTAP setup
         run: |
           # Save stats before SELECT
-          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters;" | tee stats_before.csv
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT hostname, port, Queries FROM stats.stats_proxysql_servers_metrics;" | tee stats_before.csv
 
           # Execute READ statement
           mysql -h127.0.0.1 -P16033 -ulol -plol -e "SELECT * FROM db01.test;"
 
           # Save stats after SELECT
-          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT Command, Total_Time_us, Total_cnt FROM stats.stats_mysql_commands_counters;" | tee stats_after.csv
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT hostname, port, Queries FROM stats.stats_proxysql_servers_metrics;" | tee stats_after.csv
 
-          # Use DuckDB to check if SELECT count increased
-          duckdb -c "
+          # Use DuckDB to check if Queries count increased for the read server
+          diff=$(duckdb -c "
             CREATE TABLE before AS SELECT * FROM read_csv_auto('stats_before.csv');
             CREATE TABLE after AS SELECT * FROM read_csv_auto('stats_after.csv');
-            SELECT (after.Total_cnt - before.Total_cnt) AS diff FROM before JOIN after USING(Command) WHERE Command = 'SELECT';
-          " | tee select_cnt_diff.txt
+            SELECT (after.Queries - before.Queries) AS diff
+            FROM before JOIN after USING(hostname, port)
+            WHERE hostname = 'myduckdb-server';
+          " | tail -n 1)
 
-          # Verify that SELECT count increased by 1
-          if grep -q '1' select_cnt_diff.txt; then
+          # Verify that Queries count increased by 1
+          if [ "$diff" -eq 1 ]; then
             echo 'HTAP setup verification successful.'
           else
             echo 'HTAP setup verification failed.'
