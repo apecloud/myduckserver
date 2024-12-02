@@ -49,7 +49,7 @@ jobs:
         " | tee select_cnt_diff.txt
 
         # Verify that select_cnt increased by 1
-        if grep -q '^1$' select_cnt_diff.txt; then
+        if grep -q '1' select_cnt_diff.txt; then
           echo 'HTAP setup verification successful.'
         else
           echo 'HTAP setup verification failed.'

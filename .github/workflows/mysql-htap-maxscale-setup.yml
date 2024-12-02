@@ -1,4 +1,3 @@
-
 name: MySQL HTAP MaxScale Test
 
 on:
@@ -30,27 +29,24 @@ jobs:
 
       - name: Verify HTAP setup
         run: |
-          # Save server stats before SELECT
-          docker exec maxscale maxctrl list servers --tsv | tee servers_before.tsv
+          # Save SELECT count before executing the query
+          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.com_query | jq '.select.total' > select_count_before.txt
 
           # Execute READ statement
           mysql -h127.0.0.1 -P14000 -ulol -plol -e "SELECT * FROM db01.test;"
 
-          # Save server stats after SELECT
-          docker exec maxscale maxctrl list servers --tsv | tee servers_after.tsv
+          # Save SELECT count after executing the query
+          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.com_query | jq '.select.total' > select_count_after.txt
 
-          # Use DuckDB to check if the Connections count increased
-          duckdb -c "
-            CREATE TABLE before AS SELECT * FROM read_csv_auto('servers_before.tsv', delim='\t', header=True);
-            CREATE TABLE after AS SELECT * FROM read_csv_auto('servers_after.tsv', delim='\t', header=True);
-            SELECT (after.Connections - before.Connections) AS diff 
-            FROM before JOIN after USING(Server)
-            WHERE Server = 'myduck-server';
-          " | tee connections_diff.txt
+          # Read counts from files
+          before_count=$(cat select_count_before.txt)
+          after_count=$(cat select_count_after.txt)
 
+          # Calculate the difference
+          diff=$((after_count - before_count))
 
-          # Verify that Connections increased
-          if grep -q '^[1-9][0-9]*$' connections_diff.txt; then
+          # Verify that SELECT count increased by 1
+          if [ "$diff" -eq 1 ]; then
             echo 'HTAP setup verification successful.'
           else
             echo 'HTAP setup verification failed.'
