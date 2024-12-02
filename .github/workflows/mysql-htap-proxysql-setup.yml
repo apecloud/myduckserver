@@ -31,21 +31,21 @@ jobs:
       - name: Verify HTAP setup
         run: |
           # Save stats before SELECT
-          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT hostname, port, Queries FROM stats.stats_proxysql_servers_metrics;" | tee stats_before.csv
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT srv_host, srv_port, Queries FROM stats_mysql_connection_pool;" | tee stats_before.csv
 
           # Execute READ statement
           mysql -h127.0.0.1 -P16033 -ulol -plol -e "SELECT * FROM db01.test;"
 
           # Save stats after SELECT
-          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT hostname, port, Queries FROM stats.stats_proxysql_servers_metrics;" | tee stats_after.csv
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT srv_host, srv_port, Queries FROM stats_mysql_connection_pool;" | tee stats_after.csv
 
           # Use DuckDB to check if Queries count increased for the read server
           diff=$(duckdb -c "
             CREATE TABLE before AS SELECT * FROM read_csv_auto('stats_before.csv');
             CREATE TABLE after AS SELECT * FROM read_csv_auto('stats_after.csv');
             SELECT (after.Queries - before.Queries) AS diff
-            FROM before JOIN after USING(hostname, port)
-            WHERE hostname = 'myduckdb-server';
+            FROM before JOIN after USING(srv_host, srv_port)
+            WHERE srv_host = 'myduck';
           " | tail -n 1)
 
           # Verify that Queries count increased by 1
