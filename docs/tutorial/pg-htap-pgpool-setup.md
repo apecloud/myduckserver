@@ -10,7 +10,7 @@ Go the root path of this project and run the following commands:
 
 ```sh
 cd devtools/htap-setup-pg/pgpool2
-docker-compose up -d
+docker compose up -d
 ```
 
 Then you'll get a HTAP cluster. Have fun!
@@ -105,4 +105,4 @@ postgres=# show pool_nodes;
 
 # Cleanup
 
-You can run `docker-compose down` to clean up all resources after the trial.
+You can run `docker compose down` to clean up all resources after the trial.

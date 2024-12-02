@@ -10,7 +10,7 @@ Go the root path of this project and run the following commands:
 
 ```sh
 cd devtools/htap-setup-mysql/maxscale
-docker-compose up -d
+docker compose up -d
 ```
 
 Then you'll get a HTAP cluster. And an account 'lol' with password 'lol' has been created for connecting. Have fun!
@@ -56,4 +56,4 @@ after executing the `READ` statement:
 
 # Cleanup
 
-You can run `docker-compose down` to clean up all resources after the trial.
+You can run `docker compose down` to clean up all resources after the trial.

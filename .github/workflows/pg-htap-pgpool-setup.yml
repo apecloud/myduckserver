@@ -26,7 +26,7 @@ jobs:
     - name: Launch HTAP cluster
       run: |
         cd devtools/htap-setup-pg/pgpool2
-        docker-compose up -d
+        docker compose up -d
         sleep 30  # Wait for services to be ready
 
     - name: Verify HTAP setup
@@ -61,4 +61,4 @@ jobs:
       if: always()
       run: |
         cd devtools/htap-setup-pg/pgpool2
-        docker-compose down
+        docker compose down
