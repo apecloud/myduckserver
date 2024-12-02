@@ -50,7 +50,7 @@ jobs:
           cd compatibility/mysql/
           curl -L -o ./java/mysql-connector-java-8.0.30.jar https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar
           npm install mysql
-          sudo cpanm DBD::mysql
+          sudo cpanm --notest DBD::mysql
           pip3 install mysql-connector-python
           sudo R -e "install.packages('RMySQL', repos='http://cran.r-project.org')"
           sudo gem install mysql2
@@ -107,7 +107,7 @@ jobs:
           cd compatibility/pg/
           # curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
           npm install pg
-          sudo cpanm DBD::Pg
+          sudo cpanm --notest DBD::Pg
           pip3 install psycopg2
           sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
           sudo gem install pg
