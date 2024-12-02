@@ -40,16 +40,16 @@ jobs:
           mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT srv_host, srv_port, Queries FROM stats_mysql_connection_pool;" | tee stats_after.csv
 
           # Use DuckDB to check if Queries count increased for the read server
-          diff=$(duckdb -c "
-            CREATE TABLE before AS SELECT * FROM read_csv_auto('stats_before.csv');
-            CREATE TABLE after AS SELECT * FROM read_csv_auto('stats_after.csv');
+          duckdb --csv -c "
+            CREATE TABLE before AS FROM 'stats_before.csv';
+            CREATE TABLE after AS FROM 'stats_after.csv';
             SELECT (after.Queries - before.Queries) AS diff
             FROM before JOIN after USING(srv_host, srv_port)
             WHERE srv_host = 'myduck';
-          " | tail -n 1)
+          " | tail -n 1 | tee query_cnt_diff.txt
 
-          # Verify that Queries count increased by 1
-          if [ "$diff" -eq 1 ]; then
+          # Verify that #queries increased by 1
+          if grep -q '^1$' query_cnt_diff.txt; then
             echo 'HTAP setup verification successful.'
           else
             echo 'HTAP setup verification failed.'
