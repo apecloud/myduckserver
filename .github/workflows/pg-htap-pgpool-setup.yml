@@ -3,8 +3,6 @@ name: PG HTAP PGPool-II Test
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
   htap-test:
