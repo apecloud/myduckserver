@@ -77,15 +77,11 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 	}
 
 	for _, t := range internalSchemas {
-		if t.Catalog == name {
-			if _, err := storage.ExecContext(
-				context.Background(),
-				"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
-			); err != nil {
-				return nil, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
-			}
-		} else {
-			return nil, fmt.Errorf("internal catalog name %q does not match the provided catalog name %q", t.Catalog, name)
+		if _, err := storage.ExecContext(
+			context.Background(),
+			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
+		); err != nil {
+			return nil, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
 		}
 	}
 
