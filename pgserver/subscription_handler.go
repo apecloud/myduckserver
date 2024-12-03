@@ -9,6 +9,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
 	"regexp"
+	"strings"
 )
 
 // This file handles SQL statements for managing PostgreSQL subscriptions. It supports:
@@ -34,8 +35,8 @@ type Action string
 const (
 	Create       Action = "CREATE"
 	Drop         Action = "DROP"
-	AlterDisable Action = "ALTER_DISABLE"
-	AlterEnable  Action = "ALTER_ENABLE"
+	AlterDisable Action = "DISABLE"
+	AlterEnable  Action = "ENABLE"
 )
 
 // ConnectionDetails holds parsed connection string components.
@@ -87,10 +88,13 @@ func parseSubscriptionSQL(sql string) (*SubscriptionConfig, error) {
 	case alterRegex.MatchString(sql):
 		matches := alterRegex.FindStringSubmatch(sql)
 		config.SubscriptionName = matches[1]
-		if matches[2] == "disable" {
+		switch strings.ToUpper(matches[2]) {
+		case string(AlterDisable):
 			config.Action = AlterDisable
-		} else {
+		case string(AlterEnable):
 			config.Action = AlterEnable
+		default:
+			return nil, fmt.Errorf("invalid ALTER SUBSCRIPTION action: %s", matches[2])
 		}
 
 	case dropRegex.MatchString(sql):
