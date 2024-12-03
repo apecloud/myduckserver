@@ -18,6 +18,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
+
+	"net/http"
+	_ "net/http/pprof"
 
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
@@ -57,7 +61,11 @@ var (
 
 	postgresPort = 5432
 
+	profilerPort = 0
+
 	defaultTimeZone = ""
+
+	EnableDuckDBProfiling = false
 )
 
 func init() {
@@ -68,6 +76,8 @@ func init() {
 	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
+	flag.IntVar(&profilerPort, "profiler-port", profilerPort, "The port to bind to for the profiler.")
+	flag.BoolVar(&EnableDuckDBProfiling, "enable-duckdb-profiling", EnableDuckDBProfiling, "Enable DuckDB profiling.")
 
 	// The following options need to be set for MySQL Shell's utilities to work properly.
 
@@ -111,6 +121,14 @@ func main() {
 		provider := catalog.NewInMemoryDBProvider()
 		provider.Close()
 		return
+	}
+
+	if profilerPort > 0 {
+		// log info to log the port number
+		logrus.Infof("Profiler listening on port %d", profilerPort)
+		go func() {
+			log.Println(http.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", profilerPort), nil))
+		}()
 	}
 
 	provider, err := catalog.NewDBProvider(dataDirectory, dbFileName)

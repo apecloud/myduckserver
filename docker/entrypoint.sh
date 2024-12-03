@@ -126,13 +126,13 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
+      nohup myduckserver $LOG_LEVEL $PROFILER_PORT >> "${LOG_PATH}"/server.log 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
 run_server_in_foreground() {
     cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-    myduckserver $LOG_LEVEL
+    myduckserver $LOG_LEVEL $PROFILER_PORT
 }
 
 wait_for_my_duck_server_ready() {
@@ -189,6 +189,10 @@ setup() {
         export LOG_LEVEL="-loglevel $LOG_LEVEL"
     fi
     
+    if [ -n "$PROFILER_PORT" ]; then
+        export PROFILER_PORT="-profiler-port $PROFILER_PORT"
+    fi
+
     # Ensure required directories exist
     mkdir -p "${DATA_PATH}" "${LOG_PATH}"
 
