@@ -980,7 +980,7 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	}
 
 	if query.SubscriptionConfig != nil {
-		return h.executeCreateSubscriptionSQL(query.SubscriptionConfig)
+		return h.executeSubscriptionSQL(query.SubscriptionConfig)
 	}
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
