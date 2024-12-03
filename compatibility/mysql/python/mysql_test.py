@@ -58,7 +58,6 @@ class MySQLTest:
         for test in self.tests:
             cursor = None
             try:
-                self.conn.autocommit = False
                 cursor = self.conn.cursor()
                 if not test.run(cursor):
                     return False
