@@ -163,6 +163,8 @@ func (c *DeltaController) updateTable(
 	hasDeletes := appender.counters.event.delete > 0
 	hasUpdates := appender.counters.event.update > 0
 
+	ctx.GetLogger().Debugf("Delta: %s.%s: stats: %+v", table.dbName, table.tableName, appender.counters)
+
 	switch {
 	case hasInserts && !hasDeletes && !hasUpdates:
 		// Case 1: INSERT only
@@ -181,11 +183,14 @@ func (c *DeltaController) updateTable(
 
 // Helper function to build the Arrow record and register the view
 func (c *DeltaController) prepareArrowView(
+	ctx *sql.Context,
 	conn *stdsql.Conn,
 	table tableIdentifier,
 	appender *DeltaAppender,
 ) (viewName string, close func(), err error) {
 	record := appender.Build()
+
+	fmt.Println("record:", record)
 
 	var ar *duckdb.Arrow
 	err = conn.Raw(func(driverConn any) error {
@@ -207,11 +212,38 @@ func (c *DeltaController) prepareArrowView(
 	// Register the Arrow view
 	hash := maphash.String(c.seed, table.dbName+"\x00"+table.tableName)
 	viewName = "__sys_view_arrow_delta_" + strconv.FormatUint(hash, 16) + "__"
+
 	release, err := ar.RegisterView(reader, viewName)
 	if err != nil {
 		reader.Release()
 		record.Release()
 		return "", nil, err
+	}
+
+	rows, err := conn.QueryContext(ctx, "SELECT * FROM "+viewName)
+	if err != nil {
+		return "", nil, err
+	}
+	defer rows.Close()
+	row := make([]any, len(record.Schema().Fields()))
+	pointers := make([]any, len(row))
+	for i := range row {
+		pointers[i] = &row[i]
+	}
+	for rows.Next() {
+		if err := rows.Scan(pointers...); err != nil {
+			return "", nil, err
+		}
+		fmt.Printf("row:%+v\n", row)
+	}
+
+	if logger := ctx.GetLogger(); logger.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		logger.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"view":  viewName,
+			"rows":  record.NumRows(),
+		}).Debug("Arrow view registered")
 	}
 
 	close = func() {
@@ -230,7 +262,7 @@ func (c *DeltaController) handleInsertOnly(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(conn, table, appender)
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
 	if err != nil {
 		return err
 	}
@@ -247,7 +279,10 @@ func (c *DeltaController) handleInsertOnly(
 	b.WriteString(" FROM ")
 	b.WriteString(viewName)
 
-	result, err := tx.ExecContext(ctx, b.String())
+	sql := b.String()
+	ctx.GetLogger().Debug("Insert SQL: ", b.String())
+
+	result, err := tx.ExecContext(ctx, sql)
 	if err != nil {
 		return err
 	}
@@ -278,7 +313,7 @@ func (c *DeltaController) handleDeleteOnly(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(conn, table, appender)
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
 	if err != nil {
 		return err
 	}
@@ -321,13 +356,13 @@ func (c *DeltaController) handleZeroDelete(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(conn, table, appender)
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender.Schema(), getPrimaryKeyList(appender.BaseSchema()))
+	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender)
 
 	insertSQL := "INSERT OR REPLACE INTO " +
 		catalog.ConnectIdentifiersANSI(table.dbName, table.tableName) +
@@ -363,13 +398,13 @@ func (c *DeltaController) handleGeneralCase(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(conn, table, appender)
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
 	if err != nil {
 		return err
 	}
 
 	// Create a temporary table to store the latest delta view
-	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender.Schema(), getPrimaryKeyList(appender.BaseSchema()))
+	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender)
 	result, err := tx.ExecContext(ctx, "CREATE OR REPLACE TEMP TABLE delta AS "+condenseDeltaSQL)
 	release() // release the Arrow view immediately
 	if err != nil {
@@ -502,8 +537,12 @@ func getPrimaryKeyList(schema sql.Schema) string {
 	return strings.Join(pks, ", ")
 }
 
-func buildCondenseDeltaSQL(viewName string, augmentedSchema sql.Schema, pkList string) string {
-	var builder strings.Builder
+func buildCondenseDeltaSQL(viewName string, appender *DeltaAppender) string {
+	var (
+		augmentedSchema = appender.Schema()
+		pkList          = getPrimaryKeyList(appender.BaseSchema())
+		builder         strings.Builder
+	)
 	builder.Grow(512)
 	// Use the following SQL to get the latest view of the rows being updated.
 	//
