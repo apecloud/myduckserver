@@ -83,8 +83,8 @@ func (twp *tableWriterProvider) GetDeltaAppender(
 	return twp.controller.GetDeltaAppender(databaseName, tableName, schema)
 }
 
-func (twp *tableWriterProvider) FlushDeltaBuffer(ctx *sql.Context, tx *stdsql.Tx, reason delta.FlushReason) error {
-	_, err := twp.controller.Flush(ctx, tx, reason)
+func (twp *tableWriterProvider) FlushDeltaBuffer(ctx *sql.Context, conn *stdsql.Conn, tx *stdsql.Tx, reason delta.FlushReason) error {
+	_, err := twp.controller.Flush(ctx, conn, tx, reason)
 	return err
 }
 

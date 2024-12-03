@@ -51,7 +51,7 @@ type TableWriterProvider interface {
 	) (DeltaAppender, error)
 
 	// FlushDelta writes the accumulated changes to the database.
-	FlushDeltaBuffer(ctx *sql.Context, tx *stdsql.Tx, reason delta.FlushReason) error
+	FlushDeltaBuffer(ctx *sql.Context, conn *stdsql.Conn, tx *stdsql.Tx, reason delta.FlushReason) error
 
 	// DiscardDeltaBuffer discards the accumulated changes.
 	DiscardDeltaBuffer(ctx *sql.Context)
