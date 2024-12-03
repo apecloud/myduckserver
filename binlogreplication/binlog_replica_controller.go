@@ -382,8 +382,8 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	copy.ReplicateIgnoreTables = d.filters.getIgnoreTables()
 
 	if !d.applier.currentPosition.IsZero() {
+		copy.RetrievedGtidSet = d.applier.pendingPosition.GTIDSet.String()
 		copy.ExecutedGtidSet = d.applier.currentPosition.GTIDSet.String()
-		copy.RetrievedGtidSet = copy.ExecutedGtidSet
 	}
 
 	changeSourceLogFileToInvalidIfEmpty(&copy)
