@@ -243,7 +243,7 @@ func (c *DeltaController) handleInsertOnly(
 	b.WriteString("INSERT INTO ")
 	b.WriteString(catalog.ConnectIdentifiersANSI(table.dbName, table.tableName))
 	b.WriteString(" SELECT ")
-	buildColumnList(b, appender.BaseSchema())
+	buildColumnList(&b, appender.BaseSchema())
 	b.WriteString(" FROM ")
 	b.WriteString(viewName)
 
@@ -463,7 +463,7 @@ func (c *DeltaController) handleGeneralCase(
 }
 
 // Helper function to build column list with timestamp handling
-func buildColumnList(b strings.Builder, schema sql.Schema) {
+func buildColumnList(b *strings.Builder, schema sql.Schema) {
 	for i, col := range schema {
 		if i > 0 {
 			b.WriteString(", ")
