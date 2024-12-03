@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -99,6 +100,9 @@ func (c *DeltaController) Flush(ctx *sql.Context, conn *stdsql.Conn, tx *stdsql.
 
 	var stats FlushStats
 
+	// record current time
+	start := time.Now()
+
 	for table, appender := range c.tables {
 		deltaRowCount := appender.RowCount()
 		if deltaRowCount > 0 {
@@ -119,6 +123,8 @@ func (c *DeltaController) Flush(ctx *sql.Context, conn *stdsql.Conn, tx *stdsql.
 		}
 	}
 
+	elapsed := time.Since(start)
+
 	if stats.DeltaSize > 0 {
 		if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
 			log.WithFields(logrus.Fields{
@@ -126,6 +132,7 @@ func (c *DeltaController) Flush(ctx *sql.Context, conn *stdsql.Conn, tx *stdsql.
 				"Insertions": stats.Insertions,
 				"Deletions":  stats.Deletions,
 				"Reason":     reason.String(),
+				"Elapsed":    elapsed.Milliseconds(),
 			}).Debug("Flushed delta buffer")
 		}
 	}
