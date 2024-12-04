@@ -123,14 +123,11 @@ psql -h 127.0.0.1 -p 15432 -U postgres
 We have integrated a setup tool in the Docker image that helps replicate data from your primary (MySQL|Postgres) server to MyDuck Server. The tool is available via the `SETUP_MODE` environment variable. In `REPLICA` mode, the container will start MyDuck Server, dump a snapshot of your primary (MySQL|Postgres) server, and start replicating data in real-time.
 
 ```bash
-docker run \
+docker run -d --name myduck \
   -p 13306:3306 \ 
   -p 15432:5432 \
-  --privileged \
-  --workdir=/home/admin \
   --env=SETUP_MODE=REPLICA \
   --env=SOURCE_DSN="<postgresql|mysql>://<user>:<password>@<host>:<port>/<dbname>"
-  --detach=true \
   apecloud/myduckserver:latest
 ```
 `SOURCE_DSN` specifies the connection string to the primary database server, which can be either MySQL or PostgreSQL.
