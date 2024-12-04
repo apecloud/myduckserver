@@ -15,6 +15,7 @@
 package pgserver
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -800,15 +801,12 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 				rawOptions,
 			)
 		case tree.CopyFormatText:
-			// Remove trailing backslash, comma and newline characters from the data
-			if bytes.HasSuffix(message.Data, []byte{'\n'}) {
-				message.Data = message.Data[:len(message.Data)-1]
+			// Remove `\.` from the end of the message data, if it exists
+			if bytes.HasSuffix(message.Data, []byte{'\\', '.', '\n'}) {
+				message.Data = message.Data[:len(message.Data)-3]
 			}
-			if bytes.HasSuffix(message.Data, []byte{'\r'}) {
-				message.Data = message.Data[:len(message.Data)-1]
-			}
-			if bytes.HasSuffix(message.Data, []byte{'\\', '.'}) {
-				message.Data = message.Data[:len(message.Data)-2]
+			if bytes.HasSuffix(message.Data, []byte{'\\', '.', '\r', '\n'}) {
+				message.Data = message.Data[:len(message.Data)-4]
 			}
 			fallthrough
 		case tree.CopyFormatCSV:
@@ -1405,27 +1403,52 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 			ctx.GetLogger().Debug("Finished copying data from the pipe to the client")
 		}()
 
-		buf := make([]byte, 1<<20) // 1MB buffer
-		for {
-			n, err := pipe.Read(buf)
-			if n > 0 {
-				copyData := &pgproto3.CopyData{
-					Data: buf[:n],
-				}
-				ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", n)
-				if err := h.send(copyData); err != nil {
+		sendCopyData := func(copyData *pgproto3.CopyData) {
+			ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", len(copyData.Data))
+			if err := h.send(copyData); err != nil {
+				sendErr.Store(err)
+				cancel()
+				return
+			}
+		}
+
+		switch format {
+		case tree.CopyFormatText:
+			reader := bufio.NewReader(pipe)
+			for {
+				line, err := reader.ReadSlice('\n')
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
 					sendErr.Store(err)
 					cancel()
 					return
 				}
-			}
-			if err != nil {
-				if err == io.EOF {
-					break
+				copyData := &pgproto3.CopyData{
+					Data: line,
 				}
-				sendErr.Store(err)
-				cancel()
-				return
+				logrus.Warnf("line: %s", line)
+				sendCopyData(copyData)
+			}
+		default:
+			buf := make([]byte, 1<<20) // 1MB buffer
+			for {
+				n, err := pipe.Read(buf)
+				if n > 0 {
+					copyData := &pgproto3.CopyData{
+						Data: buf[:n],
+					}
+					sendCopyData(copyData)
+				}
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					sendErr.Store(err)
+					cancel()
+					return
+				}
 			}
 		}
 	}()

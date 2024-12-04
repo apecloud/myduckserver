@@ -108,7 +108,7 @@ jobs:
           # curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
           npm install pg
           sudo cpanm --notest DBD::Pg
-          pip3 install psycopg2
+          pip3 install psycopg pandas pyarrow polars
           # sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
           sudo gem install pg
 
@@ -123,3 +123,7 @@ jobs:
       - name: Run the Compatibility Test for PostgreSQL Client
         run: |
           bats ./compatibility/pg/test.bats
+
+      - name: Run the Compatibility Test for Python Data Tools
+        run: |
+          bats ./compatibility/pg-pytools/test.bats
