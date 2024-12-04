@@ -29,24 +29,30 @@ jobs:
             docker run -d --name source-db -p 3306:3306 \
               -e MYSQL_ROOT_PASSWORD=root \
               -e MYSQL_DATABASE=test \
-              mysql:lts
+              mysql:lts \
+              --mysql_native_password=ON
+
             # Wait for MySQL to be ready
             until docker exec source-db mysql -uroot -proot -e "SELECT 1"; do
               sleep 1
             done
+
             # Create test data
             docker exec source-db mysql -uroot -proot test -e "
               CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(50));
               INSERT INTO items VALUES (1, 'test1'), (2, 'test2');"
+
           else
             docker run -d --name source-db -p 5432:5432 \
               -e POSTGRES_PASSWORD=postgres \
               -e POSTGRES_DB=test \
               postgres:latest
+
             # Wait for PostgreSQL to be ready
             until docker exec source-db pg_isready; do
               sleep 1
             done
+
             # Create test data
             docker exec source-db psql -U postgres test -c "
               CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(50));
@@ -83,7 +89,7 @@ jobs:
           fi
 
           # Query MyDuck data through Postgres interface
-          docker exec myduck psql -U postgres -h 127.0.0.1 test \
+          docker exec myduck psql -U postgres -h 127.0.0.1 \
             -c "\COPY (SELECT * FROM items ORDER BY id) TO STDOUT WITH CSV;" | tee myduck_data.csv
 
           # Compare data using DuckDB
@@ -117,7 +123,7 @@ jobs:
           sleep 5
 
           # Verify new data was replicated
-          docker exec myduck psql -t -U postgres -h 127.0.0.1 test -c \
+          docker exec myduck psql -t -U postgres -h 127.0.0.1 -c \
             "SELECT COUNT(*) FROM items WHERE id = 3;" | tr -d ' ' | tee count.txt
 
           if grep -q '^1$' count.txt; then
