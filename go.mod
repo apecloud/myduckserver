@@ -1,6 +1,8 @@
 module github.com/apecloud/myduckserver
 
-go 1.23.2
+go 1.23.3
+
+toolchain go1.23.4
 
 require (
 	github.com/Shopify/toxiproxy/v2 v2.9.0
@@ -25,7 +27,7 @@ require (
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/text v0.19.0
 	gopkg.in/src-d/go-errors.v1 v1.0.0
-	vitess.io/vitess v0.21.0
+	vitess.io/vitess v0.21.1
 )
 
 replace (
