@@ -21,6 +21,10 @@ func GetConn(ctx *sql.Context) (*stdsql.Conn, error) {
 	return ctx.Session.(ConnectionHolder).GetConn(ctx)
 }
 
+func GetCatalogConn(ctx *sql.Context) (*stdsql.Conn, error) {
+	return ctx.Session.(ConnectionHolder).GetCatalogConn(ctx)
+}
+
 func CloseBackendConn(ctx *sql.Context) {
 	ctx.Session.(ConnectionHolder).CloseBackendConn()
 }

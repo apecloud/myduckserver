@@ -163,7 +163,9 @@ func (c *DeltaController) updateTable(
 	hasDeletes := appender.counters.event.delete > 0
 	hasUpdates := appender.counters.event.update > 0
 
-	ctx.GetLogger().Debugf("Delta: %s.%s: stats: %+v", table.dbName, table.tableName, appender.counters)
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.Debugf("Delta: %s.%s: stats: %+v", table.dbName, table.tableName, appender.counters)
+	}
 
 	switch {
 	case hasInserts && !hasDeletes && !hasUpdates:

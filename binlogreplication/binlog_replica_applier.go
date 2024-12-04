@@ -1245,7 +1245,7 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 }
 
 func (a *binlogReplicaApplier) flushDeltaBuffer(ctx *sql.Context, reason delta.FlushReason) error {
-	conn, err := adapter.GetConn(ctx)
+	conn, err := adapter.GetCatalogConn(ctx)
 	if err != nil {
 		return err
 	}

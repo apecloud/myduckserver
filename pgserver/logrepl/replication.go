@@ -981,7 +981,7 @@ func (r *LogicalReplicator) commitOngoingTxnIfClean(state *replicationState, rea
 
 // commitOngoingTxn commits the current transaction
 func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReason delta.FlushReason) error {
-	conn, err := adapter.GetConn(state.replicaCtx)
+	conn, err := adapter.GetCatalogConn(state.replicaCtx)
 	if err != nil {
 		return err
 	}
