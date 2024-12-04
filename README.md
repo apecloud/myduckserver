@@ -3,8 +3,32 @@
     <span>MyDuck Server</span>
 </h1>
 
-
 **MyDuck Server** unlocks serious power for your MySQL & Postgres analytics. Imagine the simplicity of (MySQL|Postgres)’s familiar interface fused with the raw analytical speed of [DuckDB](https://duckdb.org/). Now you can supercharge your analytical queries with DuckDB’s lightning-fast OLAP engine, all while using the tools and dialect you know.
+
+<h1 style="display: flex; align-items: center;">
+    <img alt="duck under dolphin" style="margin-right: 0.2em" src="logo/MyDuck.svg">
+</h1>
+
+## 📑 Table of Contents
+
+- [Why MyDuck](#❓-why-myduck-❓)
+- [Key Features](#✨-key-features)
+- [Performance](#📊-performance)
+- [Getting Started](#🏃‍♂️-getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Usage](#usage)
+  - [Replicating Data](#replicating-data)
+  - [Connecting to Cloud MySQL & Postgres](#connecting-to-cloud-mysql--postgres)
+  - [HTAP Setup](#htap-setup)
+  - [Query Parquet Files](#query-parquet-files)
+  - [Already Using DuckDB?](#already-using-duckdb)
+  - [LLM Integration](#llm-integration)
+  - [Access from Python](#access-from-python)
+- [Roadmap](#🎯-roadmap)
+- [Contributing](#💡-contributing)
+- [Acknowledgements](#💗-acknowledgements)
+- [License](#📝-license)
 
 ## ❓ Why MyDuck ❓
 
@@ -24,9 +48,6 @@ MyDuck Server isn't here to replace MySQL & Postgres — it's here to help MySQL
 
 ## ✨ Key Features
 
-<h1 style="display: flex; align-items: center;">
-    <img alt="duck under dolphin" style="margin-right: 0.2em" src="logo/MyDuck.svg">
-</h1>
 
 - **Blazing Fast OLAP with DuckDB**: MyDuck stores data in DuckDB, an OLAP-optimized database known for lightning-fast analytical queries. DuckDB enables MyDuck to execute queries up to 1000x faster than traditional MySQL & Postgres setups, making complex analytics practical that were previously unfeasible.
 
@@ -55,16 +76,6 @@ MyDuck Server isn't here to replace MySQL & Postgres — it's here to help MySQL
 ## 📊 Performance
 
 Typical OLAP queries can run **up to 1000x faster** with MyDuck Server compared to MySQL & Postgres alone, especially on large datasets. Under the hood, it's just DuckDB doing what it does best: processing analytical queries at lightning speed. You are welcome to run your own benchmarks and prepare to be amazed! Alternatively, you can refer to well-known benchmarks like the [ClickBench](https://benchmark.clickhouse.com/) and [H2O.ai db-benchmark](https://duckdblabs.github.io/db-benchmark/) to see how DuckDB performs against other databases and data science tools. Also remember that DuckDB has robust support for transactions, JOINs, and [larger-than-memory query processing](https://duckdb.org/2024/07/09/memory-management.html), which are unavailable in many competing systems and tools.
-
-## 🎯 Roadmap
-
-We have big plans for MyDuck Server! Here are some of the features we’re working on:
-
-- [x] Be compatible with MySQL proxy tools like [ProxySQL](https://proxysql.com/).
-- [x] Replicate data from PostgreSQL.
-- [ ] Authentication.
-- [ ] ...and more! We’re always looking for ways to make MyDuck Server better. If you have a feature request, please let us know by [opening an issue](https://github.com/apecloud/myduckserver/issues/new).
-
 
 ## 🏃‍♂️ Getting Started
 
@@ -140,13 +151,30 @@ With MyDuck's powerful analytics capabilities, you can create an hybrid transact
 * Provisioning a MySQL HTAP cluster based on [ProxySQL](docs/tutorial/mysql-htap-proxysql-setup.md) or [MariaDB MaxScale](docs/tutorial/mysql-htap-maxscale-setup.md).
 * Provisioning a PostgreSQL HTAP cluster based on [PGPool-II](docs/tutorial/pg-htap-pgpool-setup.md)
 
-### Query & Load Parquet Files
+### Query Parquet Files
 
 Looking to load Parquet files into MyDuck Server and start querying? Follow our [Parquet file loading guide](docs/tutorial/load-parquet-files.md) for easy setup.
 
 ### Already Using DuckDB?
 
 Already have a DuckDB file? You can seamlessly bootstrap MyDuck Server with it. See our [DuckDB file bootstrapping guide](docs/tutorial/bootstrap.md) for more details.
+
+### LLM Integration
+
+MyDuck Server can be integrated with LLM applications via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction). Follow the [MCP integration guide](docs/tutorial/mcp.md) to set up MyDuck Server as an external data source for LLMs.
+
+### Access from Python
+
+MyDuck Server can be seamlessly accessed from the Python data science ecosystem. Follow the [Python integration guide](docs/tutorial/pg-python-data-tools.md) to connect to MyDuck Server from Python and export data to PyArrow, pandas, and Polars. Additionally, check out the [Ibis integration guide](docs/tutorial/connect-with-ibis-setup.md) for using the [Ibis](https://ibis-project.org/) dataframe API to query MyDuck Server directly.
+
+## 🎯 Roadmap
+
+We have big plans for MyDuck Server! Here are some of the features we’re working on:
+
+- [x] Be compatible with MySQL proxy tools like [ProxySQL](https://proxysql.com/).
+- [x] Replicate data from PostgreSQL.
+- [ ] Authentication.
+- [ ] ...and more! We’re always looking for ways to make MyDuck Server better. If you have a feature request, please let us know by [opening an issue](https://github.com/apecloud/myduckserver/issues/new).
 
 ## 💡 Contributing
 
