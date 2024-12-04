@@ -231,7 +231,7 @@ func (c *DeltaController) prepareArrowView(
 		record = projected
 	}
 
-	reader, err := array.NewRecordReader(record.Schema(), []arrow.Record{record})
+	reader, err := array.NewRecordReader(schema, []arrow.Record{record})
 	if err != nil {
 		record.Release()
 		return "", nil, err
