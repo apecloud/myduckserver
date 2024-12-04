@@ -563,7 +563,7 @@ func buildCondenseDeltaSQL(viewName string, appender *DeltaAppender) string {
 	builder.Grow(512)
 	// Use the following SQL to get the latest view of the rows being updated.
 	//
-	// SELECT r[0] as action, ...
+	// SELECT r[1] as action, ...
 	// FROM (
 	//   SELECT
 	//     pk1, pk2, ...,
