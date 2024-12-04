@@ -1368,16 +1368,6 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 	}
 	defer writer.Close()
 
-	// Send CopyOutResponse to the client
-	ctx.GetLogger().Debug("sending CopyOutResponse to the client")
-	copyOutResponse := &pgproto3.CopyOutResponse{
-		OverallFormat:     0,           // 0 for text format
-		ColumnFormatCodes: []uint16{0}, // 0 for text format
-	}
-	if err := h.send(copyOutResponse); err != nil {
-		return err
-	}
-
 	pipePath, ch, err := writer.Start()
 	if err != nil {
 		return err
@@ -1403,17 +1393,24 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 			ctx.GetLogger().Debug("Finished copying data from the pipe to the client")
 		}()
 
-		sendCopyData := func(copyData *pgproto3.CopyData) {
-			ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", len(copyData.Data))
-			if err := h.send(copyData); err != nil {
-				sendErr.Store(err)
-				cancel()
-				return
+		sendCopyOutResponse := func(numberOfColumns int) error {
+			ctx.GetLogger().Debug("sending CopyOutResponse to the client")
+			columnsFormatCodes := make([]uint16, numberOfColumns)
+			copyOutResponse := &pgproto3.CopyOutResponse{
+				OverallFormat:     0,                  // 0 for text format
+				ColumnFormatCodes: columnsFormatCodes, // 0 for text format
 			}
+			return h.send(copyOutResponse)
+		}
+
+		sendCopyData := func(copyData []byte) error {
+			ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", len(copyData))
+			return h.send(&pgproto3.CopyData{Data: copyData})
 		}
 
 		switch format {
 		case tree.CopyFormatText:
+			flag := true
 			reader := bufio.NewReader(pipe)
 			for {
 				line, err := reader.ReadSlice('\n')
@@ -1425,22 +1422,34 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 					cancel()
 					return
 				}
-				copyData := &pgproto3.CopyData{
-					Data: line,
+				if flag {
+					flag = false
+					count := bytes.Count(line, []byte{'\t'})
+					err := sendCopyOutResponse(count + 1)
+					if err != nil {
+						sendErr.Store(err)
+						cancel()
+						return
+					}
 				}
-				logrus.Warnf("line: %s", line)
-				sendCopyData(copyData)
+				err = sendCopyData(line)
+				if err != nil {
+					sendErr.Store(err)
+					cancel()
+					return
+				}
 			}
 		default:
+			err := sendCopyOutResponse(1)
+			if err != nil {
+				sendErr.Store(err)
+				cancel()
+				return
+			}
+
 			buf := make([]byte, 1<<20) // 1MB buffer
 			for {
 				n, err := pipe.Read(buf)
-				if n > 0 {
-					copyData := &pgproto3.CopyData{
-						Data: buf[:n],
-					}
-					sendCopyData(copyData)
-				}
 				if err != nil {
 					if err == io.EOF {
 						break
@@ -1448,6 +1457,14 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 					sendErr.Store(err)
 					cancel()
 					return
+				}
+				if n > 0 {
+					err := sendCopyData(buf[:n])
+					if err != nil {
+						sendErr.Store(err)
+						cancel()
+						return
+					}
 				}
 			}
 		}
