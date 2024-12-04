@@ -1,4 +1,4 @@
-name: Replication Test
+name: Docker Replication Mode Test
 
 on:
   push:
@@ -78,13 +78,13 @@ jobs:
             docker exec source-db mysql -uroot -proot test \
               -e "SELECT * FROM items ORDER BY id;" > source_data.csv
           else
-            docker exec -i source-db psql -U postgres -h 127.0.0.1 test \
-              -c "\COPY (SELECT * FROM items ORDER BY id) TO STDOUT WITH CSV;" > source_data.csv
+            docker exec source-db psql -U postgres -h 127.0.0.1 test \
+              -c "\COPY (SELECT * FROM items ORDER BY id) TO STDOUT WITH CSV;" | tee source_data.csv
           fi
 
           # Query MyDuck data through Postgres interface
           docker exec myduck psql -U postgres -h 127.0.0.1 \
-            -c "\COPY (SELECT * FROM items ORDER BY id) TO STDOUT WITH CSV;" > myduck_data.csv
+            -c "\COPY (SELECT * FROM items ORDER BY id) TO STDOUT WITH CSV;" | tee myduck_data.csv
 
           # Compare data using DuckDB
           duckdb --csv -c "
@@ -117,7 +117,7 @@ jobs:
           sleep 5
 
           # Verify new data was replicated
-          docker exec -i myduck psql -U postgres -h 127.0.0.1 -t -c \
+          docker exec myduck psql -U postgres -h 127.0.0.1 -t -c \
             "SELECT COUNT(*) FROM items WHERE id = 3;" | tr -d ' ' | tee count.txt
 
           if grep -q '^1$' count.txt; then
