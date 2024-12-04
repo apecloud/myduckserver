@@ -1,6 +1,6 @@
 # Use the official Go image for building the Go application
 # Step 1: Build stage
-FROM --platform=${BUILDPLATFORM} golang:1.23.2 AS builder
+FROM --platform=${BUILDPLATFORM} golang:latest AS builder
 
 # Set environment variables for cross-compilation
 ARG TARGETOS

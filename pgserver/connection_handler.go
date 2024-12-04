@@ -15,6 +15,7 @@
 package pgserver
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -800,15 +801,12 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 				rawOptions,
 			)
 		case tree.CopyFormatText:
-			// Remove trailing backslash, comma and newline characters from the data
-			if bytes.HasSuffix(message.Data, []byte{'\n'}) {
-				message.Data = message.Data[:len(message.Data)-1]
+			// Remove `\.` from the end of the message data, if it exists
+			if bytes.HasSuffix(message.Data, []byte{'\\', '.', '\n'}) {
+				message.Data = message.Data[:len(message.Data)-3]
 			}
-			if bytes.HasSuffix(message.Data, []byte{'\r'}) {
-				message.Data = message.Data[:len(message.Data)-1]
-			}
-			if bytes.HasSuffix(message.Data, []byte{'\\', '.'}) {
-				message.Data = message.Data[:len(message.Data)-2]
+			if bytes.HasSuffix(message.Data, []byte{'\\', '.', '\r', '\n'}) {
+				message.Data = message.Data[:len(message.Data)-4]
 			}
 			fallthrough
 		case tree.CopyFormatCSV:
@@ -1370,16 +1368,6 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 	}
 	defer writer.Close()
 
-	// Send CopyOutResponse to the client
-	ctx.GetLogger().Debug("sending CopyOutResponse to the client")
-	copyOutResponse := &pgproto3.CopyOutResponse{
-		OverallFormat:     0,           // 0 for text format
-		ColumnFormatCodes: []uint16{0}, // 0 for text format
-	}
-	if err := h.send(copyOutResponse); err != nil {
-		return err
-	}
-
 	pipePath, ch, err := writer.Start()
 	if err != nil {
 		return err
@@ -1405,27 +1393,79 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tre
 			ctx.GetLogger().Debug("Finished copying data from the pipe to the client")
 		}()
 
-		buf := make([]byte, 1<<20) // 1MB buffer
-		for {
-			n, err := pipe.Read(buf)
-			if n > 0 {
-				copyData := &pgproto3.CopyData{
-					Data: buf[:n],
+		sendCopyOutResponse := func(numberOfColumns int) error {
+			ctx.GetLogger().Debug("sending CopyOutResponse to the client")
+			columnsFormatCodes := make([]uint16, numberOfColumns)
+			copyOutResponse := &pgproto3.CopyOutResponse{
+				OverallFormat:     0,                  // 0 for text format
+				ColumnFormatCodes: columnsFormatCodes, // 0 for text format
+			}
+			return h.send(copyOutResponse)
+		}
+
+		sendCopyData := func(copyData []byte) error {
+			ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", len(copyData))
+			return h.send(&pgproto3.CopyData{Data: copyData})
+		}
+
+		switch format {
+		case tree.CopyFormatText:
+			flag := true
+			reader := bufio.NewReader(pipe)
+			for {
+				line, err := reader.ReadSlice('\n')
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					sendErr.Store(err)
+					cancel()
+					return
 				}
-				ctx.GetLogger().Debugf("sending CopyData (%d bytes) to the client", n)
-				if err := h.send(copyData); err != nil {
+				if flag {
+					flag = false
+					count := bytes.Count(line, []byte{'\t'})
+					err := sendCopyOutResponse(count + 1)
+					if err != nil {
+						sendErr.Store(err)
+						cancel()
+						return
+					}
+				}
+				err = sendCopyData(line)
+				if err != nil {
 					sendErr.Store(err)
 					cancel()
 					return
 				}
 			}
+		default:
+			err := sendCopyOutResponse(1)
 			if err != nil {
-				if err == io.EOF {
-					break
-				}
 				sendErr.Store(err)
 				cancel()
 				return
+			}
+
+			buf := make([]byte, 1<<20) // 1MB buffer
+			for {
+				n, err := pipe.Read(buf)
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					sendErr.Store(err)
+					cancel()
+					return
+				}
+				if n > 0 {
+					err := sendCopyData(buf[:n])
+					if err != nil {
+						sendErr.Store(err)
+						cancel()
+						return
+					}
+				}
 			}
 		}
 	}()

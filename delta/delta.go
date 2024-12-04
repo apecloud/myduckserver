@@ -66,6 +66,10 @@ func newDeltaAppender(schema sql.Schema) (*DeltaAppender, error) {
 	}, nil
 }
 
+func (a *DeltaAppender) NumAugmentedFields() int {
+	return 6
+}
+
 func (a *DeltaAppender) Field(i int) array.Builder {
 	return a.appender.Field(i + 6)
 }
