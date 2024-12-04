@@ -187,10 +187,12 @@ func (c *DeltaController) prepareArrowView(
 	conn *stdsql.Conn,
 	table tableIdentifier,
 	appender *DeltaAppender,
+	fieldOffset int,
+	fieldIndices []int,
 ) (viewName string, close func(), err error) {
 	record := appender.Build()
 
-	fmt.Println("record:", record)
+	// fmt.Println("record:", record)
 
 	var ar *duckdb.Arrow
 	err = conn.Raw(func(driverConn any) error {
@@ -201,6 +203,30 @@ func (c *DeltaController) prepareArrowView(
 	if err != nil {
 		record.Release()
 		return "", nil, err
+	}
+
+	// Project the fields before registering the Arrow record into DuckDB.
+	// Currently, this is necessary because RegisterView uses `arrow_scan` instead of `arrow_scan_dumb` under the hood.
+	// The former allows projection & filter pushdown, but the implementation does not work as expected in some cases.
+	schema := record.Schema()
+	if fieldOffset > 0 {
+		fields := schema.Fields()[fieldOffset:]
+		schema = arrow.NewSchema(fields, nil)
+		columns := record.Columns()[fieldOffset:]
+		projected := array.NewRecord(schema, columns, record.NumRows())
+		record.Release()
+		record = projected
+	} else if len(fieldIndices) > 0 {
+		fields := make([]arrow.Field, len(fieldIndices))
+		columns := make([]arrow.Array, len(fieldIndices))
+		for i, idx := range fieldIndices {
+			fields[i] = schema.Field(idx)
+			columns[i] = record.Column(idx)
+		}
+		schema = arrow.NewSchema(fields, nil)
+		projected := array.NewRecord(schema, columns, record.NumRows())
+		record.Release()
+		record = projected
 	}
 
 	reader, err := array.NewRecordReader(record.Schema(), []arrow.Record{record})
@@ -220,33 +246,8 @@ func (c *DeltaController) prepareArrowView(
 		return "", nil, err
 	}
 
-	rows, err := conn.QueryContext(ctx, "SELECT * FROM "+viewName)
-	if err != nil {
-		return "", nil, err
-	}
-	defer rows.Close()
-	row := make([]any, len(record.Schema().Fields()))
-	pointers := make([]any, len(row))
-	for i := range row {
-		pointers[i] = &row[i]
-	}
-	for rows.Next() {
-		if err := rows.Scan(pointers...); err != nil {
-			return "", nil, err
-		}
-		fmt.Printf("row:%+v\n", row)
-	}
-
-	if logger := ctx.GetLogger(); logger.Logger.IsLevelEnabled(logrus.DebugLevel) {
-		logger.WithFields(logrus.Fields{
-			"db":    table.dbName,
-			"table": table.tableName,
-			"view":  viewName,
-			"rows":  record.NumRows(),
-		}).Debug("Arrow view registered")
-	}
-
 	close = func() {
+		conn.ExecContext(ctx, "DROP VIEW IF EXISTS "+viewName)
 		release()
 		reader.Release()
 		record.Release()
@@ -262,7 +263,8 @@ func (c *DeltaController) handleInsertOnly(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
+	// Ignore the augmented fields
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender, appender.NumAugmentedFields(), nil)
 	if err != nil {
 		return err
 	}
@@ -313,7 +315,8 @@ func (c *DeltaController) handleDeleteOnly(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
+	// Ignore all but the primary key fields
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender, 0, getPrimaryKeyIndices(appender))
 	if err != nil {
 		return err
 	}
@@ -356,7 +359,7 @@ func (c *DeltaController) handleZeroDelete(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender, 0, nil)
 	if err != nil {
 		return err
 	}
@@ -398,7 +401,7 @@ func (c *DeltaController) handleGeneralCase(
 	appender *DeltaAppender,
 	stats *FlushStats,
 ) error {
-	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender)
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender, 0, nil)
 	if err != nil {
 		return err
 	}
@@ -508,6 +511,18 @@ func buildColumnList(b *strings.Builder, schema sql.Schema) {
 			b.WriteString("::TIMESTAMP")
 		}
 	}
+}
+
+// Helper function to get the primary key indices.
+func getPrimaryKeyIndices(appender *DeltaAppender) []int {
+	schema := appender.BaseSchema()
+	indices := make([]int, 0, 1)
+	for i, col := range schema {
+		if col.PrimaryKey {
+			indices = append(indices, i+appender.NumAugmentedFields())
+		}
+	}
+	return indices
 }
 
 // Helper function to get the primary key. For composite primary keys, `row()` is used.
