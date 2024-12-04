@@ -176,10 +176,37 @@ func (h *ConnectionHandler) executeSubscriptionSQL(subscriptionConfig *Subscript
 }
 
 func (h *ConnectionHandler) executeAlterEnable(subscriptionConfig *SubscriptionConfig) error {
+	subscription, err := logrepl.GetSubscription(h.server.NewInternalCtx(), subscriptionConfig.SubscriptionName)
+
+	if err != nil {
+		return fmt.Errorf("failed to get subscription: %w", err)
+	}
+
+	if subscription == nil {
+		return fmt.Errorf("subscription not found: %s", subscriptionConfig.SubscriptionName)
+	}
+
+	if subscription.Replicator.Running() {
+		return fmt.Errorf("subscription is already enabled: %s", subscriptionConfig.SubscriptionName)
+	}
+
+	go subscription.Replicator.StartReplication(h.server.NewInternalCtx(), subscription.Publication)
 	return nil
+
 }
 
 func (h *ConnectionHandler) executeAlterDisable(subscriptionConfig *SubscriptionConfig) error {
+	subscription, err := logrepl.GetSubscription(h.server.NewInternalCtx(), subscriptionConfig.SubscriptionName)
+
+	if err != nil {
+		return fmt.Errorf("failed to get subscription: %w", err)
+	}
+
+	if subscription == nil {
+		return fmt.Errorf("subscription not found: %s", subscriptionConfig.SubscriptionName)
+	}
+
+	subscription.Replicator.Stop()
 	return nil
 }
 
@@ -306,10 +333,18 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 }
 
 func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) (*logrepl.LogicalReplicator, error) {
-	replicator, err := logrepl.NewLogicalReplicator(subscriptionConfig.ToDNS())
+
+	subscription, err := logrepl.CreateSubscription(
+		sqlCtx,
+		subscriptionConfig.SubscriptionName,
+		subscriptionConfig.ToDNS(),
+		subscriptionConfig.PublicationName)
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to create logical replicator: %w", err)
+		return nil, fmt.Errorf("failed to create subscription: %w", err)
 	}
+
+	replicator := subscription.Replicator
 
 	err = logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
 	if err != nil {
