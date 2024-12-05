@@ -176,6 +176,10 @@ We have big plans for MyDuck Server! Here are some of the features we’re worki
 - [ ] Authentication.
 - [ ] ...and more! We’re always looking for ways to make MyDuck Server better. If you have a feature request, please let us know by [opening an issue](https://github.com/apecloud/myduckserver/issues/new).
 
+## 🏡 Join the Community
+
+- [Discord](https://discord.gg/tSy2MYw3) Let's communicate on Discord about requirements, issues, and user experiences.
+
 ## 💡 Contributing
 
 Let’s make MySQL & Postgres analytics fast and powerful — together!
