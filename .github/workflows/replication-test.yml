@@ -62,12 +62,13 @@ jobs:
       - name: Start MyDuck Server in replica mode
         run: |
           if [ "${{ matrix.source }}" = "mysql" ]; then
-            SOURCE_DSN="mysql://root:root@127.0.0.1:3306/test"
+            SOURCE_DSN="mysql://root:root@host.docker.internal:3306"
           else
-            SOURCE_DSN="postgres://postgres:postgres@127.0.0.1:5432/test"
+            SOURCE_DSN="postgres://postgres:postgres@host.docker.internal:5432/test"
           fi
-          
+
           docker run -d --name myduck \
+            --add-host=host.docker.internal:host-gateway \
             -p 13306:3306 \
             -p 15432:5432 \
             --env=SETUP_MODE=REPLICA \

@@ -7,6 +7,12 @@ export POSTGRES_REPLICA_SETUP_PATH="${HOME}/replica-setup-postgres"
 export PID_FILE="${LOG_PATH}/myduck.pid"
 
 parse_dsn() {
+    # Check if SOURCE_DSN is set
+    if [ -z "$SOURCE_DSN" ]; then
+        echo "Error: SOURCE_DSN environment variable is not set"
+        exit 1
+    }
+
     local dsn="$SOURCE_DSN"
 
     # Initialize variables
@@ -27,8 +33,8 @@ parse_dsn() {
         # Strip the prefix
         dsn="${dsn#mysql://}"
     else
-        echo "Error: Unsupported DSN format"
-        return 1
+        echo "Error: Unsupported DSN format: the URI scheme must be 'postgres' or 'mysql'"
+        exit 1
     fi
 
     # Extract credentials and host/port/dbname
@@ -40,7 +46,7 @@ parse_dsn() {
         export SOURCE_DATABASE="${BASH_REMATCH[8]}"
     else
         echo "Error: Failed to parse DSN"
-        return 1
+        exit 1
     fi
 
     # Handle empty SOURCE_DATABASE
@@ -52,27 +58,52 @@ parse_dsn() {
         fi
     fi
 
-    # Debugging (Optional: Comment out in production)
+    # Set default ports if not specified
+    if [[ -z "$SOURCE_PORT" ]]; then
+        if [[ "$SOURCE_TYPE" == "POSTGRES" ]]; then
+            export SOURCE_PORT="5432"
+        elif [[ "$SOURCE_TYPE" == "MYSQL" ]]; then
+            export SOURCE_PORT="3306"
+        fi
+    fi
+
     echo "SOURCE_TYPE=$SOURCE_TYPE"
     echo "SOURCE_USER=$SOURCE_USER"
     echo "SOURCE_PASSWORD=$SOURCE_PASSWORD"
     echo "SOURCE_HOST=$SOURCE_HOST"
     echo "SOURCE_PORT=$SOURCE_PORT"
     echo "SOURCE_DATABASE=$SOURCE_DATABASE"
+
+    # Exit if host is localhost, 127.0.0.1, 0.0.0.0 or ::1
+    if [[ "$SOURCE_HOST" =~ ^localhost$|^127\.0\.0\.1$|^0\.0\.0\.0$|^::1$ ]]; then
+        echo "Error: SOURCE_HOST cannot be $SOURCE_HOST when running in Docker."
+        echo "Please use host.docker.internal for connecting to the host machine."
+        echo "In addition, if you are on Linux, add the '--add-host=host.docker.internal:host-gateway' option to the 'docker run' command."
+        exit 1
+    fi
+}
+
+# Add signal handling function
+cleanup() {
+    echo "Received shutdown signal, cleaning up..."
+    if [[ -f "${PID_FILE}" ]]; then
+        kill "$(cat "${PID_FILE}")" 2>/dev/null
+        rm -f "${PID_FILE}"
+    fi
 }
 
 # Function to run replica setup
 run_replica_setup() {
     case "$SOURCE_TYPE" in
         MYSQL)
-            echo "Creating replica with MySQL server at $SOURCE_DSN..."
+            echo "Replicating MySQL primary server: DSN=$SOURCE_DSN ..."
             cd "$MYSQL_REPLICA_SETUP_PATH" || {
                 echo "Error: Could not change directory to ${MYSQL_REPLICA_SETUP_PATH}";
                 exit 1;
             }
             ;;
         POSTGRES)
-            echo "Creating replica with Postgres server at $SOURCE_DSN..."
+            echo "Replicating PostgreSQL primary server: DSN=$SOURCE_DSN ..."
             cd "$POSTGRES_REPLICA_SETUP_PATH" || {
                 echo "Error: Could not change directory to ${POSTGRES_REPLICA_SETUP_PATH}";
                 exit 1;
@@ -151,6 +182,9 @@ check_process_alive() {
 
 # Handle the setup_mode
 setup() {
+    # Setup signal handlers
+    trap cleanup SIGTERM SIGINT SIGQUIT
+
     if [ -n "$LOG_LEVEL" ]; then
         export LOG_LEVEL="-loglevel $LOG_LEVEL"
     fi
@@ -164,7 +198,7 @@ setup() {
             run_server_in_foreground
             ;;
         "REPLICA")
-            echo "Starting MyDuck Server and running replica setup in REPLICA mode..."
+            echo "Starting MyDuck Server in REPLICA mode..."
             run_server_in_background
             wait_for_my_duck_server_ready
             run_replica_setup
@@ -180,10 +214,9 @@ setup
 
 while [[ "$SETUP_MODE" == "REPLICA" ]]; do
     # Check if the processes have started
-    check_process_alive "$PID_FILE" "MyDuck Server"
-    MY_DUCK_SERVER_STATUS=$?
-    if (( MY_DUCK_SERVER_STATUS != 0 )); then
-        echo "MyDuck Server is not running. Exiting..."
+    if ! check_process_alive "$PID_FILE" "MyDuck Server"; then
+        echo "CRITICAL: MyDuck Server process died unexpectedly."
+        cleanup
         exit 1
     fi
 

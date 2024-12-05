@@ -63,15 +63,16 @@ RUN pip install --no-cache-dir "sqlglot[rs]" --break-system-packages
 
 # Install mysql-shell
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-        ARCH="arm"; \
+        curl -LJO https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-9.1.0-linux-glibc2.28-arm-64bit.tar.gz \
+        && tar -zxf mysql-shell-9.1.0-linux-glibc2.28-arm-64bit.tar.gz \
+        && rm mysql-shell-9.1.0-linux-glibc2.28-arm-64bit.tar.gz \
+        && mv mysql-shell-9.1.0-linux-glibc2.28-arm-64bit /usr/local/mysqlsh \
+        && ln -s /usr/local/mysqlsh/bin/mysqlsh /usr/local/bin/mysqlsh; \
     else \
-        ARCH="x86"; \
-    fi && \
-    curl -LJO https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit.tar.gz \
-    && tar -zxvf mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit.tar.gz \
-    && rm mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit.tar.gz \
-    && mv mysql-shell-9.1.0-linux-glibc2.28-${ARCH}-64bit /usr/local/mysqlsh \
-    && ln -s /usr/local/mysqlsh/bin/mysqlsh /usr/local/bin/mysqlsh \
+        curl -LJO https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell_9.1.0-1debian12_amd64.deb \
+        && apt install -y ./mysql-shell_9.1.0-1debian12_amd64.deb \
+        && rm mysql-shell_9.1.0-1debian12_amd64.deb; \
+    fi \
     && mysqlsh --version
 
 # Dynamic DuckDB CLI download based on architecture
