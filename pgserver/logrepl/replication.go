@@ -26,7 +26,6 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/binlog"
-	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/delta"
 	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -222,7 +221,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 	standbyMessageTimeout := 10 * time.Second
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
-	lastWrittenLsn, err := r.readWALPosition(sqlCtx, slotName)
+	lastWrittenLsn, err := SelectSubscriptionLsn(sqlCtx, slotName)
 	if err != nil {
 		return err
 	}
@@ -881,26 +880,6 @@ func (r *LogicalReplicator) processMessage(
 	return false, nil
 }
 
-// readWALPosition reads the recorded WAL position from the WAL position table
-func (r *LogicalReplicator) readWALPosition(ctx *sql.Context, slotName string) (pglogrepl.LSN, error) {
-	var lsn string
-	if err := adapter.QueryRowCatalog(ctx, catalog.InternalTables.PgReplicationLSN.SelectStmt(), slotName).Scan(&lsn); err != nil {
-		if errors.Is(err, stdsql.ErrNoRows) {
-			// if the LSN doesn't exist, consider this a cold start and return 0
-			return pglogrepl.LSN(0), nil
-		}
-		return 0, err
-	}
-
-	return pglogrepl.ParseLSN(lsn)
-}
-
-// WriteWALPosition writes the recorded WAL position to the WAL position table
-func (r *LogicalReplicator) WriteWALPosition(ctx *sql.Context, slotName string, lsn pglogrepl.LSN) error {
-	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgReplicationLSN.UpsertStmt(), slotName, lsn.String())
-	return err
-}
-
 // whereClause returns a WHERE clause string with the contents of the builder if it's non-empty, or the empty
 // string otherwise
 func whereClause(str strings.Builder) string {
@@ -1000,7 +979,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	}
 
 	r.logger.Debugf("Writing LSN %s\n", state.lastCommitLSN)
-	if err = r.WriteWALPosition(state.replicaCtx, state.slotName, state.lastCommitLSN); err != nil {
+	if err = UpdateSubscriptionLsn(state.replicaCtx, state.slotName, state.lastCommitLSN.String()); err != nil {
 		return err
 	}
 

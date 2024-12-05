@@ -181,23 +181,12 @@ func (h *ConnectionHandler) executeAlterEnable(subscriptionConfig *SubscriptionC
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	subscription, err := logrepl.GetSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
+	err = logrepl.UpdateSubscriptionStatus(sqlCtx, subscriptionConfig.SubscriptionName, true)
 	if err != nil {
-		return fmt.Errorf("failed to get subscription: %w", err)
+		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	if subscription == nil {
-		return fmt.Errorf("subscription not found: %s", subscriptionConfig.SubscriptionName)
-	}
-
-	if subscription.Replicator.Running() {
-		return fmt.Errorf("subscription is already enabled: %s", subscriptionConfig.SubscriptionName)
-	}
-
-	go subscription.Replicator.StartReplication(sqlCtx, subscription.Publication)
-
-	return nil
-
+	return commitAndUpdate(sqlCtx)
 }
 
 func (h *ConnectionHandler) executeAlterDisable(subscriptionConfig *SubscriptionConfig) error {
@@ -206,18 +195,12 @@ func (h *ConnectionHandler) executeAlterDisable(subscriptionConfig *Subscription
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	subscription, err := logrepl.GetSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
-
+	err = logrepl.UpdateSubscriptionStatus(sqlCtx, subscriptionConfig.SubscriptionName, false)
 	if err != nil {
-		return fmt.Errorf("failed to get subscription: %w", err)
+		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	if subscription == nil {
-		return fmt.Errorf("subscription not found: %s", subscriptionConfig.SubscriptionName)
-	}
-
-	subscription.Replicator.Stop()
-	return nil
+	return commitAndUpdate(sqlCtx)
 }
 
 func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) error {
@@ -226,26 +209,12 @@ func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) 
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	subscription, err := logrepl.DeleteSubscription(subscriptionConfig.SubscriptionName)
+	err = logrepl.DeleteSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
 	if err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	subscription.Replicator.Stop()
-
-	if err := logrepl.DeleteSubscriptionFromTable(sqlCtx, subscriptionConfig.SubscriptionName); err != nil {
-		return fmt.Errorf("failed to delete subscription from table: %w", err)
-	}
-
-	tx := adapter.TryGetTxn(sqlCtx)
-	if tx != nil {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit transaction: %w", err)
-		}
-		adapter.CloseTxn(sqlCtx)
-	}
-
-	return nil
+	return commitAndUpdate(sqlCtx)
 }
 
 func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig) error {
@@ -259,12 +228,10 @@ func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig
 		return fmt.Errorf("failed to create snapshot for CREATE SUBSCRIPTION: %w", err)
 	}
 
-	replicator, err := h.doCreateSubscription(sqlCtx, subscriptionConfig, lsn)
+	err = h.doCreateSubscription(sqlCtx, subscriptionConfig, lsn)
 	if err != nil {
 		return fmt.Errorf("failed to execute CREATE SUBSCRIPTION: %w", err)
 	}
-
-	go replicator.StartReplication(sqlCtx, subscriptionConfig.PublicationName)
 
 	return nil
 }
@@ -366,48 +333,40 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 	return lsn, txn.Commit()
 }
 
-func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) (*logrepl.LogicalReplicator, error) {
-
-	subscription, err := logrepl.CreateSubscription(
-		sqlCtx,
-		subscriptionConfig.SubscriptionName,
-		subscriptionConfig.ToDNS(),
-		subscriptionConfig.PublicationName)
-
+func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) error {
+	err := logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create subscription: %w", err)
+		return fmt.Errorf("failed to create publication: %w", err)
 	}
 
-	replicator := subscription.Replicator
-
-	err = logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create publication: %w", err)
-	}
-
-	err = replicator.CreateReplicationSlotIfNotExists(subscriptionConfig.PublicationName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create replication slot: %w", err)
-	}
-
-	// `WriteWALPosition` and `WriteSubscriptionIntoTable` execute in a transaction internally,
-	// so we start a transaction here and commit it after writing the WAL position.
 	tx, err := adapter.GetCatalogTxn(sqlCtx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get transaction: %w", err)
+		return fmt.Errorf("failed to get transaction: %w", err)
 	}
 	defer tx.Rollback()
 	defer adapter.CloseTxn(sqlCtx)
 
-	err = replicator.WriteWALPosition(sqlCtx, subscriptionConfig.PublicationName, lsn)
+	err = logrepl.CreateSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName, lsn.String(), true)
 	if err != nil {
-		return nil, fmt.Errorf("failed to write WAL position: %w", err)
+		return fmt.Errorf("failed to write subscription: %w", err)
 	}
 
-	err = logrepl.WriteSubscriptionIntoTable(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write subscription: %w", err)
+	return commitAndUpdate(sqlCtx)
+}
+
+func commitAndUpdate(sqlCtx *sql.Context) error {
+	tx := adapter.TryGetTxn(sqlCtx)
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		adapter.CloseTxn(sqlCtx)
 	}
 
-	return replicator, tx.Commit()
+	err := logrepl.UpdateSubscriptions(sqlCtx)
+	if err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }
