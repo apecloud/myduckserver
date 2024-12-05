@@ -36,7 +36,7 @@ echo "Thread count set to: $THREAD_COUNT"
 
 echo "Copying data from MySQL to MyDuck..."
 # Run mysqlsh command and capture the output
-output=$(mysqlsh --uri "$SOURCE_DSN" $NO_PASSWORD_OPTION -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M --ignore-version true)
+output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M --ignore-version true)
 
 if [[ $GTID_MODE == "ON" ]]; then
     # Extract the EXECUTED_GTID_SET from this output:
