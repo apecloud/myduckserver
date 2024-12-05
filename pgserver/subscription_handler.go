@@ -226,7 +226,7 @@ func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) 
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	subscription, err := logrepl.DeleteSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
+	subscription, err := logrepl.DeleteSubscription(subscriptionConfig.SubscriptionName)
 	if err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
@@ -235,6 +235,14 @@ func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) 
 
 	if err := logrepl.DeleteSubscriptionFromTable(sqlCtx, subscriptionConfig.SubscriptionName); err != nil {
 		return fmt.Errorf("failed to delete subscription from table: %w", err)
+	}
+
+	tx := adapter.TryGetTxn(sqlCtx)
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		adapter.CloseTxn(sqlCtx)
 	}
 
 	return nil

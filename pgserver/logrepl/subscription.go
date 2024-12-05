@@ -86,7 +86,7 @@ func CreateSubscription(ctx *sql.Context, name string, conn string, publication 
 	return subscription, nil
 }
 
-func DeleteSubscription(ctx *sql.Context, name string) (*Subscription, error) {
+func DeleteSubscription(name string) (*Subscription, error) {
 	deleteMutex.Lock()
 	defer deleteMutex.Unlock()
 
