@@ -50,6 +50,16 @@ func (it *InternalTable) DeleteStmt() string {
 	return b.String()
 }
 
+func (it *InternalTable) DeleteAllStmt() string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("DELETE FROM ")
+	b.WriteString(it.Schema)
+	b.WriteByte('.')
+	b.WriteString(it.Name)
+	return b.String()
+}
+
 func (it *InternalTable) SelectStmt() string {
 	var b strings.Builder
 	b.Grow(128)

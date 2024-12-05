@@ -17,6 +17,7 @@ type Subscription struct {
 
 var subscriptionMap = sync.Map{}
 var createMutex sync.Mutex
+var deleteMutex sync.Mutex
 
 func GetAllSubscriptions(ctx *sql.Context) ([]*Subscription, error) {
 	if err := loadAllSubscriptions(ctx); err != nil {
@@ -85,6 +86,18 @@ func CreateSubscription(ctx *sql.Context, name string, conn string, publication 
 	return subscription, nil
 }
 
+func DeleteSubscription(ctx *sql.Context, name string) (*Subscription, error) {
+	deleteMutex.Lock()
+	defer deleteMutex.Unlock()
+
+	val, loaded := subscriptionMap.LoadAndDelete(name)
+	if !loaded {
+		return nil, fmt.Errorf("subscription %s does not exist", name)
+	}
+
+	return val.(*Subscription), nil
+}
+
 func loadAllSubscriptions(ctx *sql.Context) error {
 	rows, err := adapter.QueryCatalog(ctx, catalog.InternalTables.PgSubscription.SelectAllStmt())
 	if err != nil {
@@ -118,7 +131,17 @@ func loadAllSubscriptions(ctx *sql.Context) error {
 	return nil
 }
 
-func WriteSubscription(ctx *sql.Context, name, conn, pub string) error {
+func WriteSubscriptionIntoTable(ctx *sql.Context, name, conn, pub string) error {
 	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpsertStmt(), name, conn, pub)
+	return err
+}
+
+func DeleteSubscriptionFromTable(ctx *sql.Context, name string) error {
+	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.DeleteStmt(), name)
+	return err
+}
+
+func DeleteAllSubscriptions(ctx *sql.Context) error {
+	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.DeleteAllStmt())
 	return err
 }

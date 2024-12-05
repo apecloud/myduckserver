@@ -176,8 +176,12 @@ func (h *ConnectionHandler) executeSubscriptionSQL(subscriptionConfig *Subscript
 }
 
 func (h *ConnectionHandler) executeAlterEnable(subscriptionConfig *SubscriptionConfig) error {
-	subscription, err := logrepl.GetSubscription(h.server.NewInternalCtx(), subscriptionConfig.SubscriptionName)
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
 
+	subscription, err := logrepl.GetSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
 	if err != nil {
 		return fmt.Errorf("failed to get subscription: %w", err)
 	}
@@ -190,13 +194,19 @@ func (h *ConnectionHandler) executeAlterEnable(subscriptionConfig *SubscriptionC
 		return fmt.Errorf("subscription is already enabled: %s", subscriptionConfig.SubscriptionName)
 	}
 
-	go subscription.Replicator.StartReplication(h.server.NewInternalCtx(), subscription.Publication)
+	go subscription.Replicator.StartReplication(sqlCtx, subscription.Publication)
+
 	return nil
 
 }
 
 func (h *ConnectionHandler) executeAlterDisable(subscriptionConfig *SubscriptionConfig) error {
-	subscription, err := logrepl.GetSubscription(h.server.NewInternalCtx(), subscriptionConfig.SubscriptionName)
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
+
+	subscription, err := logrepl.GetSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
 
 	if err != nil {
 		return fmt.Errorf("failed to get subscription: %w", err)
@@ -211,6 +221,22 @@ func (h *ConnectionHandler) executeAlterDisable(subscriptionConfig *Subscription
 }
 
 func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) error {
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
+
+	subscription, err := logrepl.DeleteSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
+	if err != nil {
+		return fmt.Errorf("failed to delete subscription: %w", err)
+	}
+
+	subscription.Replicator.Stop()
+
+	if err := logrepl.DeleteSubscriptionFromTable(sqlCtx, subscriptionConfig.SubscriptionName); err != nil {
+		return fmt.Errorf("failed to delete subscription from table: %w", err)
+	}
+
 	return nil
 }
 
@@ -230,7 +256,7 @@ func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig
 		return fmt.Errorf("failed to execute CREATE SUBSCRIPTION: %w", err)
 	}
 
-	go replicator.StartReplication(h.server.NewInternalCtx(), subscriptionConfig.PublicationName)
+	go replicator.StartReplication(sqlCtx, subscriptionConfig.PublicationName)
 
 	return nil
 }
@@ -356,7 +382,7 @@ func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscripti
 		return nil, fmt.Errorf("failed to create replication slot: %w", err)
 	}
 
-	// `WriteWALPosition` and `WriteSubscription` execute in a transaction internally,
+	// `WriteWALPosition` and `WriteSubscriptionIntoTable` execute in a transaction internally,
 	// so we start a transaction here and commit it after writing the WAL position.
 	tx, err := adapter.GetCatalogTxn(sqlCtx, nil)
 	if err != nil {
@@ -370,7 +396,7 @@ func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscripti
 		return nil, fmt.Errorf("failed to write WAL position: %w", err)
 	}
 
-	err = logrepl.WriteSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
+	err = logrepl.WriteSubscriptionIntoTable(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write subscription: %w", err)
 	}
