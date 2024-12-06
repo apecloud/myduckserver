@@ -125,11 +125,6 @@ polars_df = pl.from_pandas(pandas_df)
 You can also retrieve query results from MyDuck Server as DataFrames using Arrow format. Here is an example:
 
 ```python
-import io
-import polars as pl
-import pyarrow as pa
-import psycopg
-
 # Copy query result to a Polars DataFrame
 arrow_data = io.BytesIO()
 with cur.copy("COPY (SELECT id, num * num AS num FROM test.tb1) TO STDOUT (FORMAT arrow)") as copy:
