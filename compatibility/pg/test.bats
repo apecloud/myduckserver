@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
-    psql -h 127.0.0.1 -p 5432 -U postgres -c "DROP SCHEMA IF EXISTS test CASCADE;"
+    psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "DROP SCHEMA IF EXISTS test CASCADE;"
     touch /tmp/test_pids
 }
 
@@ -52,12 +52,10 @@ start_process() {
     start_process $BATS_TEST_DIRNAME/go/pg 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
 }
 
-# Before you uncomment the following tests, you need to uncomment the corresponding lines in
-# .github/workflows/clients-compatibility.yml, which will download the necessary dependencies.
-# @test "pg-java" {
-#     start_process javac $BATS_TEST_DIRNAME/java/PGTest.java
-#     start_process java -cp $BATS_TEST_DIRNAME/java:$BATS_TEST_DIRNAME/java/postgresql-42.7.4.jar PGTest 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
-# }
+@test "pg-java" {
+    start_process javac $BATS_TEST_DIRNAME/java/PGTest.java
+    start_process java -cp $BATS_TEST_DIRNAME/java:$BATS_TEST_DIRNAME/java/postgresql-42.7.4.jar PGTest 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
+}
 
 @test "pg-node" {
     start_process node $BATS_TEST_DIRNAME/node/pg_test.js 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
@@ -83,7 +81,7 @@ start_process() {
     start_process ruby $BATS_TEST_DIRNAME/ruby/pg_test.rb 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
 }
 
-# @test "pg-rust" {
-#     start_process cargo build --release --manifest-path $BATS_TEST_DIRNAME/rust/Cargo.toml
-#     start_process $BATS_TEST_DIRNAME/rust/target/release/pg_test 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
-# }
+@test "pg-rust" {
+    start_process cargo build --release --manifest-path $BATS_TEST_DIRNAME/rust/Cargo.toml
+    start_process $BATS_TEST_DIRNAME/rust/target/release/pg_test 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
+}

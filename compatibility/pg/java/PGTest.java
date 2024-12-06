@@ -89,13 +89,10 @@ public class PGTest {
                     while (rs.next()) {
                         int cols = 0;
                         for (String expected : expectedResults[rows]) {
-                            String result = rs.getString(cols + 1);
+                            String result = rs.getString(cols + 1).trim();
                             if (!expected.equals(result)) {
                                 System.err.println("Expected:\n'" + expected + "'");
-                                System.err.println("Result:\n'" + result + "'\nRest of the results:");
-                                while (rs.next()) {
-                                    System.err.println(rs.getString(1));
-                                }
+                                System.err.println("Result:\n'" + result + "'");
                                 return false;
                             }
                             cols++;

@@ -265,7 +265,7 @@ func (h *ConnectionHandler) sendClientStartupMessages() error {
 		// which lists all the available parameters in PostgreSQL. In that case,
 		// we will use a mock value for that parameter. e.g. "on" for "is_superuser".
 		{"in_hot_standby", nil},
-		{"integer_datetimes", nil},
+		{"integer_datetimes", "on"},
 		{"TimeZone", nil},
 		{"IntervalStyle", nil},
 		{"is_superuser", "on"}, // This is not specified in postgresConfigParameters now.
@@ -640,6 +640,10 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 
 			bindvarTypes = preparedStatementData.BindVarTypes
 			tag = preparedStatementData.Query.StatementTag
+		}
+
+		if bindvarTypes == nil {
+			bindvarTypes = make([]uint32, 0)
 		}
 	} else {
 		portalData, ok := h.portals[message.Name]

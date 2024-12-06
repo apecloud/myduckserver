@@ -33,13 +33,16 @@ impl Test {
                 }
                 for (i, row) in rows.iter().enumerate() {
                     for (j, expected) in self.expected_results[i].iter().enumerate() {
-                        let result: String = row.get(j);
+                        let result: String = row.try_get::<usize, String>(j)
+                            .or_else(|_| row.try_get::<usize, i32>(j).map(|v| v.to_string()))
+                            .or_else(|_| row.try_get::<usize, i64>(j).map(|v| v.to_string()))
+                            .or_else(|_| row.try_get::<usize, f64>(j).map(|v| v.to_string()))
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
                         if expected != &result {
                             eprintln!("Expected:\n'{}'", expected);
-                            eprintln!("Result:\n'{}'\nRest of the results:", result);
-                            for row in rows.iter().skip(i + 1) {
-                                eprintln!("{}", row.get::<usize, String>(0));
-                            }
+                            eprintln!("Result:\n'{}'", result);
                             return false;
                         }
                     }
