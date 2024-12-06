@@ -122,15 +122,17 @@ psql -h 127.0.0.1 -p 15432 -U postgres
 
 We have integrated a setup tool in the Docker image that helps replicate data from your primary (MySQL|Postgres) server to MyDuck Server. The tool is available via the `SETUP_MODE` environment variable. In `REPLICA` mode, the container will start MyDuck Server, dump a snapshot of your primary (MySQL|Postgres) server, and start replicating data in real-time.
 
+> [!NOTE]
+> Supported primary database versions: MySQL>=8.0 and PostgreSQL>=13. In addition to the default settings,
+logical replication must be enabled for PostgreSQL by setting `wal_level=logical`.
+> For MySQL, GTID-based replication (`gtid_mode=ON` and `enforce_gtid_consistency=ON`) is recommended but not required.
+
 ```bash
-docker run \
+docker run -d --name myduck \
   -p 13306:3306 \ 
   -p 15432:5432 \
-  --privileged \
-  --workdir=/home/admin \
   --env=SETUP_MODE=REPLICA \
   --env=SOURCE_DSN="<postgresql|mysql>://<user>:<password>@<host>:<port>/<dbname>"
-  --detach=true \
   apecloud/myduckserver:latest
 ```
 `SOURCE_DSN` specifies the connection string to the primary database server, which can be either MySQL or PostgreSQL.
@@ -140,6 +142,9 @@ docker run \
 
 - **PostgreSQL Primary:** Use the `postgres` URI scheme, e.g.,  
   `--env=SOURCE_DSN=postgres://postgres:password@example.com:5432`
+
+> [!NOTE]
+> To replicate from a server running on the host machine, use `host.docker.internal` as the hostname instead of `localhost` or `127.0.0.1`. On Linux, you must also add `--add-host=host.docker.internal:host-gateway` to the `docker run` command.
 
 ### Connecting to Cloud MySQL & Postgres
 
@@ -175,6 +180,10 @@ We have big plans for MyDuck Server! Here are some of the features we’re worki
 - [x] Replicate data from PostgreSQL.
 - [ ] Authentication.
 - [ ] ...and more! We’re always looking for ways to make MyDuck Server better. If you have a feature request, please let us know by [opening an issue](https://github.com/apecloud/myduckserver/issues/new).
+
+## 🏡 Join the Community
+
+- [Discord](https://discord.gg/tSy2MYw3) Let's communicate on Discord about requirements, issues, and user experiences.
 
 ## 💡 Contributing
 

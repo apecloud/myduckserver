@@ -24,6 +24,7 @@ jobs:
         run: |
           cd devtools/htap-setup-mysql/maxscale
           docker compose up -d --wait
+          sleep 10
 
       - name: Verify HTAP setup
         run: |
