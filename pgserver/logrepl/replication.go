@@ -975,7 +975,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	defer adapter.CloseTxn(state.replicaCtx)
 
 	// Flush the delta buffer if too large
-	err = r.flushDeltaBuffer(state, conn, tx, flushReason)
+	err = r.flushDeltaBuffer(state, conn, &tx, flushReason)
 	if err != nil {
 		return err
 	}
@@ -1003,7 +1003,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 }
 
 // flushDeltaBuffer flushes the accumulated changes in the delta buffer
-func (r *LogicalReplicator) flushDeltaBuffer(state *replicationState, conn *stdsql.Conn, tx *stdsql.Tx, reason delta.FlushReason) error {
+func (r *LogicalReplicator) flushDeltaBuffer(state *replicationState, conn *stdsql.Conn, tx **stdsql.Tx, reason delta.FlushReason) error {
 	defer func() {
 		state.deltaBufSize = 0
 	}()

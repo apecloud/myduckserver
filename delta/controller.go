@@ -12,6 +12,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/pgtypes"
@@ -72,7 +73,7 @@ func (c *DeltaController) Close() {
 }
 
 // Flush writes the accumulated changes to the database.
-func (c *DeltaController) Flush(ctx *sql.Context, conn *stdsql.Conn, tx *stdsql.Tx, reason FlushReason) (FlushStats, error) {
+func (c *DeltaController) Flush(ctx *sql.Context, conn *stdsql.Conn, tx **stdsql.Tx, reason FlushReason) (FlushStats, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -143,7 +144,7 @@ func (c *DeltaController) Flush(ctx *sql.Context, conn *stdsql.Conn, tx *stdsql.
 func (c *DeltaController) updateTable(
 	ctx *sql.Context,
 	conn *stdsql.Conn,
-	tx *stdsql.Tx,
+	tx **stdsql.Tx,
 	table tableIdentifier,
 	appender *DeltaAppender,
 	stats *FlushStats,
@@ -177,16 +178,18 @@ func (c *DeltaController) updateTable(
 	switch {
 	case hasInserts && !hasDeletes && !hasUpdates:
 		// Case 1: INSERT only
-		return c.handleInsertOnly(ctx, conn, tx, table, appender, stats)
+		return c.handleInsertOnly(ctx, conn, *tx, table, appender, stats)
 	case hasDeletes && !hasInserts && !hasUpdates:
 		// Case 2: DELETE only
-		return c.handleDeleteOnly(ctx, conn, tx, table, appender, stats)
+		return c.handleDeleteOnly(ctx, conn, *tx, table, appender, stats)
 	case appender.counters.action.delete == 0:
 		// Case 3: INSERT + non-primary-key UPDATE
-		return c.handleZeroDelete(ctx, conn, tx, table, appender, stats)
+		return c.handleZeroDelete(ctx, conn, *tx, table, appender, stats)
 	default:
 		// Case 4: General case
-		return c.handleGeneralCase(ctx, conn, tx, table, appender, stats)
+		//return c.handleGeneralCase(ctx, conn, tx, table, appender, stats)
+		return c.handleUpdateCase(ctx, conn, tx, table, appender, stats)
+		//return c.handleUpdateCaseNew(ctx, conn, *tx, table, appender, stats)
 	}
 }
 
@@ -403,6 +406,212 @@ func (c *DeltaController) handleZeroDelete(
 }
 
 func (c *DeltaController) handleGeneralCase(
+	ctx *sql.Context,
+	conn *stdsql.Conn,
+	tx *stdsql.Tx,
+	table tableIdentifier,
+	appender *DeltaAppender,
+	stats *FlushStats,
+) error {
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender, 0, nil)
+	if err != nil {
+		return err
+	}
+
+	// Create a temporary table to store the latest delta view
+	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender)
+	result, err := tx.ExecContext(ctx, "CREATE OR REPLACE TEMP TABLE delta AS "+condenseDeltaSQL)
+	release() // release the Arrow view immediately
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	stats.DeltaSize += affected
+	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main.delta")
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Delta created")
+	}
+
+	qualifiedTableName := catalog.ConnectIdentifiersANSI(table.dbName, table.tableName)
+
+	// Insert or replace new rows (action = INSERT) into the base table.
+	insertSQL := "INSERT OR REPLACE INTO " +
+		qualifiedTableName +
+		" SELECT * EXCLUDE (" + AugmentedColumnList + ") FROM temp.main.delta WHERE action = " +
+		strconv.Itoa(int(binlog.InsertRowEvent))
+	result, err = tx.ExecContext(ctx, insertSQL)
+	if err == nil {
+		affected, err = result.RowsAffected()
+	}
+	if err != nil {
+		return err
+	}
+	stats.Insertions += affected
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Upserted")
+	}
+
+	// Delete rows that have been deleted.
+	// The plan for `IN` is optimized to a SEMI JOIN,
+	// which is more efficient than ordinary INNER JOIN.
+	// DuckDB does not support multiple columns in `IN` clauses,
+	// so we need to handle this case separately using the `row()` function.
+	inTuple := getPrimaryKeyStruct(appender.BaseSchema())
+	deleteSQL := "DELETE FROM " + qualifiedTableName +
+		" WHERE " + inTuple + " IN (SELECT " + inTuple +
+		"FROM temp.main.delta WHERE action = " + strconv.Itoa(int(binlog.DeleteRowEvent)) + ")"
+	result, err = tx.ExecContext(ctx, deleteSQL)
+	if err == nil {
+		affected, err = result.RowsAffected()
+	}
+	if err != nil {
+		return err
+	}
+	stats.Deletions += affected
+
+	// For debugging:
+	//
+	// rows, err := tx.QueryContext(ctx, "SELECT * FROM "+qualifiedTableName)
+	// if err != nil {
+	// 	return err
+	// }
+	// defer rows.Close()
+	// row := make([]any, len(schema))
+	// pointers := make([]any, len(row))
+	// for i := range row {
+	// 	pointers[i] = &row[i]
+	// }
+	// for rows.Next() {
+	// 	if err := rows.Scan(pointers...); err != nil {
+	// 		return err
+	// 	}
+	// 	fmt.Printf("row:%+v\n", row)
+	// }
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Deleted")
+	}
+
+	return nil
+}
+
+func (c *DeltaController) handleUpdateCase(
+	ctx *sql.Context,
+	conn *stdsql.Conn,
+	txP **stdsql.Tx,
+	table tableIdentifier,
+	appender *DeltaAppender,
+	stats *FlushStats,
+) error {
+	viewName, release, err := c.prepareArrowView(ctx, conn, table, appender, 0, nil)
+	if err != nil {
+		return err
+	}
+
+	tx := *txP
+
+	// Create a temporary table to store the latest delta view
+	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender)
+	result, err := tx.ExecContext(ctx, "CREATE OR REPLACE TEMP TABLE delta AS "+condenseDeltaSQL)
+	release() // release the Arrow view immediately
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	stats.DeltaSize += affected
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Delta created")
+	}
+
+	qualifiedTableName := catalog.ConnectIdentifiersANSI(table.dbName, table.tableName)
+
+	// Delete all rows recorded in the delta buffer
+	inTuple := getPrimaryKeyStruct(appender.BaseSchema())
+	deleteSQL := "DELETE FROM " + qualifiedTableName +
+		" WHERE " + inTuple + " IN (SELECT " + inTuple +
+		"FROM temp.main.delta)"
+	result, err = tx.ExecContext(ctx, deleteSQL)
+	if err == nil {
+		affected, err = result.RowsAffected()
+	}
+	if err != nil {
+		return err
+	}
+	deletedRows := affected
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	adapter.CloseTxn(ctx)
+
+	// Start a new transaction
+	*txP, err = adapter.GetTxn(ctx, nil)
+	if err != nil {
+		return err
+	}
+	tx = *txP
+	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main.delta")
+
+	// Insert or replace new rows (action = INSERT) into the base table.
+	insertSQL := "INSERT INTO " +
+		qualifiedTableName +
+		" SELECT * EXCLUDE (" + AugmentedColumnList + ") FROM temp.main.delta WHERE action = " +
+		strconv.Itoa(int(binlog.InsertRowEvent))
+	result, err = tx.ExecContext(ctx, insertSQL)
+	if err == nil {
+		affected, err = result.RowsAffected()
+	}
+	if err != nil {
+		return err
+	}
+	stats.Insertions += affected
+	stats.Deletions += affected - deletedRows
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Upserted")
+	}
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Deleted")
+	}
+
+	return nil
+}
+
+func (c *DeltaController) handleUpdateCaseNew(
 	ctx *sql.Context,
 	conn *stdsql.Conn,
 	tx *stdsql.Tx,
