@@ -181,7 +181,7 @@ func (h *ConnectionHandler) executeAlterEnable(subscriptionConfig *SubscriptionC
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	err = logrepl.UpdateSubscriptionStatus(sqlCtx, subscriptionConfig.SubscriptionName, true)
+	err = logrepl.UpdateSubscriptionStatus(sqlCtx, true, subscriptionConfig.SubscriptionName)
 	if err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
@@ -195,7 +195,7 @@ func (h *ConnectionHandler) executeAlterDisable(subscriptionConfig *Subscription
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	err = logrepl.UpdateSubscriptionStatus(sqlCtx, subscriptionConfig.SubscriptionName, false)
+	err = logrepl.UpdateSubscriptionStatus(sqlCtx, false, subscriptionConfig.SubscriptionName)
 	if err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}

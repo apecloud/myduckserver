@@ -180,8 +180,8 @@ var InternalTables = struct {
 		Schema:       "__sys__",
 		Name:         "pg_subscription",
 		KeyColumns:   []string{"subname"},
-		ValueColumns: []string{"subconninfo", "subpublication", "subenabled", "subskiplsn"},
-		DDL:          "subname TEXT PRIMARY KEY, subconninfo TEXT, subpublication TEXT, subenabled BOOLEAN, subskiplsn TEXT",
+		ValueColumns: []string{"subconninfo", "subpublication", "subskiplsn", "subenabled"},
+		DDL:          "subname TEXT PRIMARY KEY, subconninfo TEXT, subpublication TEXT, subskiplsn TEXT, subenabled BOOLEAN",
 	},
 	GlobalStatus: InternalTable{
 		Schema:       "performance_schema",

@@ -45,6 +45,7 @@ type rcvMsg struct {
 }
 
 type LogicalReplicator struct {
+	subscription  string
 	primaryDns    string
 	flushInterval time.Duration
 
@@ -59,8 +60,9 @@ type LogicalReplicator struct {
 // NewLogicalReplicator creates a new logical replicator instance which connects to the primary and replication
 // databases using the connection strings provided. The connection to the replica is established immediately, and the
 // connection to the primary is established when StartReplication is called.
-func NewLogicalReplicator(primaryDns string) (*LogicalReplicator, error) {
+func NewLogicalReplicator(subscription, primaryDns string) (*LogicalReplicator, error) {
 	return &LogicalReplicator{
+		subscription:  subscription,
 		primaryDns:    primaryDns,
 		flushInterval: 200 * time.Millisecond,
 		mu:            &sync.Mutex{},
@@ -221,7 +223,7 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 	standbyMessageTimeout := 10 * time.Second
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
-	lastWrittenLsn, err := SelectSubscriptionLsn(sqlCtx, slotName)
+	lastWrittenLsn, err := SelectSubscriptionLsn(sqlCtx, r.subscription)
 	if err != nil {
 		return err
 	}
@@ -979,7 +981,7 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	}
 
 	r.logger.Debugf("Writing LSN %s\n", state.lastCommitLSN)
-	if err = UpdateSubscriptionLsn(state.replicaCtx, state.slotName, state.lastCommitLSN.String()); err != nil {
+	if err = UpdateSubscriptionLsn(state.replicaCtx, state.lastCommitLSN.String(), r.subscription); err != nil {
 		return err
 	}
 

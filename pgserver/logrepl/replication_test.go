@@ -687,7 +687,7 @@ func RunReplicationScript(t *testing.T, dsn string, script ReplicationTest) {
 }
 
 func newReplicator(t *testing.T, primaryDns string) *logrepl.LogicalReplicator {
-	r, err := logrepl.NewLogicalReplicator(primaryDns)
+	r, err := logrepl.NewLogicalReplicator("mySubTest", primaryDns)
 	require.NoError(t, err)
 	return r
 }

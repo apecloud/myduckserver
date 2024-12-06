@@ -15,38 +15,17 @@ type Subscription struct {
 	Subscription string
 	Conn         string
 	Publication  string
-	Lsn          pglogrepl.LSN
+	LsnStr       string
 	Enabled      bool
 	Replicator   *LogicalReplicator
 }
 
 var keyColumns = []string{"subname"}
-var statusValueColumns = []string{"substatus"}
+var statusValueColumns = []string{"subenabled"}
 var lsnValueColumns = []string{"subskiplsn"}
 
 var subscriptionMap = sync.Map{}
 var mu sync.Mutex
-
-func GetSubscription(ctx *sql.Context, name string) (*Subscription, error) {
-	if value, ok := subscriptionMap.Load(name); ok {
-		if sub, ok := value.(*Subscription); ok {
-			return sub, nil
-		}
-	}
-
-	// Attempt to reload all subscriptions if not found
-	if err := UpdateSubscriptions(ctx); err != nil {
-		return nil, err
-	}
-
-	if value, ok := subscriptionMap.Load(name); ok {
-		if sub, ok := value.(*Subscription); ok {
-			return sub, nil
-		}
-	}
-
-	return nil, nil
-}
 
 func UpdateSubscriptions(ctx *sql.Context) error {
 	mu.Lock()
@@ -59,15 +38,16 @@ func UpdateSubscriptions(ctx *sql.Context) error {
 
 	var tempMap = make(map[string]*Subscription)
 	for rows.Next() {
-		var name, conn, pub string
+		var name, conn, pub, lsn string
 		var enabled bool
-		if err := rows.Scan(&name, &conn, &pub, &enabled); err != nil {
+		if err := rows.Scan(&name, &conn, &pub, &lsn, &enabled); err != nil {
 			return err
 		}
 		tempMap[name] = &Subscription{
 			Subscription: name,
 			Conn:         conn,
 			Publication:  pub,
+			LsnStr:       lsn,
 			Enabled:      enabled,
 			Replicator:   nil,
 		}
@@ -75,7 +55,7 @@ func UpdateSubscriptions(ctx *sql.Context) error {
 
 	for tempName, tempSub := range tempMap {
 		if _, loaded := subscriptionMap.LoadOrStore(tempName, tempSub); !loaded {
-			replicator, err := NewLogicalReplicator(tempSub.Conn)
+			replicator, err := NewLogicalReplicator(tempName, tempSub.Conn)
 			if err != nil {
 				return fmt.Errorf("failed to create logical replicator: %v", err)
 			}
@@ -90,8 +70,11 @@ func UpdateSubscriptions(ctx *sql.Context) error {
 			if err != nil {
 				return fmt.Errorf("failed to create replication slot: %v", err)
 			}
+			if tempSub.Enabled {
+				go replicator.StartReplication(ctx, tempSub.Publication)
+			}
 		} else {
-			if sub, ok := subscriptionMap.Load(tempSub); ok {
+			if sub, ok := subscriptionMap.Load(tempName); ok {
 				if subscription, ok := sub.(*Subscription); ok {
 					if tempSub.Enabled != subscription.Enabled {
 						subscription.Enabled = tempSub.Enabled
@@ -124,8 +107,8 @@ func CreateSubscription(ctx *sql.Context, name, conn, pub, lsn string, enabled b
 	return err
 }
 
-func UpdateSubscriptionStatus(ctx *sql.Context, name string, enabled bool) error {
-	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpdateStmt(keyColumns, statusValueColumns), name, enabled)
+func UpdateSubscriptionStatus(ctx *sql.Context, enabled bool, name string) error {
+	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpdateStmt(keyColumns, statusValueColumns), enabled, name)
 	return err
 }
 
@@ -134,8 +117,8 @@ func DeleteSubscription(ctx *sql.Context, name string) error {
 	return err
 }
 
-func UpdateSubscriptionLsn(ctx *sql.Context, name, lsn string) error {
-	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpdateStmt(keyColumns, lsnValueColumns), name, lsn)
+func UpdateSubscriptionLsn(ctx *sql.Context, lsn, name string) error {
+	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpdateStmt(keyColumns, lsnValueColumns), lsn, name)
 	return err
 }
 
