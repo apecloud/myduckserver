@@ -132,7 +132,7 @@ docker run -d --name myduck \
   -p 13306:3306 \ 
   -p 15432:5432 \
   --env=SETUP_MODE=REPLICA \
-  --env=SOURCE_DSN="<postgresql|mysql>://<user>:<password>@<host>:<port>/<dbname>"
+  --env=SOURCE_DSN="<postgres|mysql>://<user>:<password>@<host>:<port>/<dbname>"
   apecloud/myduckserver:latest
 ```
 `SOURCE_DSN` specifies the connection string to the primary database server, which can be either MySQL or PostgreSQL.
