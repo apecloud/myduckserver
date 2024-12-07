@@ -48,3 +48,16 @@ with psycopg.connect("dbname=postgres user=postgres host=127.0.0.1 port=5432", a
             df_from_pg = df_from_pg.astype({'id': 'int64', 'num': 'int64'})
             # Compare the original DataFrame with the DataFrame from PostgreSQL
             assert df.equals(df_from_pg), "DataFrames are not equal"
+
+        # Copy query result to a pandas DataFrame
+        arrow_data = io.BytesIO()
+        with cur.copy("COPY (SELECT id, num * num AS num FROM test.tb1) TO STDOUT (FORMAT arrow)") as copy:
+            for block in copy:
+                arrow_data.write(block)
+
+            with pa.ipc.open_stream(arrow_data.getvalue()) as reader:
+                df_from_pg = reader.read_pandas().astype({'id': 'int64', 'num': 'int64'})
+                df['num'] = df['num'] ** 2
+                df = df.drop('data', axis='columns')
+                # Compare the original DataFrame with the DataFrame from PostgreSQL
+                assert df.equals(df_from_pg), "DataFrames are not equal"

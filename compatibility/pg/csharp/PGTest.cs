@@ -1,28 +1,28 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
-using Microsoft.Data.SqlClient;
+using Npgsql;
 using System.IO;
 
 public class PGTest
 {
     public class Tests
     {
-        private SqlConnection conn;
-        private SqlCommand cmd;
+        private NpgsqlConnection conn;
+        private NpgsqlCommand cmd;
         private List<Test> tests = new List<Test>();
 
         public void Connect(string ip, int port, string user, string password)
         {
-            string connectionString = $"Server={ip},{port};User Id={user};Password={password};";
+            string connectionString = $"Host={ip};Port={port};Username={user};Password={password};Database=postgres;";
             try
             {
-                conn = new SqlConnection(connectionString);
+                conn = new NpgsqlConnection(connectionString);
                 conn.Open();
                 cmd = conn.CreateCommand();
                 cmd.CommandType = CommandType.Text;
             }
-            catch (SqlException e)
+            catch (NpgsqlException e)
             {
                 throw new Exception($"Error connecting to database: {e.Message}", e);
             }
@@ -35,7 +35,7 @@ public class PGTest
                 cmd.Dispose();
                 conn.Close();
             }
-            catch (SqlException e)
+            catch (NpgsqlException e)
             {
                 throw new Exception(e.Message);
             }
@@ -97,7 +97,7 @@ public class PGTest
                 this.expectedResults = expectedResults;
             }
 
-            public bool Run(SqlCommand cmd)
+            public bool Run(NpgsqlCommand cmd)
             {
                 try
                 {
@@ -125,15 +125,11 @@ public class PGTest
                         {
                             for (int col = 0; col < expectedResults[rows].Length; col++)
                             {
-                                string result = reader.GetString(col);
+                                string result = reader.GetValue(col).ToString().Trim();
                                 if (expectedResults[rows][col] != result)
                                 {
                                     Console.Error.WriteLine($"Expected:\n'{expectedResults[rows][col]}'");
-                                    Console.Error.WriteLine($"Result:\n'{result}'\nRest of the results:");
-                                    while (reader.Read())
-                                    {
-                                        Console.Error.WriteLine(reader.GetString(0));
-                                    }
+                                    Console.Error.WriteLine($"Result:\n'{result}'");
                                     return false;
                                 }
                             }
@@ -148,7 +144,7 @@ public class PGTest
                         return true;
                     }
                 }
-                catch (SqlException e)
+                catch (NpgsqlException e)
                 {
                     Console.Error.WriteLine(e.Message);
                     return false;

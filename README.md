@@ -183,7 +183,7 @@ We have big plans for MyDuck Server! Here are some of the features we’re worki
 
 ## 🏡 Join the Community
 
-- [Discord](https://discord.gg/tSy2MYw3) Let's communicate on Discord about requirements, issues, and user experiences.
+- [Discord](https://discord.gg/9MC5cgw5YK) Let's communicate on Discord about requirements, issues, and user experiences.
 
 ## 💡 Contributing
 

@@ -9,26 +9,26 @@ Before getting started, ensure that the following dependencies are installed:
 1. **Go**  
    Download and install the latest version of Go by following the [official installation guide](https://go.dev/doc/install).
 
-   2. **Python and `sqlglot[rs]` package**  
-      MyDuck Server depends on the `sqlglot[rs]` package, which can be installed using `pip3`. You have two options for installation:
+2. **Python and `sqlglot[rs]` package**  
+    MyDuck Server depends on the `sqlglot[rs]` package, which can be installed using `pip3`. You have two options for installation:
 
-       - **Global installation** (use with caution as it may affect system packages):
-         ```bash
-         pip3 install "sqlglot[rs]" --break-system-packages
-         ```
+    - **Global installation** (use with caution as it may affect system packages):
+        ```bash
+        pip3 install "sqlglot[rs]" --break-system-packages
+        ```
 
-       - **Installation inside a virtual environment** (recommended):
-         ```bash
-         mkdir -p ~/venv
-         python3 -m venv ~/venv/myduck
-         source ~/venv/myduck/bin/activate
-         pip3 install "sqlglot[rs]"
-         ```
+    - **Installation inside a virtual environment** (recommended):
+        ```bash
+        mkdir -p ~/venv
+        python3 -m venv ~/venv/myduck
+        source ~/venv/myduck/bin/activate
+        pip3 install "sqlglot[rs]"
+        ```
 
-      Make sure to activate the virtual environment when you work on the project:
-      ```bash
-      source ~/venv/myduck/bin/activate
-      ```
+    Make sure to activate the virtual environment when you work on the project:
+    ```bash
+    source ~/venv/myduck/bin/activate
+    ```
 
 ---
 

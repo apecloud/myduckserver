@@ -188,7 +188,7 @@ setup() {
     if [ -n "$LOG_LEVEL" ]; then
         export LOG_LEVEL="-loglevel $LOG_LEVEL"
     fi
-    parse_dsn
+    
     # Ensure required directories exist
     mkdir -p "${DATA_PATH}" "${LOG_PATH}"
 
@@ -199,6 +199,7 @@ setup() {
             ;;
         "REPLICA")
             echo "Starting MyDuck Server in REPLICA mode..."
+            parse_dsn
             run_server_in_background
             wait_for_my_duck_server_ready
             run_replica_setup

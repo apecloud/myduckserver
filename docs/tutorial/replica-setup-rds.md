@@ -50,31 +50,26 @@ GRANT SELECT, RELOAD, REPLICATION CLIENT, REPLICATION SLAVE, SHOW VIEW, EVENT ON
 
 ## Step 3: Setup Replica Using Docker
 
-Run the following command to set up the replica with MyDuckServer:
+Run the following command to set up the replica with MyDuck Server:
 
 ```bash
-docker run \
-  --network=host \
-  --privileged \
-  --workdir=/home/admin \
+docker run -d --name myduck \
+  -p 13306:3306 \ 
+  -p 15432:5432 \
   --env=SETUP_MODE=REPLICA \
-  --env=MYSQL_HOST=<mysql_host> \
-  --env=MYSQL_PORT=<mysql_port> \
-  --env=MYSQL_USER=<mysql_user> \
-  --env=MYSQL_PASSWORD=<mysql_password> \
-  --detach=true \
+  --env=SOURCE_DSN=mysql://<mysql_user>:<mysql_password>@<mysql_host>:<mysql_port>
   apecloud/myduckserver:latest
 ```
 
 ## Step 4: Check Replica Status
 
-To verify the replica setup, connect to MyDuckServer:
+To verify the replica setup, connect to MyDuck Server:
 
 ```bash
 mysql -h127.0.0.1 -P3306 -uroot
 ```
 
-Check if the source MySQL databases and tables have been replicated to MyDuckServer:
+Check if the source MySQL databases and tables have been replicated to MyDuck Server:
 
 ```sql
 SHOW DATABASES;

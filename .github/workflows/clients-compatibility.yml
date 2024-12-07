@@ -105,7 +105,7 @@ jobs:
           sudo mv duckdb /usr/local/bin
 
           cd compatibility/pg/
-          # curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
+          curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
           npm install pg
           sudo cpanm --notest DBD::Pg
           pip3 install "psycopg[binary]" pandas pyarrow polars
