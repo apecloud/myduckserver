@@ -1432,7 +1432,7 @@ func convertSqlTypesValue(ctx *sql.Context, engine *gms.Engine, value sqltypes.V
 	default:
 		convertedValue, _, err = column.Type.Convert(value.ToString())
 
-		// logrus.WithField("column", column.Subscription).WithField("type", column.Type).Infof(
+		// logrus.WithField("column", column.Name).WithField("type", column.Type).Infof(
 		// 	"Converting value[%s %v %s] to %v %T",
 		// 	value.Type(), value.Raw(), value.ToString(), convertedValue, convertedValue,
 		// )
