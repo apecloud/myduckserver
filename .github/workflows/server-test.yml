@@ -1,0 +1,81 @@
+
+name: Docker Server Mode Test
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  test-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: mysql-client postgresql-client
+          version: 1.0
+
+      - name: Start MyDuck Server in server mode
+        run: |
+          docker run -d --name myduck \
+            -p 13306:3306 \
+            -p 15432:5432 \
+            --env=SETUP_MODE=SERVER \
+            apecloud/myduckserver:latest
+
+          # Wait for MyDuck to be ready
+          sleep 10
+
+      - name: Test MySQL protocol
+        run: |
+          # Test connection and create/insert/query data
+          mysql -h127.0.0.1 -P13306 -uroot -e "
+            CREATE DATABASE test;
+            USE test;
+            CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(50));
+            INSERT INTO items VALUES (1, 'test1'), (2, 'test2');
+            SELECT * FROM items ORDER BY id;" | tee mysql_results.txt
+
+          # Verify results
+          if grep -q "test1" mysql_results.txt && grep -q "test2" mysql_results.txt; then
+            echo "MySQL protocol test successful"
+          else
+            echo "MySQL protocol test failed"
+            exit 1
+          fi
+
+      - name: Test PostgreSQL protocol
+        run: |
+          # Test connection and query data
+          psql -h 127.0.0.1 -p 15432 -U postgres -c "
+            SELECT * FROM test.items ORDER BY id;" | tee pg_results.txt
+
+          # Verify results
+          if grep -q "test1" pg_results.txt && grep -q "test2" pg_results.txt; then
+            echo "PostgreSQL protocol test successful"
+          else
+            echo "PostgreSQL protocol test failed"
+            exit 1
+          fi
+
+      - name: Test DuckDB SQL features
+        run: |
+          # Test some DuckDB-specific features through PostgreSQL protocol
+          psql -h 127.0.0.1 -p 15432 -U postgres -c "
+            CREATE TABLE numbers AS SELECT * FROM range(1, 5) t(n);
+            SELECT list_aggregate(list(n), 'sum') as list_sum FROM numbers;" | tee duckdb_results.txt
+
+          # Verify results (sum should be 10)
+          if grep -q "10" duckdb_results.txt; then
+            echo "DuckDB features test successful"
+          else
+            echo "DuckDB features test failed"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f myduck || true
