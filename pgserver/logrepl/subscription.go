@@ -25,25 +25,22 @@ var statusValueColumns = []string{"subenabled"}
 var lsnValueColumns = []string{"subskiplsn"}
 
 var subscriptionMap = sync.Map{}
-var mu sync.Mutex
 
 func UpdateSubscriptions(ctx *sql.Context) error {
-	mu.Lock()
-	defer mu.Unlock()
 	rows, err := adapter.QueryCatalog(ctx, catalog.InternalTables.PgSubscription.SelectAllStmt())
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	var tempMap = make(map[string]*Subscription)
+	var subMap = make(map[string]*Subscription)
 	for rows.Next() {
 		var name, conn, pub, lsn string
 		var enabled bool
 		if err := rows.Scan(&name, &conn, &pub, &lsn, &enabled); err != nil {
 			return err
 		}
-		tempMap[name] = &Subscription{
+		subMap[name] = &Subscription{
 			Subscription: name,
 			Conn:         conn,
 			Publication:  pub,
@@ -53,7 +50,11 @@ func UpdateSubscriptions(ctx *sql.Context) error {
 		}
 	}
 
-	for tempName, tempSub := range tempMap {
+	if err = rows.Err(); err != nil {
+		return err
+	}
+
+	for tempName, tempSub := range subMap {
 		if _, loaded := subscriptionMap.LoadOrStore(tempName, tempSub); !loaded {
 			replicator, err := NewLogicalReplicator(tempName, tempSub.Conn)
 			if err != nil {
@@ -92,7 +93,7 @@ func UpdateSubscriptions(ctx *sql.Context) error {
 	subscriptionMap.Range(func(key, value interface{}) bool {
 		name, _ := key.(string)
 		subscription, _ := value.(*Subscription)
-		if _, ok := tempMap[name]; !ok {
+		if _, ok := subMap[name]; !ok {
 			subscription.Replicator.Stop()
 			subscriptionMap.Delete(name)
 		}

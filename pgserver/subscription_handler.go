@@ -167,15 +167,15 @@ func (h *ConnectionHandler) executeSubscriptionSQL(subscriptionConfig *Subscript
 	case Drop:
 		return h.executeDrop(subscriptionConfig)
 	case AlterEnable:
-		return h.executeAlterEnable(subscriptionConfig)
+		return h.executeEnableSubscription(subscriptionConfig)
 	case AlterDisable:
-		return h.executeAlterDisable(subscriptionConfig)
+		return h.executeDisableSubscription(subscriptionConfig)
 	default:
 		return fmt.Errorf("unsupported action: %s", subscriptionConfig.Action)
 	}
 }
 
-func (h *ConnectionHandler) executeAlterEnable(subscriptionConfig *SubscriptionConfig) error {
+func (h *ConnectionHandler) executeEnableSubscription(subscriptionConfig *SubscriptionConfig) error {
 	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
 		return fmt.Errorf("failed to create context for query: %w", err)
@@ -189,7 +189,7 @@ func (h *ConnectionHandler) executeAlterEnable(subscriptionConfig *SubscriptionC
 	return commitAndUpdate(sqlCtx)
 }
 
-func (h *ConnectionHandler) executeAlterDisable(subscriptionConfig *SubscriptionConfig) error {
+func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *SubscriptionConfig) error {
 	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
 		return fmt.Errorf("failed to create context for query: %w", err)
