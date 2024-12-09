@@ -1,6 +1,16 @@
 package storage
 
-import "strings"
+import (
+	"context"
+	"fmt"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"os"
+	"path"
+	"strings"
+)
 
 type ObjectStorageConfig struct {
 	Provider        string
@@ -37,4 +47,56 @@ func ParseS3RegionCode(endpoint string) string {
 	}
 
 	return ""
+}
+
+func UploadLocalFile(storageConfig *ObjectStorageConfig, localDir, localFile, remotePath string) error {
+	localFullPath := path.Join(localDir, localFile)
+	file, err := os.Open(localFullPath)
+	if err != nil {
+		return fmt.Errorf("failed to open file %q, %v", localFullPath, err)
+	}
+	defer file.Close()
+
+	// Create an AWS config with static credentials
+	awsCfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(storageConfig.AccessKeyId, storageConfig.SecretAccessKey, "")),
+		config.WithRegion(storageConfig.Region),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load configuration, %v", err)
+	}
+
+	// Create S3 client
+	s3Client := s3.NewFromConfig(awsCfg)
+
+	// Parse the bucket and key from the remote path
+	bucket, key := parseBucketAndPath(remotePath)
+	if strings.HasSuffix(key, "/") {
+		key += localFile
+	}
+
+	// Prepare the S3 put object input
+	input := &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   file,
+	}
+
+	// Upload the file
+	_, err = s3Client.PutObject(context.TODO(), input)
+	if err != nil {
+		return fmt.Errorf("failed to upload file, %v", err)
+	}
+
+	fmt.Printf("File %q successfully uploaded to s3://%s/%s\n", localFullPath, bucket, key)
+	return nil
+}
+
+func parseBucketAndPath(fullPath string) (string, string) {
+	parts := strings.SplitN(fullPath, "/", 2)
+	if len(parts) < 2 {
+		return fullPath, ""
+	}
+	return parts[0], parts[1]
 }

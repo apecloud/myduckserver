@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/environment"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/apecloud/myduckserver/storage"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -26,9 +27,9 @@ import (
 //     SECRET_ACCESS_KEY = 'xxxxxxxxxxxx'
 
 type BackupConfig struct {
-	DbName string
-	Path   string
-	config *storage.ObjectStorageConfig
+	DbName     string
+	RemotePath string
+	config     *storage.ObjectStorageConfig
 }
 
 var backupRegex = regexp.MustCompile(
@@ -47,7 +48,7 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 	// matches:
 	// [0] entire match
 	// [1] DbName (required)
-	// [2] Path (required)
+	// [2] RemotePath (required)
 	// [3] Endpoint (required)
 	// [4] AccessKeyId (required)
 	// [5] SecretAccessKey (required)
@@ -86,9 +87,9 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 	}
 
 	return &BackupConfig{
-		DbName: dbName,
-		Path:   path,
-		config: config,
+		DbName:     dbName,
+		RemotePath: path,
+		config:     config,
 	}, nil
 }
 
@@ -104,6 +105,10 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) error {
 
 	if err := doCheckpoint(sqlCtx); err != nil {
 		return fmt.Errorf("failed to do checkpoint: %w", err)
+	}
+
+	if err := storage.UploadLocalFile(backupConfig.config, environment.GetDataDirectory(), environment.GetDbFileName(), backupConfig.RemotePath); err != nil {
+		return fmt.Errorf("failed to upload file to object storage: %w", err)
 	}
 
 	return nil
@@ -128,11 +133,6 @@ func stopReplication(sqlCtx *sql.Context) error {
 	}
 
 	return logrepl.CommitAndUpdate(sqlCtx)
-}
-
-// TODO(neo.zty): add content.
-func uploadFileToObjectStorage() {
-
 }
 
 // TODO(neo.zty): add content.
