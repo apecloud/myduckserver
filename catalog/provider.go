@@ -58,7 +58,6 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 	}
 
 	storage := stdsql.OpenDB(connector)
-	configuration.Init(storage)
 
 	bootQueries := []string{
 		"INSTALL arrow",

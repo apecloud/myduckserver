@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Copied from github.com/dolthub/doltgresql/server/config/parameters.go
-package config
+package pgconfig
 
 import (
 	"fmt"
