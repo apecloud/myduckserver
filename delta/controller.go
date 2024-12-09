@@ -549,15 +549,14 @@ func (c *DeltaController) handleWithoutIndex(
 	qualifiedTableName := catalog.ConnectIdentifiersANSI(table.dbName, table.tableName)
 	affected := int64(0)
 
-	// Delete rows that have been deleted.
+	// Delete all rows that have been modified.
 	// The plan for `IN` is optimized to a SEMI JOIN,
 	// which is more efficient than ordinary INNER JOIN.
 	// DuckDB does not support multiple columns in `IN` clauses,
 	// so we need to handle this case separately using the `row()` function.
 	inTuple := getPrimaryKeyStruct(appender.BaseSchema())
 	deleteSQL := "DELETE FROM " + qualifiedTableName +
-		" WHERE " + inTuple + " IN (SELECT " + inTuple +
-		"FROM temp.main.delta WHERE action = " + strconv.Itoa(int(binlog.DeleteRowEvent)) + ")"
+		" WHERE " + inTuple + " IN (SELECT " + inTuple + "FROM temp.main.delta)"
 	result, err := tx.ExecContext(ctx, deleteSQL)
 	if err == nil {
 		affected, err = result.RowsAffected()
