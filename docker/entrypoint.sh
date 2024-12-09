@@ -5,6 +5,7 @@ export LOG_PATH="${HOME}/log"
 export MYSQL_REPLICA_SETUP_PATH="${HOME}/replica-setup-mysql"
 export POSTGRES_REPLICA_SETUP_PATH="${HOME}/replica-setup-postgres"
 export PID_FILE="${LOG_PATH}/myduck.pid"
+export INIT_SQLS_DIR="/docker-entrypoint-initdb.d"
 
 parse_dsn() {
     # Check if SOURCE_DSN is set
@@ -126,13 +127,8 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver $LOG_LEVEL >> "${LOG_PATH}"/server.log 2>&1 &
+      nohup myduckserver $LOG_LEVEL $PROFILER_PORT | tee -a "${LOG_PATH}"/server.log 2>&1 &
       echo "$!" > "${PID_FILE}"
-}
-
-run_server_in_foreground() {
-    cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-    myduckserver $LOG_LEVEL
 }
 
 wait_for_my_duck_server_ready() {
@@ -180,6 +176,28 @@ check_process_alive() {
     fi
 }
 
+execute_init_sqls() {
+    local host="127.0.0.1"
+    local mysql_user="root"
+    local mysql_port="3306"
+    local postgres_user="postgres"
+    local postgres_port="5432"
+    if [ -d "$INIT_SQLS_DIR/mysql" ] && [ "$(find "$INIT_SQLS_DIR/mysql" -maxdepth 1 -name '*.sql' -type f | head -n 1)" ]; then
+        echo "Executing init SQL scripts from $INIT_SQLS_DIR/mysql..."
+        for file in "$INIT_SQLS_DIR/mysql"/*.sql; do
+            echo "Executing $file..."
+            mysqlsh --sql --host "$host" --port "$mysql_port" --user "$mysql_user" --no-password --file="$file"
+        done
+    fi
+    if [ -d "$INIT_SQLS_DIR/postgres" ] && [ "$(find "$INIT_SQLS_DIR/postgres" -maxdepth 1 -name '*.sql' -type f | head -n 1)" ]; then
+        echo "Executing init SQL scripts from $INIT_SQLS_DIR/postgres..."
+        for file in "$INIT_SQLS_DIR/postgres"/*.sql; do
+            echo "Executing $file..."
+            psql -h "$host" -p "$postgres_port" -U "$postgres_user" -f "$file"
+        done
+    fi
+}
+
 # Handle the setup_mode
 setup() {
     # Setup signal handlers
@@ -189,19 +207,26 @@ setup() {
         export LOG_LEVEL="-loglevel $LOG_LEVEL"
     fi
     
+    if [ -n "$PROFILER_PORT" ]; then
+        export PROFILER_PORT="-profiler-port $PROFILER_PORT"
+    fi
+
     # Ensure required directories exist
     mkdir -p "${DATA_PATH}" "${LOG_PATH}"
 
     case "$SETUP_MODE" in
         "" | "SERVER")
             echo "Starting MyDuck Server in SERVER mode..."
-            run_server_in_foreground
+            run_server_in_background
+            wait_for_my_duck_server_ready
+            execute_init_sqls
             ;;
         "REPLICA")
             echo "Starting MyDuck Server in REPLICA mode..."
             parse_dsn
             run_server_in_background
             wait_for_my_duck_server_ready
+            execute_init_sqls
             run_replica_setup
             ;;
         *)
@@ -213,7 +238,7 @@ setup() {
 
 setup
 
-while [[ "$SETUP_MODE" == "REPLICA" ]]; do
+while true; do
     # Check if the processes have started
     if ! check_process_alive "$PID_FILE" "MyDuck Server"; then
         echo "CRITICAL: MyDuck Server process died unexpectedly."

@@ -97,6 +97,17 @@ This setup exposes:
 - **Port 13306** for MySQL wire protocol connections.
 - **Port 15432** for PostgreSQL wire protocol connections, allowing direct DuckDB SQL.
 
+To initialize MyDuck Server by executing custom SQL statements once it’s ready, you can place the SQL statements in a file with the .sql extension and mount the file to either `/docker-entrypoint-initdb.d/mysql/` or `/docker-entrypoint-initdb.d/postgres/` in the Docker container. The choice between these directories depends on the protocol used for executing the SQL statements.
+
+For instance:
+```bash
+# Execute init.sql on the port 3306 based on MySQL protocol
+docker run -d -p 13306:3306 -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/postgres/init.sql apecloud/myduckserver:latest
+
+# Execute init.sql on the port 5432 based on PostgreSQL protocol
+docker run -d -p 13306:3306 -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/postgres/init.sql apecloud/myduckserver:latest
+```
+
 ### Usage
 
 #### Connecting via MySQL client
