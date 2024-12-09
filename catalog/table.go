@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/configuration"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/marcboeker/go-duckdb"
@@ -17,8 +19,12 @@ type Table struct {
 	mu      *sync.RWMutex
 	name    string
 	db      *Database
-	comment *Comment[any] // save the comment to avoid querying duckdb everytime
+	comment *Comment[ExtraTableInfo] // save the comment to avoid querying duckdb everytime
 	schema  sql.PrimaryKeySchema
+}
+
+type ExtraTableInfo struct {
+	PkOrdinals []int
 }
 
 type ColumnInfo struct {
@@ -53,17 +59,21 @@ func NewTable(name string, db *Database) *Table {
 	}
 }
 
-func (t *Table) WithComment(comment *Comment[any]) *Table {
+func (t *Table) withComment(comment *Comment[ExtraTableInfo]) *Table {
 	t.comment = comment
 	return t
 }
 
-func (t *Table) WithSchema(ctx *sql.Context) *Table {
+func (t *Table) withSchema(ctx *sql.Context) *Table {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.schema = getPKSchema(ctx, t.db.catalog, t.db.name, t.name)
 	return t
+}
+
+func (t *Table) ExtraTableInfo() ExtraTableInfo {
+	return t.comment.Meta
 }
 
 // Collation implements sql.Table.
@@ -332,6 +342,11 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 	// Lock the table to ensure thread-safety during index creation
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// https://github.com/apecloud/myduckserver/issues/272
+	if mycontext.IsReplicationQuery(ctx) && configuration.IsReplicationWithoutIndex() {
+		return nil
+	}
 
 	if indexDef.IsPrimary() {
 		return fmt.Errorf("primary key cannot be created with CreateIndex, use ALTER TABLE ... ADD PRIMARY KEY instead")

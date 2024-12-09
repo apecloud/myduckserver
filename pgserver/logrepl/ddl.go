@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/configuration"
 	"github.com/apecloud/myduckserver/pgtypes"
 )
 
@@ -21,18 +22,21 @@ func generateCreateTableStmt(msg *pglogrepl.RelationMessageV2) (string, error) {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString(col.Name)
+		sb.WriteString(catalog.QuoteIdentifierANSI(col.Name))
 		sb.WriteString(" ")
 		sb.WriteString(pgTypeName(col))
 		if col.Flags == 1 {
 			keyColumns = append(keyColumns, col.Name)
 		}
 	}
-	if len(keyColumns) > 0 {
+
+	// https://github.com/apecloud/myduckserver/issues/272
+	if !configuration.IsReplicationWithoutIndex() && len(keyColumns) > 0 {
 		sb.WriteString(", PRIMARY KEY (")
 		sb.WriteString(strings.Join(keyColumns, ", "))
 		sb.WriteString(")")
 	}
+
 	sb.WriteString(");")
 	return sb.String(), nil
 }

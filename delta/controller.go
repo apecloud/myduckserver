@@ -284,7 +284,6 @@ func (c *DeltaController) handleInsertOnly(
 	b.WriteString(viewName)
 
 	sql := b.String()
-	ctx.GetLogger().Debug("Insert SQL: ", b.String())
 
 	result, err := tx.ExecContext(ctx, sql)
 	if err != nil {
@@ -395,7 +394,8 @@ func (c *DeltaController) handleZeroDelete(
 	return nil
 }
 
-func (c *DeltaController) handleGeneralCase(
+// Materialize the condensed delta view as a temporary table.
+func (c *DeltaController) materializeCondensedDelta(
 	ctx *sql.Context,
 	conn *stdsql.Conn,
 	tx *stdsql.Tx,
@@ -407,11 +407,12 @@ func (c *DeltaController) handleGeneralCase(
 	if err != nil {
 		return err
 	}
+	defer release()
+
+	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender)
 
 	// Create a temporary table to store the latest delta view
-	condenseDeltaSQL := buildCondenseDeltaSQL(viewName, appender)
 	result, err := tx.ExecContext(ctx, "CREATE OR REPLACE TEMP TABLE delta AS "+condenseDeltaSQL)
-	release() // release the Arrow view immediately
 	if err != nil {
 		return err
 	}
@@ -419,8 +420,6 @@ func (c *DeltaController) handleGeneralCase(
 	if err != nil {
 		return err
 	}
-	stats.DeltaSize += affected
-	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main.delta")
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
 		log.WithFields(logrus.Fields{
@@ -430,14 +429,32 @@ func (c *DeltaController) handleGeneralCase(
 		}).Debug("Delta created")
 	}
 
+	stats.DeltaSize += affected
+	return nil
+}
+
+func (c *DeltaController) handleGeneralCase(
+	ctx *sql.Context,
+	conn *stdsql.Conn,
+	tx *stdsql.Tx,
+	table tableIdentifier,
+	appender *DeltaAppender,
+	stats *FlushStats,
+) error {
+	if err := c.materializeCondensedDelta(ctx, conn, tx, table, appender, stats); err != nil {
+		return err
+	}
+	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main.delta")
+
 	qualifiedTableName := catalog.ConnectIdentifiersANSI(table.dbName, table.tableName)
+	affected := int64(0)
 
 	// Insert or replace new rows (action = INSERT) into the base table.
 	insertSQL := "INSERT OR REPLACE INTO " +
 		qualifiedTableName +
 		" SELECT * EXCLUDE (" + AugmentedColumnList + ") FROM temp.main.delta WHERE action = " +
 		strconv.Itoa(int(binlog.InsertRowEvent))
-	result, err = tx.ExecContext(ctx, insertSQL)
+	result, err := tx.ExecContext(ctx, insertSQL)
 	if err == nil {
 		affected, err = result.RowsAffected()
 	}
@@ -497,6 +514,81 @@ func (c *DeltaController) handleGeneralCase(
 			"table": table.tableName,
 			"rows":  affected,
 		}).Debug("Deleted")
+	}
+
+	return nil
+}
+
+// If the physical DuckDB table does not have an index, we have to handle the delta without UPSERT.
+// This is the case when the environment variable `REPLICATION_WIHTOUT_INDEX` is set to `true`.
+// Currently, since DuckDB's indexes come with limitations and performance issues,
+// we enable this feature by default. See:
+//
+//	https://github.com/apecloud/myduckserver/issues/272
+//
+// The benefit of this mode is that we can use explict DELETE+INSERT to handle the delta.
+func (c *DeltaController) handleWithoutIndex(
+	ctx *sql.Context,
+	conn *stdsql.Conn,
+	tx *stdsql.Tx,
+	table tableIdentifier,
+	appender *DeltaAppender,
+	stats *FlushStats,
+) error {
+	if err := c.materializeCondensedDelta(ctx, conn, tx, table, appender, stats); err != nil {
+		return err
+	}
+	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main.delta")
+
+	qualifiedTableName := catalog.ConnectIdentifiersANSI(table.dbName, table.tableName)
+	affected := int64(0)
+
+	// Delete rows that have been deleted.
+	// The plan for `IN` is optimized to a SEMI JOIN,
+	// which is more efficient than ordinary INNER JOIN.
+	// DuckDB does not support multiple columns in `IN` clauses,
+	// so we need to handle this case separately using the `row()` function.
+	inTuple := getPrimaryKeyStruct(appender.BaseSchema())
+	deleteSQL := "DELETE FROM " + qualifiedTableName +
+		" WHERE " + inTuple + " IN (SELECT " + inTuple +
+		"FROM temp.main.delta WHERE action = " + strconv.Itoa(int(binlog.DeleteRowEvent)) + ")"
+	result, err := tx.ExecContext(ctx, deleteSQL)
+	if err == nil {
+		affected, err = result.RowsAffected()
+	}
+	if err != nil {
+		return err
+	}
+	stats.Deletions += affected
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Deleted")
+	}
+
+	// Insert new rows (action = INSERT) into the base table.
+	insertSQL := "INSERT INTO " +
+		qualifiedTableName +
+		" SELECT * EXCLUDE (" + AugmentedColumnList + ") " +
+		"FROM temp.main.delta WHERE action = " + strconv.Itoa(int(binlog.InsertRowEvent))
+	result, err = tx.ExecContext(ctx, insertSQL)
+	if err == nil {
+		affected, err = result.RowsAffected()
+	}
+	if err != nil {
+		return err
+	}
+	stats.Insertions += affected
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		log.WithFields(logrus.Fields{
+			"db":    table.dbName,
+			"table": table.tableName,
+			"rows":  affected,
+		}).Debug("Inserted")
 	}
 
 	return nil

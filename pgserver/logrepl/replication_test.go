@@ -17,14 +17,16 @@ package logrepl_test
 import (
 	"context"
 	"fmt"
-	"github.com/apecloud/myduckserver/adapter"
-	"github.com/jackc/pglogrepl"
 	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/configuration"
+	"github.com/jackc/pglogrepl"
 
 	"github.com/apecloud/myduckserver/pgserver"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
@@ -741,6 +743,13 @@ func runReplicationScript(
 		}
 
 		conn := connectionForQuery(t, query, connections, primaryDns)
+
+		target, _ := clientSpecFromQueryComment(query)
+		if target == "replica" && configuration.IsReplicationWithoutIndex() {
+			// Remove the primary key index from the replica table
+			query = strings.Replace(query, " primary key,", ",", 1)
+		}
+
 		log.Println("Running setup query:", query)
 		_, err := conn.Exec(ctx, query)
 		require.NoError(t, err)
