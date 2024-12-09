@@ -526,7 +526,7 @@ func (c *DeltaController) handleGeneralCase(
 }
 
 // If the physical DuckDB table does not have an index, we have to handle the delta without UPSERT.
-// This is the case when the environment variable `REPLICATION_WIHTOUT_INDEX` is set to `true`.
+// This is the case when the environment variable `REPLICATION_WITHOUT_INDEX` is set to `true`.
 // Currently, since DuckDB's indexes come with limitations and performance issues,
 // we enable this feature by default. See:
 //
