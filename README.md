@@ -154,7 +154,7 @@ To initialize MyDuck Server by executing custom SQL statements once it’s ready
 For instance:
 ```bash
 # Execute init.sql on MySQL protocol
-docker run -d -p 13306:3306 -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/postgres/init.sql apecloud/myduckserver:latest
+docker run -d -p 13306:3306 -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/mysql/init.sql apecloud/myduckserver:latest
 
 # Execute init.sql on PostgreSQL protocol
 docker run -d -p 13306:3306 -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/postgres/init.sql apecloud/myduckserver:latest
