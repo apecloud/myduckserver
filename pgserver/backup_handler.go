@@ -31,12 +31,6 @@ type BackupConfig struct {
 	config *storage.ObjectStorageConfig
 }
 
-// Regex Explanation:
-// 1. Capture the database name after "BACKUP DATABASE".
-// 2. Capture the path after "TO", which should start with s3:// or s3c://.
-// 3. Optionally capture ENDPOINT.
-// 4. Optionally capture ACCESS_KEY_ID.
-// 5. Optionally capture SECRET_ACCESS_KEY.
 var backupRegex = regexp.MustCompile(
 	`(?i)BACKUP\s+DATABASE\s+(\S+)\s+TO\s+'(s3c?://[^']+)'` +
 		`(?:\s+ENDPOINT\s*=\s*'([^']+)')?` +
@@ -54,9 +48,9 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 	// [0] entire match
 	// [1] DbName (required)
 	// [2] Path (required)
-	// [3] Endpoint (optional)
-	// [4] AccessKeyId (optional)
-	// [5] SecretAccessKey (optional)
+	// [3] Endpoint (required)
+	// [4] AccessKeyId (required)
+	// [5] SecretAccessKey (required)
 	dbName := strings.TrimSpace(matches[1])
 	path := strings.TrimSpace(matches[2])
 	if dbName == "" || path == "" {
