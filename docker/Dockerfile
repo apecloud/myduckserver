@@ -82,10 +82,11 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     rm -f /usr/local/mysqlsh.arm64
 
-# Setup user and working directory
+# Setup user and working directory, and create init directories
 RUN useradd --create-home --user-group --shell /bin/bash admin \
     && echo 'admin:admin' | chpasswd \
-    && echo 'admin ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+    && echo 'admin ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
+    && mkdir -p /docker-entrypoint-initdb.d/mysql /docker-entrypoint-initdb.d/postgres
 
 USER admin
 WORKDIR /home/admin

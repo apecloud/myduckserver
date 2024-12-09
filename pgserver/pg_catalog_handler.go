@@ -10,7 +10,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
-	duckConfig "github.com/apecloud/myduckserver/configuration"
+	"github.com/apecloud/myduckserver/pgserver/pgconfig"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -199,7 +199,7 @@ func isPgCurrentSetting(query ConvertedQuery) bool {
 	if len(matches) != 3 {
 		return false
 	}
-	if duckConfig.IsValidConfig(matches[2]) {
+	if !pgconfig.IsValidPostgresConfigParameter(matches[2]) {
 		// This is a configuration of DuckDB, it should be bypassed to DuckDB
 		return false
 	}
@@ -290,7 +290,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 					// Route it to the engine directly.
 					return false, nil
 				}
-				if duckConfig.IsValidConfig(key) {
+				if !pgconfig.IsValidPostgresConfigParameter(key) {
 					// This is a configuration of DuckDB, it should be bypassed to DuckDB
 					return false, nil
 				}
@@ -315,7 +315,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 				// Route it to the engine directly.
 				return false, nil
 			}
-			if duckConfig.IsValidConfig(key) {
+			if !pgconfig.IsValidPostgresConfigParameter(key) {
 				// This is a configuration of DuckDB, it should be bypassed to DuckDB
 				return false, nil
 			}
@@ -344,7 +344,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 					return false, fmt.Errorf("error: invalid reset statement: %v", stmt)
 				}
 				key := strings.ToLower(stmt.Name)
-				if duckConfig.IsValidConfig(key) {
+				if !pgconfig.IsValidPostgresConfigParameter(key) {
 					return false, nil
 				}
 				return true, nil
@@ -357,7 +357,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 				return false, fmt.Errorf("error: invalid reset statement: %v", query.String)
 			}
 			key := strings.ToLower(resetVar.Name)
-			if duckConfig.IsValidConfig(key) {
+			if !pgconfig.IsValidPostgresConfigParameter(key) {
 				// This is a configuration of DuckDB, it should be bypassed to DuckDB
 				return false, nil
 			}
