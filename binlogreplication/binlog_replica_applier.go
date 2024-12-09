@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -29,9 +28,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/binlog"
-	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/charset"
-	"github.com/apecloud/myduckserver/configuration"
 	"github.com/apecloud/myduckserver/delta"
 	"github.com/apecloud/myduckserver/mysqlutil"
 	gms "github.com/dolthub/go-mysql-server"
@@ -1327,22 +1324,6 @@ func (a *binlogReplicaApplier) getTableSchema(ctx *sql.Context, engine *gms.Engi
 		}
 
 		a.tablesByName[key] = table
-	}
-
-	// https://github.com/apecloud/myduckserver/issues/272
-	if configuration.IsReplicationWithoutIndex() {
-		if t, ok := table.(*catalog.Table); ok {
-			schema := slices.Clone(t.Schema())
-			for i, col := range schema {
-				copied := *col
-				schema[i] = &copied
-			}
-			pks := t.ExtraTableInfo().PkOrdinals
-			for _, idx := range pks {
-				schema[idx].PrimaryKey = true
-			}
-			return sql.NewPrimaryKeySchema(schema, pks...), table.Name(), nil
-		}
 	}
 
 	if pkTable, ok := table.(sql.PrimaryKeyTable); ok {

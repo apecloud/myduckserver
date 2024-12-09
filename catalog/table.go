@@ -65,10 +65,17 @@ func (t *Table) withComment(comment *Comment[ExtraTableInfo]) *Table {
 }
 
 func (t *Table) withSchema(ctx *sql.Context) *Table {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	t.schema = getPKSchema(ctx, t.db.catalog, t.db.name, t.name)
+
+	// https://github.com/apecloud/myduckserver/issues/272
+	if len(t.schema.PkOrdinals) == 0 && configuration.IsReplicationWithoutIndex() {
+		// Pretend that the primary key exists
+		for _, idx := range t.comment.Meta.PkOrdinals {
+			t.schema.Schema[idx].PrimaryKey = true
+		}
+		t.schema = sql.NewPrimaryKeySchema(t.schema.Schema, t.comment.Meta.PkOrdinals...)
+	}
+
 	return t
 }
 
