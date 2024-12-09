@@ -13,6 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/configuration"
 	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
@@ -167,6 +168,8 @@ func (c *DeltaController) updateTable(
 		log.Debugf("Delta: %s.%s: stats: %+v", table.dbName, table.tableName, appender.counters)
 	}
 
+	withoutIndex := configuration.IsReplicationWithoutIndex()
+
 	switch {
 	case hasInserts && !hasDeletes && !hasUpdates:
 		// Case 1: INSERT only
@@ -174,9 +177,12 @@ func (c *DeltaController) updateTable(
 	case hasDeletes && !hasInserts && !hasUpdates:
 		// Case 2: DELETE only
 		return c.handleDeleteOnly(ctx, conn, tx, table, appender, stats)
-	case appender.counters.action.delete == 0:
+	case appender.counters.action.delete == 0 && !withoutIndex:
 		// Case 3: INSERT + non-primary-key UPDATE
 		return c.handleZeroDelete(ctx, conn, tx, table, appender, stats)
+	case withoutIndex:
+		// Case 4: Without index
+		return c.handleWithoutIndex(ctx, conn, tx, table, appender, stats)
 	default:
 		// Case 4: General case
 		return c.handleGeneralCase(ctx, conn, tx, table, appender, stats)
