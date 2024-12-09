@@ -113,6 +113,11 @@ func UpdateSubscriptionStatus(ctx *sql.Context, enabled bool, name string) error
 	return err
 }
 
+func UpdateAllSubscriptionStatus(ctx *sql.Context, enabled bool) error {
+	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpdateAllStmt(statusValueColumns), enabled)
+	return err
+}
+
 func DeleteSubscription(ctx *sql.Context, name string) error {
 	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.DeleteStmt(), name)
 	return err
@@ -134,4 +139,17 @@ func SelectSubscriptionLsn(ctx *sql.Context, subscription string) (pglogrepl.LSN
 	}
 
 	return pglogrepl.ParseLSN(lsn)
+}
+
+func CommitAndUpdate(sqlCtx *sql.Context) error {
+	if err := adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
+	}
+
+	err := UpdateSubscriptions(sqlCtx)
+	if err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }

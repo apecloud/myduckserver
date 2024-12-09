@@ -1,7 +1,11 @@
 package pgserver
 
 import (
+	"context"
 	"fmt"
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/pgserver/logrepl"
+	"github.com/dolthub/go-mysql-server/sql"
 	"regexp"
 	"strings"
 )
@@ -30,61 +34,76 @@ type BackupConfig struct {
 }
 
 var (
-	backupRegex = regexp.MustCompile(`(?i)^\s*BACKUP\s+DATABASE\s+(\w+)\s+TO\s+'([^']+)'\s*(.*)$`)
-	paramRegex  = regexp.MustCompile(`(?i)(ENDPOINT|ACCESS_KEY_ID|SECRET_ACCESS_KEY)\s*=\s*'([^']+)'`)
+	backupRegex = regexp.MustCompile(`(?i)BACKUP DATABASE (\S+) TO '(s3c?://[^']+)'(?:\s+ENDPOINT = '([^']+)')?(?:\s+ACCESS_KEY_ID = '([^']+)')?(?:\s+SECRET_ACCESS_KEY = '([^']+)')?`)
 )
 
-func parseBackupSQL(sql string) (BackupConfig, error) {
-	var config BackupConfig
-
-	normalizedSQL := strings.TrimSpace(sql)
-	matches := backupRegex.FindStringSubmatch(normalizedSQL)
-
-	if len(matches) != 4 {
-		return config, fmt.Errorf("invalid BACKUP DATABASE syntax")
+func parseBackupSQL(sql string) (*BackupConfig, error) {
+	matches := backupRegex.FindStringSubmatch(sql)
+	if matches == nil {
+		return nil, nil
 	}
 
-	config.DbName = matches[1]
-	config.Path = matches[2]
-
-	// Infer the provider from the path (e.g., 's3' from 's3://...')
-	pathParts := strings.SplitN(config.Path, "://", 2)
-	if len(pathParts) != 2 {
-		return config, fmt.Errorf("invalid path format: %s", config.Path)
+	if len(matches) != 6 {
+		return nil, fmt.Errorf("invalid number of matches: %d", len(matches))
 	}
-	config.Provider = strings.ToLower(pathParts[0])
 
-	// Process the remaining parameters
-	parameters := matches[3]
-	paramMatches := paramRegex.FindAllStringSubmatch(parameters, -1)
-
-	for _, pm := range paramMatches {
-		key := strings.ToUpper(pm[1])
-		value := pm[2]
-		switch key {
-		case "ENDPOINT":
-			config.Endpoint = value
-		case "ACCESS_KEY_ID":
-			config.AccessKeyId = value
-		case "SECRET_ACCESS_KEY":
-			config.SecretAccessKey = value
+	// Check if any critical component is missing or empty
+	for i, match := range matches[1:] { // Skip the full match, start with the first group
+		if strings.TrimSpace(match) == "" {
+			return nil, fmt.Errorf("critical backup configuration is missing or empty at position %d", i)
 		}
 	}
 
-	// Validate required fields
-	if config.DbName == "" {
-		return config, fmt.Errorf("database name is required")
-	}
-	if config.Path == "" {
-		return config, fmt.Errorf("backup path is required")
-	}
-	if config.Provider == "" {
-		return config, fmt.Errorf("provider could not be inferred from path")
+	providerRe := regexp.MustCompile(`(?i)^(s3c?)://`)
+	providerMatch := providerRe.FindStringSubmatch(matches[2])
+	if providerMatch == nil {
+		return nil, fmt.Errorf("provider parsing failed")
 	}
 
-	return config, nil
+	return &BackupConfig{
+		DbName:          matches[1],
+		Provider:        providerMatch[1], // Use the captured provider
+		Path:            matches[2],
+		Endpoint:        matches[3],
+		AccessKeyId:     matches[4],
+		SecretAccessKey: matches[5],
+	}, nil
 }
 
-func stopReplication() {
+func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) error {
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
 
+	if err := h.stopReplication(sqlCtx); err != nil {
+		return fmt.Errorf("failed to stop replication: %w", err)
+	}
+
+	if err := doCheckpoint(sqlCtx); err != nil {
+		return fmt.Errorf("failed to do checkpoint: %w", err)
+	}
+
+	return nil
+}
+
+func doCheckpoint(sqlCtx *sql.Context) error {
+	if _, err := adapter.ExecCatalogInTxn(sqlCtx, "CHECKPOINT"); err != nil {
+		return err
+	}
+
+	if err := adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (h *ConnectionHandler) stopReplication(sqlCtx *sql.Context) error {
+	err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, false)
+	if err != nil {
+		return err
+	}
+
+	return logrepl.CommitAndUpdate(sqlCtx)
 }
