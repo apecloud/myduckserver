@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
+	"github.com/apecloud/myduckserver/storage"
 	"github.com/dolthub/go-mysql-server/sql"
 	"regexp"
 	"strings"
@@ -25,48 +26,75 @@ import (
 //     SECRET_ACCESS_KEY = 'xxxxxxxxxxxx'
 
 type BackupConfig struct {
-	DbName          string
-	Provider        string
-	Path            string
-	Endpoint        string
-	AccessKeyId     string
-	SecretAccessKey string
+	DbName string
+	Path   string
+	config *storage.ObjectStorageConfig
 }
 
-var (
-	backupRegex = regexp.MustCompile(`(?i)BACKUP DATABASE (\S+) TO '(s3c?://[^']+)'(?:\s+ENDPOINT = '([^']+)')?(?:\s+ACCESS_KEY_ID = '([^']+)')?(?:\s+SECRET_ACCESS_KEY = '([^']+)')?`)
-)
+// Regex Explanation:
+// 1. Capture the database name after "BACKUP DATABASE".
+// 2. Capture the path after "TO", which should start with s3:// or s3c://.
+// 3. Optionally capture ENDPOINT.
+// 4. Optionally capture ACCESS_KEY_ID.
+// 5. Optionally capture SECRET_ACCESS_KEY.
+var backupRegex = regexp.MustCompile(
+	`(?i)BACKUP\s+DATABASE\s+(\S+)\s+TO\s+'(s3c?://[^']+)'` +
+		`(?:\s+ENDPOINT\s*=\s*'([^']+)')?` +
+		`(?:\s+ACCESS_KEY_ID\s*=\s*'([^']+)')?` +
+		`(?:\s+SECRET_ACCESS_KEY\s*=\s*'([^']+)')?`)
 
 func parseBackupSQL(sql string) (*BackupConfig, error) {
 	matches := backupRegex.FindStringSubmatch(sql)
 	if matches == nil {
+		// No match means the SQL doesn't follow the expected pattern
 		return nil, nil
 	}
 
-	if len(matches) != 6 {
-		return nil, fmt.Errorf("invalid number of matches: %d", len(matches))
+	// matches:
+	// [0] entire match
+	// [1] DbName (required)
+	// [2] Path (required)
+	// [3] Endpoint (optional)
+	// [4] AccessKeyId (optional)
+	// [5] SecretAccessKey (optional)
+	dbName := strings.TrimSpace(matches[1])
+	path := strings.TrimSpace(matches[2])
+	if dbName == "" || path == "" {
+		return nil, fmt.Errorf("missing required backup configuration (database name or path)")
 	}
 
-	// Check if any critical component is missing or empty
-	for i, match := range matches[1:] { // Skip the full match, start with the first group
-		if strings.TrimSpace(match) == "" {
-			return nil, fmt.Errorf("critical backup configuration is missing or empty at position %d", i)
+	provider := ""
+	switch {
+	case strings.HasPrefix(strings.ToLower(path), "s3c://"):
+		provider = "s3c"
+	case strings.HasPrefix(strings.ToLower(path), "s3://"):
+		provider = "s3"
+	default:
+		return nil, fmt.Errorf("unsupported provider in path: %s", path)
+	}
+
+	region := ""
+	if provider == "s3" {
+		region = storage.ParseS3RegionCode(matches[3])
+		if region == "" {
+			return nil, fmt.Errorf("missing region in endpoint: %s", matches[3])
 		}
+	} else {
+		region = storage.DefaultRegion
 	}
 
-	providerRe := regexp.MustCompile(`(?i)^(s3c?)://`)
-	providerMatch := providerRe.FindStringSubmatch(matches[2])
-	if providerMatch == nil {
-		return nil, fmt.Errorf("provider parsing failed")
+	config := &storage.ObjectStorageConfig{
+		Provider:        provider,
+		Endpoint:        strings.TrimSpace(matches[3]),
+		AccessKeyId:     strings.TrimSpace(matches[4]),
+		SecretAccessKey: strings.TrimSpace(matches[5]),
+		Region:          region,
 	}
 
 	return &BackupConfig{
-		DbName:          matches[1],
-		Provider:        providerMatch[1], // Use the captured provider
-		Path:            matches[2],
-		Endpoint:        matches[3],
-		AccessKeyId:     matches[4],
-		SecretAccessKey: matches[5],
+		DbName: dbName,
+		Path:   path,
+		config: config,
 	}, nil
 }
 
@@ -76,7 +104,7 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) error {
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	if err := h.stopReplication(sqlCtx); err != nil {
+	if err := stopReplication(sqlCtx); err != nil {
 		return fmt.Errorf("failed to stop replication: %w", err)
 	}
 
@@ -99,11 +127,20 @@ func doCheckpoint(sqlCtx *sql.Context) error {
 	return nil
 }
 
-func (h *ConnectionHandler) stopReplication(sqlCtx *sql.Context) error {
+func stopReplication(sqlCtx *sql.Context) error {
 	err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, false)
 	if err != nil {
 		return err
 	}
 
 	return logrepl.CommitAndUpdate(sqlCtx)
+}
+
+// TODO(neo.zty): add content.
+func uploadFileToObjectStorage() {
+
+}
+
+// TODO(neo.zty): add content.
+func stopServer() {
 }

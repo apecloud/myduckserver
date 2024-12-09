@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"github.com/apecloud/myduckserver/environment"
 	"os"
 	"path"
 
@@ -53,7 +54,7 @@ func setPersister(provider sql.DatabaseProvider, engine *sqle.Engine) error {
 	// The persister here simply stands-in for your provided persistence function. The database calls this whenever it
 	// needs to save any changes to any of the "mysql" database's tables. The memory session persists in memory,
 	// but can be swapped out with the lines below
-	persister := &MySQLPersister{FilePath: path.Join(dataDirectory, persistFile)}
+	persister := &MySQLPersister{FilePath: path.Join(environment.GetDataDirectory(), persistFile)}
 	mysqlDb.SetPersister(persister)
 
 	if _, err := os.Stat(persister.FilePath); err == nil {

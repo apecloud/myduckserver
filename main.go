@@ -16,11 +16,11 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/environment"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
 	"github.com/apecloud/myduckserver/pgserver/config"
@@ -37,58 +37,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// After running the executable, you may connect to it using the following:
-//
-// > mysql --host=localhost --port=3306 --user=root
-//
-// The included MySQL client is used in this example, however any MySQL-compatible client will work.
-
-var (
-	initMode = false
-
-	address       = "0.0.0.0"
-	port          = 3306
-	socket        string
-	dataDirectory = "."
-	dbFileName    = "mysql.db"
-	logLevel      = int(logrus.InfoLevel)
-
-	replicaOptions replica.ReplicaOptions
-
-	postgresPort = 5432
-
-	defaultTimeZone = ""
-)
-
-func init() {
-	flag.BoolVar(&initMode, "init", initMode, "Initialize the program and exit. The necessary extensions will be installed.")
-
-	flag.StringVar(&address, "address", address, "The address to bind to.")
-	flag.IntVar(&port, "port", port, "The port to bind to.")
-	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
-	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
-	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
-
-	// The following options need to be set for MySQL Shell's utilities to work properly.
-
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_host
-	flag.StringVar(&replicaOptions.ReportHost, "report-host", replicaOptions.ReportHost, "The host name or IP address of the replica to be reported to the source during replica registration.")
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_port
-	flag.IntVar(&replicaOptions.ReportPort, "report-port", replicaOptions.ReportPort, "The TCP/IP port number for connecting to the replica, to be reported to the source during replica registration.")
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_user
-	flag.StringVar(&replicaOptions.ReportUser, "report-user", replicaOptions.ReportUser, "The account user name of the replica to be reported to the source during replica registration.")
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_password
-	flag.StringVar(&replicaOptions.ReportPassword, "report-password", replicaOptions.ReportPassword, "The account password of the replica to be reported to the source during replica registration.")
-
-	// The following options are used to configure the Postgres server.
-
-	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
-
-	// The following options configure default DuckDB settings.
-
-	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
-}
-
 func ensureSQLTranslate() {
 	_, err := transpiler.TranslateWithSQLGlot("SELECT 1")
 	if err != nil {
@@ -97,23 +45,19 @@ func ensureSQLTranslate() {
 }
 
 func main() {
-	flag.Parse()
+	environment.Init()
 
-	if replicaOptions.ReportPort == 0 {
-		replicaOptions.ReportPort = port
-	}
-
-	logrus.SetLevel(logrus.Level(logLevel))
+	logrus.SetLevel(logrus.Level(environment.GetLogLevel()))
 
 	ensureSQLTranslate()
 
-	if initMode {
+	if environment.GetInitMode() {
 		provider := catalog.NewInMemoryDBProvider()
 		provider.Close()
 		return
 	}
 
-	provider, err := catalog.NewDBProvider(dataDirectory, dbFileName)
+	provider, err := catalog.NewDBProvider(environment.GetDataDirectory(), environment.GetDbFileName())
 	if err != nil {
 		logrus.Fatalln("Failed to open the database:", err)
 	}
@@ -125,15 +69,15 @@ func main() {
 		logrus.WithError(err).Fatalln("Failed to enable checkpoint on shutdown")
 	}
 
-	if defaultTimeZone != "" {
-		_, err := pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, defaultTimeZone))
+	if environment.GetDefaultTimeZone() != "" {
+		_, err := pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, environment.GetDefaultTimeZone()))
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to set the default time zone")
 		}
 	}
 
 	// Clear the pipes directory on startup.
-	backend.RemoveAllPipes(dataDirectory)
+	backend.RemoveAllPipes(environment.GetDataDirectory())
 
 	engine := sqle.NewDefault(provider)
 
@@ -146,20 +90,20 @@ func main() {
 		logrus.Fatalln("Failed to set the persister:", err)
 	}
 
-	replica.RegisterReplicaOptions(&replicaOptions)
+	replica.RegisterReplicaOptions(environment.GetReplicaOptions())
 	replica.RegisterReplicaController(provider, engine, pool, builder)
 
 	serverConfig := server.Config{
 		Protocol: "tcp",
-		Address:  fmt.Sprintf("%s:%d", address, port),
-		Socket:   socket,
+		Address:  fmt.Sprintf("%s:%d", environment.GetAddress(), environment.GetPort()),
+		Socket:   environment.GetSocket(),
 	}
 	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
 	if err != nil {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
 
-	if postgresPort > 0 {
+	if environment.GetPostgresPort() > 0 {
 		// Postgres tables are created in the `public` schema by default.
 		// Create the `public` schema if it doesn't exist.
 		_, err := pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
@@ -168,7 +112,7 @@ func main() {
 		}
 
 		pgServer, err := pgserver.NewServer(
-			address, postgresPort,
+			environment.GetAddress(), environment.GetPostgresPort(),
 			func() *sql.Context {
 				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
 				return sql.NewContext(context.Background(), sql.WithSession(session))
