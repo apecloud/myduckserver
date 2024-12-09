@@ -86,7 +86,7 @@ func StartDuckSqlServer(t *testing.T, dir string, persistentSystemVars map[strin
 		fmt.Sprintf("--datadir=%s", dir),
 		fmt.Sprintf("--pg-port=%v", testEnv.DuckPgPort),
 		"--default-time-zone=UTC",
-		"--loglevel=6", // TRACE
+		"--loglevel=4", // 4: INFO, 5: DEBUG, 6: TRACE
 	}
 
 	// If we're running in CI, use a precompiled dolt binary instead of go run

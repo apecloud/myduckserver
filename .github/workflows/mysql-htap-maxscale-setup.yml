@@ -1,0 +1,59 @@
+name: MySQL HTAP MaxScale Test
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  htap-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-client
+          curl -LJO https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+          unzip duckdb_cli-linux-amd64.zip
+          chmod +x duckdb
+          sudo mv duckdb /usr/local/bin
+
+      - name: Launch HTAP cluster
+        run: |
+          cd devtools/htap-setup-mysql/maxscale
+          docker compose up -d --wait
+          sleep 10
+
+      - name: Verify HTAP setup
+        run: |
+          # Save SELECT count before executing the query
+          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.total_connections | tee select_count_before.txt
+
+          # Execute READ statement
+          mysql -h127.0.0.1 -P14000 -ulol -plol -e "SELECT * FROM db01.test;"
+
+          # Save SELECT count after executing the query
+          docker exec maxscale maxctrl api get servers/myduck-server data.attributes.statistics.total_connections | tee select_count_after.txt
+
+          # Read counts from files
+          before_count=$(cat select_count_before.txt)
+          after_count=$(cat select_count_after.txt)
+
+          # Calculate the difference
+          diff=$((after_count - before_count))
+
+          # Verify that SELECT count increased by 1
+          if [ "$diff" -eq 1 ]; then
+            echo 'HTAP setup verification successful.'
+          else
+            echo 'HTAP setup verification failed.'
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd devtools/htap-setup-mysql/maxscale
+          docker compose down

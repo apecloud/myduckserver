@@ -1,0 +1,61 @@
+name: MySQL HTAP ProxySQL Test
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  htap-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-client
+          curl -LJO https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+          unzip duckdb_cli-linux-amd64.zip
+          chmod +x duckdb
+          sudo mv duckdb /usr/local/bin
+
+      - name: Launch HTAP cluster
+        run: |
+          cd devtools/htap-setup-mysql/proxysql
+          docker compose up -d --wait
+          sleep 10
+
+      - name: Verify HTAP setup
+        run: |
+          # Save stats before SELECT
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT srv_host, srv_port, Queries FROM stats_mysql_connection_pool;" | tee stats_before.csv
+
+          # Execute READ statement
+          mysql -h127.0.0.1 -P16033 -ulol -plol -e "SELECT * FROM db01.test;"
+
+          # Save stats after SELECT
+          mysql -h127.0.0.1 -P16032 -uradmin -pradmin --batch --raw -e "SELECT srv_host, srv_port, Queries FROM stats_mysql_connection_pool;" | tee stats_after.csv
+
+          # Use DuckDB to check if Queries count increased for the read server
+          duckdb --csv -c "
+            CREATE TABLE before AS FROM 'stats_before.csv';
+            CREATE TABLE after AS FROM 'stats_after.csv';
+            SELECT (after.Queries - before.Queries) AS diff
+            FROM before JOIN after USING(srv_host, srv_port)
+            WHERE srv_host = 'myduck';
+          " | tail -n 1 | tee query_cnt_diff.txt
+
+          # Verify that #queries increased by 1
+          if grep -q '^1$' query_cnt_diff.txt; then
+            echo 'HTAP setup verification successful.'
+          else
+            echo 'HTAP setup verification failed.'
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd devtools/htap-setup-mysql/proxysql
+          docker compose down

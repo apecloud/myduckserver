@@ -1,0 +1,61 @@
+name: PG HTAP PGPool-II Test
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  htap-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v3
+
+    - name: Install dependencies
+      run: |
+        # Install DuckDB
+        curl -LJO https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+        unzip duckdb_cli-linux-amd64.zip
+        chmod +x duckdb
+        sudo mv duckdb /usr/local/bin
+
+    - name: Launch HTAP cluster
+      run: |
+        cd devtools/htap-setup-pg/pgpool2
+        docker compose up -d --wait
+
+    - name: Verify HTAP setup
+      run: |
+        # Save SHOW POOL_NODES output before SELECT
+        docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SHOW POOL_NODES;' -F ',' --no-align --field-separator ',' --pset footer=off" | tee pool_nodes_before.csv
+
+        # Execute READ statement
+        docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SELECT * FROM test;'"
+
+        # Save SHOW POOL_NODES output after SELECT
+        docker exec htap-pgpool bash -c "PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'SHOW POOL_NODES;' -F ',' --no-align --field-separator ',' --pset footer=off" | tee pool_nodes_after.csv
+
+        # Use DuckDB to check if select_cnt increased
+        duckdb --csv -c "
+          CREATE TABLE before AS FROM 'pool_nodes_before.csv';
+          CREATE TABLE after AS FROM 'pool_nodes_after.csv';
+          SELECT (CAST(after.select_cnt AS INTEGER) - CAST(before.select_cnt AS INTEGER)) AS diff
+          FROM before JOIN after USING(node_id)
+          WHERE node_id = '1';
+        " | tail -n 1 | tee select_cnt_diff.txt
+
+        # Verify that select_cnt increased by 1
+        if grep -q '^1$' select_cnt_diff.txt; then
+          echo 'HTAP setup verification successful.'
+        else
+          echo 'HTAP setup verification failed.'
+          exit 1
+        fi
+
+    - name: Cleanup
+      if: always()
+      run: |
+        cd devtools/htap-setup-pg/pgpool2
+        docker compose down

@@ -1,6 +1,6 @@
 CREATE SCHEMA test
 
-CREATE TABLE test.tb1 (id int, value float, c1 char(10), primary key(id))
+CREATE TABLE test.tb1 (id int, value double precision, c1 char(10), primary key(id))
 
 INSERT INTO test.tb1 VALUES (1, 1.1, 'a'), (2, 2.2, 'b')
 

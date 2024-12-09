@@ -182,15 +182,9 @@ func main() {
 		}
 
 		// Check if there is a replication subscription and start replication if there is.
-		_, conn, pub, ok, err := logrepl.FindReplication(pool.DB)
+		err = logrepl.UpdateSubscriptions(pgServer.NewInternalCtx())
 		if err != nil {
-			logrus.WithError(err).Warnln("Failed to find replication")
-		} else if ok {
-			replicator, err := logrepl.NewLogicalReplicator(conn)
-			if err != nil {
-				logrus.WithError(err).Fatalln("Failed to create logical replicator")
-			}
-			go replicator.StartReplication(pgServer.NewInternalCtx(), pub)
+			logrus.WithError(err).Warnln("Failed to update subscriptions")
 		}
 
 		// Load the configuration for the Postgres server.

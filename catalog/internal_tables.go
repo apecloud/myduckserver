@@ -15,6 +15,29 @@ func (it *InternalTable) QualifiedName() string {
 	return it.Schema + "." + it.Name
 }
 
+func (it *InternalTable) UpdateStmt(keyColumns []string, valueColumns []string) string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("UPDATE ")
+	b.WriteString(it.QualifiedName())
+	b.WriteString(" SET " + valueColumns[0] + " = ?")
+
+	for _, valueColumn := range valueColumns[1:] {
+		b.WriteString(", ")
+		b.WriteString(valueColumn)
+		b.WriteString(" = ?")
+	}
+
+	b.WriteString(" WHERE " + keyColumns[0] + " = ?")
+	for _, keyColumn := range keyColumns[1:] {
+		b.WriteString(", ")
+		b.WriteString(keyColumn)
+		b.WriteString(" = ?")
+	}
+
+	return b.String()
+}
+
 func (it *InternalTable) UpsertStmt() string {
 	var b strings.Builder
 	b.Grow(128)
@@ -50,12 +73,46 @@ func (it *InternalTable) DeleteStmt() string {
 	return b.String()
 }
 
+func (it *InternalTable) DeleteAllStmt() string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("DELETE FROM ")
+	b.WriteString(it.Schema)
+	b.WriteByte('.')
+	b.WriteString(it.Name)
+	return b.String()
+}
+
 func (it *InternalTable) SelectStmt() string {
 	var b strings.Builder
 	b.Grow(128)
 	b.WriteString("SELECT ")
 	b.WriteString(it.ValueColumns[0])
 	for _, c := range it.ValueColumns[1:] {
+		b.WriteString(", ")
+		b.WriteString(c)
+	}
+	b.WriteString(" FROM ")
+	b.WriteString(it.Schema)
+	b.WriteByte('.')
+	b.WriteString(it.Name)
+	b.WriteString(" WHERE ")
+	b.WriteString(it.KeyColumns[0])
+	b.WriteString(" = ?")
+	for _, c := range it.KeyColumns[1:] {
+		b.WriteString(" AND ")
+		b.WriteString(c)
+		b.WriteString(" = ?")
+	}
+	return b.String()
+}
+
+func (it *InternalTable) SelectColumnsStmt(valueColumns []string) string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("SELECT ")
+	b.WriteString(valueColumns[0])
+	for _, c := range valueColumns[1:] {
 		b.WriteString(", ")
 		b.WriteString(c)
 	}
@@ -98,7 +155,6 @@ func (it *InternalTable) CountAllStmt() string {
 var InternalTables = struct {
 	PersistentVariable InternalTable
 	BinlogPosition     InternalTable
-	PgReplicationLSN   InternalTable
 	PgSubscription     InternalTable
 	GlobalStatus       InternalTable
 	// TODO(sean): This is a temporary work around for clients that query the 'pg_catalog.pg_stat_replication'.
@@ -120,19 +176,12 @@ var InternalTables = struct {
 		ValueColumns: []string{"position"},
 		DDL:          "channel TEXT PRIMARY KEY, position TEXT",
 	},
-	PgReplicationLSN: InternalTable{
-		Schema:       "__sys__",
-		Name:         "pg_replication_lsn",
-		KeyColumns:   []string{"slot_name"},
-		ValueColumns: []string{"lsn"},
-		DDL:          "slot_name TEXT PRIMARY KEY, lsn TEXT",
-	},
 	PgSubscription: InternalTable{
 		Schema:       "__sys__",
 		Name:         "pg_subscription",
-		KeyColumns:   []string{"name"},
-		ValueColumns: []string{"connection", "publication"},
-		DDL:          "name TEXT PRIMARY KEY, connection TEXT, publication TEXT",
+		KeyColumns:   []string{"subname"},
+		ValueColumns: []string{"subconninfo", "subpublication", "subskiplsn", "subenabled"},
+		DDL:          "subname TEXT PRIMARY KEY, subconninfo TEXT, subpublication TEXT, subskiplsn TEXT, subenabled BOOLEAN",
 	},
 	GlobalStatus: InternalTable{
 		Schema:       "performance_schema",
@@ -227,7 +276,6 @@ var InternalTables = struct {
 var internalTables = []InternalTable{
 	InternalTables.PersistentVariable,
 	InternalTables.BinlogPosition,
-	InternalTables.PgReplicationLSN,
 	InternalTables.PgSubscription,
 	InternalTables.GlobalStatus,
 	InternalTables.PGStatReplication,

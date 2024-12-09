@@ -30,6 +30,12 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Install system packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: bats cpanminus libmysqlclient-dev dotnet-sdk-8.0 dotnet-runtime-8.0 php-mysql r-base-core
+          version: 1.0
+
       - name: Install dependencies
         run: |
           go get .
@@ -40,20 +46,12 @@ jobs:
           unzip duckdb_cli-linux-amd64.zip
           chmod +x duckdb
           sudo mv duckdb /usr/local/bin
-          duckdb -c 'INSTALL json from core'
-          duckdb -c 'SELECT extension_name, loaded, install_path FROM duckdb_extensions() where installed'
-
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bats cpanminus
 
           cd compatibility/mysql/
-          sudo apt-get install --yes --no-install-recommends libmysqlclient-dev dotnet-sdk-8.0 dotnet-runtime-8.0
           curl -L -o ./java/mysql-connector-java-8.0.30.jar https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar
           npm install mysql
-          sudo apt-get install --yes --no-install-recommends php-mysql
-          sudo cpanm DBD::mysql
+          sudo cpanm --notest DBD::mysql
           pip3 install mysql-connector-python
-          sudo apt-get install --yes --no-install-recommends r-base-core
           sudo R -e "install.packages('RMySQL', repos='http://cran.r-project.org')"
           sudo gem install mysql2
 
@@ -89,6 +87,12 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Install system packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core r-cran-rpostgresql
+          version: 1.0
+
       - name: Install dependencies
         run: |
           go get .
@@ -99,20 +103,13 @@ jobs:
           unzip duckdb_cli-linux-amd64.zip
           chmod +x duckdb
           sudo mv duckdb /usr/local/bin
-          duckdb -c 'INSTALL json from core'
-          duckdb -c 'SELECT extension_name, loaded, install_path FROM duckdb_extensions() where installed'
-
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bats cpanminus
 
           cd compatibility/pg/
-          sudo apt-get install --yes --no-install-recommends postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0
-          # curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
+          curl -L -o ./java/postgresql-42.7.4.jar https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
           npm install pg
-          sudo cpanm DBD::Pg
-          pip3 install psycopg2
-          sudo apt-get install --yes --no-install-recommends r-base-core
-          sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
+          sudo cpanm --notest DBD::Pg
+          pip3 install "psycopg[binary]" pandas pyarrow polars
+          # sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
           sudo gem install pg
 
       - name: Build
@@ -126,3 +123,7 @@ jobs:
       - name: Run the Compatibility Test for PostgreSQL Client
         run: |
           bats ./compatibility/pg/test.bats
+
+      - name: Run the Compatibility Test for Python Data Tools
+        run: |
+          bats ./compatibility/pg-pytools/test.bats

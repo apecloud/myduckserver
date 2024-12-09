@@ -11,13 +11,6 @@ OS=$(uname -s)
 #   fi
 # fi
 
-if [[ "${MYDUCK_IN_DOCKER}" == "true" && "$OS" == "Darwin" &&
-      ("${SOURCE_HOST}" == "127.0.0.1" || "${SOURCE_HOST}" == "localhost" || "${SOURCE_HOST}" == "0.0.0.0") ]]; then
-    SOURCE_HOST_FOR_REPLICA="host.docker.internal"
-else
-    SOURCE_HOST_FOR_REPLICA="${SOURCE_HOST}"
-fi
-
 # Use the EXECUTED_GTID_SET variable from the previous steps
 if [ $GTID_MODE == "ON" ] && [ ! -z "$EXECUTED_GTID_SET" ]; then
   mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
@@ -27,7 +20,7 @@ fi
 
 # Connect to MySQL and execute the replication configuration commands
 REPLICATION_CMD="CHANGE REPLICATION SOURCE TO \
-  SOURCE_HOST='${SOURCE_HOST_FOR_REPLICA}', \
+  SOURCE_HOST='${SOURCE_HOST}', \
   SOURCE_PORT=${SOURCE_PORT}, \
   SOURCE_USER='${SOURCE_USER}', \
   SOURCE_PASSWORD='${SOURCE_PASSWORD}'"

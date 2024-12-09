@@ -12,6 +12,7 @@ jobs:
     strategy:
       matrix:
         GTID_ENABLED: [true, false]
+        TEST_GROUP: ["Group 1", "Group 2"]
 
     steps:
     - uses: actions/checkout@v4
@@ -40,8 +41,12 @@ jobs:
     - name: Build
       run: go build -v
 
-    - name: Test Binlog Replication With GTID ${{ matrix.GTID_ENABLED }}
+    - name: Test Binlog Replication With GTID ${{ matrix.GTID_ENABLED }} - ${{ matrix.TEST_GROUP }}
       run: |
-        GTID_ENABLED=${{ matrix.GTID_ENABLED }} go test -v -p 1 --timeout 600s ./binlogreplication | tee replication.log
+        if [ "${{ matrix.TEST_GROUP }}" = "Group 1" ]; then
+          go test -v -p 1 --timeout 600s ./binlogreplication -run '^TestBinlogReplication' | tee replication.log
+        else
+          go test -v -p 1 --timeout 600s ./binlogreplication -skip '^TestBinlogReplication' | tee replication.log
+        fi
         cat replication.log | grep -e "^--- " | sed 's/--- //g' | awk 'BEGIN {count=1} {printf "%d. %s\n", count++, $0}'
         cat replication.log | grep -q "FAIL" && exit 1 || exit 0

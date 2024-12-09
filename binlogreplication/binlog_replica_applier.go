@@ -1245,6 +1245,10 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 }
 
 func (a *binlogReplicaApplier) flushDeltaBuffer(ctx *sql.Context, reason delta.FlushReason) error {
+	conn, err := adapter.GetCatalogConn(ctx)
+	if err != nil {
+		return err
+	}
 	tx, err := adapter.GetCatalogTxn(ctx, nil)
 	if err != nil {
 		return err
@@ -1252,7 +1256,7 @@ func (a *binlogReplicaApplier) flushDeltaBuffer(ctx *sql.Context, reason delta.F
 
 	defer a.deltaBufSize.Store(0)
 
-	if err = a.tableWriterProvider.FlushDeltaBuffer(ctx, tx, reason); err != nil {
+	if err = a.tableWriterProvider.FlushDeltaBuffer(ctx, conn, tx, reason); err != nil {
 		ctx.GetLogger().Errorf("Failed to flush changelog: %v", err.Error())
 		MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, err.Error())
 	}

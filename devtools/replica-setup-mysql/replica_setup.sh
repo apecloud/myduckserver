@@ -1,7 +1,7 @@
 #!/bin/bash
 
 usage() {
-    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password> [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>] [--myduck_in_docker <true|false>]"
+    echo "Usage: $0 --mysql_host <host> --mysql_port <port> --mysql_user <user> --mysql_password <password> [--myduck_host <host>] [--myduck_port <port>] [--myduck_user <user>] [--myduck_password <password>]"
     exit 1
 }
 
@@ -10,7 +10,6 @@ MYDUCK_PORT=${MYDUCK_PORT:-3306}
 MYDUCK_USER=${MYDUCK_USER:-root}
 MYDUCK_PASSWORD=${MYDUCK_PASSWORD:-}
 MYDUCK_SERVER_ID=${MYDUCK_SERVER_ID:-2}
-MYDUCK_IN_DOCKER=${MYDUCK_IN_DOCKER:-false}
 GTID_MODE="ON"
 
 while [[ $# -gt 0 ]]; do
@@ -51,10 +50,6 @@ while [[ $# -gt 0 ]]; do
             MYDUCK_SERVER_ID="$2"
             shift 2
             ;;
-        --myduck_in_docker)
-            MYDUCK_IN_DOCKER="$2"
-            shift 2
-            ;;
         *)
             echo "Unknown parameter: $1"
             usage
@@ -62,11 +57,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# if MYDUCK_PASSWORD is empty, set NO_PASSWORD_OPTION to "--no-password"
-if [[ -z "$MYDUCK_PASSWORD" ]]; then
-    NO_PASSWORD_OPTION="--no-password"
+# if SOURCE_PASSWORD is empty, set SOURCE_NO_PASSWORD_OPTION to "--no-password"
+if [[ -z "$SOURCE_PASSWORD" ]]; then
+    SOURCE_NO_PASSWORD_OPTION="--no-password"
 else
-    NO_PASSWORD_OPTION=""
+    SOURCE_NO_PASSWORD_OPTION=""
 fi
 
 # Check if all parameters are set

@@ -11,7 +11,7 @@ import (
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
 	duckConfig "github.com/apecloud/myduckserver/configuration"
-	tree "github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pgx/v5/pgproto3"
 )
@@ -36,7 +36,7 @@ func (h *ConnectionHandler) isInRecovery() (string, error) {
 		return "f", err
 	}
 	var count int
-	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.CountAllStmt()).Scan(&count); err != nil {
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgSubscription.CountAllStmt()).Scan(&count); err != nil {
 		return "f", err
 	}
 
@@ -54,9 +54,12 @@ func (h *ConnectionHandler) readOneWALPositionStr() (string, error) {
 	if err != nil {
 		return "0/0", err
 	}
-	var slotName string
-	var lsn string
-	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgReplicationLSN.SelectAllStmt()).Scan(&slotName, &lsn); err != nil {
+
+	// TODO(neo.zty): needs to be fixed
+	var subscription, conn, publication, lsn string
+	var enabled bool
+
+	if err := adapter.QueryRow(ctx, catalog.InternalTables.PgSubscription.SelectAllStmt()).Scan(&subscription, &conn, &publication, &lsn, &enabled); err != nil {
 		if errors.Is(err, stdsql.ErrNoRows) {
 			// if no lsn is stored, return 0
 			return "0/0", nil

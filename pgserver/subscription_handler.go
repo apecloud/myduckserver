@@ -3,102 +3,221 @@ package pgserver
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"strings"
-
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
+	"regexp"
+	"strings"
 )
 
-// This file implements the logic for handling CREATE SUBSCRIPTION SQL statements.
-// Example usage of CREATE SUBSCRIPTION SQL:
+// This file handles SQL statements for managing PostgreSQL subscriptions. It supports:
 //
-// CREATE SUBSCRIPTION mysub
-// CONNECTION 'dbname= host=127.0.0.1 port=5432 user=postgres password=root'
-// PUBLICATION mypub;
+// 1. Creating a subscription:
+//    CREATE SUBSCRIPTION mysub
+//    CONNECTION 'dbname= host=127.0.0.1 port=5432 user=postgres password=root'
+//    PUBLICATION mypub;
+//    This statement sets up a new subscription named 'mysub' that connects to a specified PostgreSQL
+//    database and listens for changes published under the 'mypub' publication.
 //
-// The statement creates a subscription named 'mysub' that connects to a PostgreSQL
-// database and subscribes to changes published under the 'mypub' publication.
+// 2. Altering a subscription (enable/disable):
+//    ALTER SUBSCRIPTION mysub enable;
+//    ALTER SUBSCRIPTION mysub disable;
+//
+// 3. Dropping a subscription:
+//    DROP SUBSCRIPTION mysub;
+//    This statement removes the specified subscription.
 
+// Action represents the type of SQL action.
+type Action string
+
+const (
+	Create       Action = "CREATE"
+	Drop         Action = "DROP"
+	AlterDisable Action = "DISABLE"
+	AlterEnable  Action = "ENABLE"
+)
+
+// ConnectionDetails holds parsed connection string components.
+type ConnectionDetails struct {
+	DBName   string
+	Host     string
+	Port     string
+	User     string
+	Password string
+}
+
+// SubscriptionConfig represents the configuration of a subscription.
 type SubscriptionConfig struct {
 	SubscriptionName string
 	PublicationName  string
-	DBName           string
-	Host             string
-	Port             string
-	User             string
-	Password         string
+	Connection       *ConnectionDetails // Embedded pointer to ConnectionDetails
+	Action           Action
 }
 
-var subscriptionRegex = regexp.MustCompile(`(?i)CREATE SUBSCRIPTION\s+(\w+)\s+CONNECTION\s+'([^']+)'\s+PUBLICATION\s+(\w+);`)
+// createRegex matches and extracts components from a CREATE SUBSCRIPTION SQL statement. Example matched command:
+var createRegex = regexp.MustCompile(`(?i)^CREATE\s+SUBSCRIPTION\s+([\w-]+)\s+CONNECTION\s+'([^']+)'(?:\s+PUBLICATION\s+([\w-]+))?;?$`)
+
+// alterRegex matches ALTER SUBSCRIPTION SQL commands and captures the subscription name and the action to be taken.
+var alterRegex = regexp.MustCompile(`(?i)^ALTER\s+SUBSCRIPTION\s+([\w-]+)\s+(disable|enable);?$`)
+
+// dropRegex matches DROP SUBSCRIPTION SQL commands and captures the subscription name.
+var dropRegex = regexp.MustCompile(`(?i)^DROP\s+SUBSCRIPTION\s+([\w-]+);?$`)
+
+// connectionRegex matches and captures key-value pairs within a connection string.
 var connectionRegex = regexp.MustCompile(`(\b\w+)=([\w\.\d]*)`)
+
+// ParseSubscriptionSQL parses the given SQL statement and returns a SubscriptionConfig.
+func parseSubscriptionSQL(sql string) (*SubscriptionConfig, error) {
+	var config SubscriptionConfig
+	switch {
+	case createRegex.MatchString(sql):
+		matches := createRegex.FindStringSubmatch(sql)
+		config.Action = Create
+		config.SubscriptionName = matches[1]
+		if len(matches) > 3 {
+			config.PublicationName = matches[3]
+		}
+		conn, err := parseConnectionString(matches[2])
+		if err != nil {
+			return nil, err
+		}
+		config.Connection = conn
+
+	case alterRegex.MatchString(sql):
+		matches := alterRegex.FindStringSubmatch(sql)
+		config.SubscriptionName = matches[1]
+		switch strings.ToUpper(matches[2]) {
+		case string(AlterDisable):
+			config.Action = AlterDisable
+		case string(AlterEnable):
+			config.Action = AlterEnable
+		default:
+			return nil, fmt.Errorf("invalid ALTER SUBSCRIPTION action: %s", matches[2])
+		}
+
+	case dropRegex.MatchString(sql):
+		matches := dropRegex.FindStringSubmatch(sql)
+		config.Action = Drop
+		config.SubscriptionName = matches[1]
+
+	default:
+		return nil, nil
+	}
+
+	return &config, nil
+}
+
+// parseConnectionString parses the given connection string and returns a ConnectionDetails.
+func parseConnectionString(connStr string) (*ConnectionDetails, error) {
+	details := &ConnectionDetails{}
+	pairs := connectionRegex.FindAllStringSubmatch(connStr, -1)
+
+	if pairs == nil {
+		return nil, fmt.Errorf("no valid key-value pairs found in connection string")
+	}
+
+	for _, pair := range pairs {
+		key := pair[1]
+		value := pair[2]
+		switch key {
+		case "dbname":
+			details.DBName = value
+		case "host":
+			details.Host = value
+		case "port":
+			details.Port = value
+		case "user":
+			details.User = value
+		case "password":
+			details.Password = value
+		}
+	}
+
+	// Handle default values
+	if details.DBName == "" {
+		details.DBName = "postgres"
+	}
+	if details.Port == "" {
+		details.Port = "5432"
+	}
+
+	return details, nil
+}
 
 // ToConnectionInfo Format SubscriptionConfig into a ConnectionInfo
 func (config *SubscriptionConfig) ToConnectionInfo() string {
 	return fmt.Sprintf("dbname=%s user=%s password=%s host=%s port=%s",
-		config.DBName, config.User, config.Password, config.Host, config.Port)
+		config.Connection.DBName, config.Connection.User, config.Connection.Password,
+		config.Connection.Host, config.Connection.Port)
 }
 
 // ToDNS Format SubscriptionConfig into a DNS
 func (config *SubscriptionConfig) ToDNS() string {
 	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
-		config.User, config.Password, config.Host, config.Port, config.DBName)
+		config.Connection.User, config.Connection.Password, config.Connection.Host,
+		config.Connection.Port, config.Connection.DBName)
 }
 
-func parseSubscriptionSQL(sql string) (*SubscriptionConfig, error) {
-	subscriptionMatch := subscriptionRegex.FindStringSubmatch(sql)
-	if len(subscriptionMatch) < 4 {
-		return nil, fmt.Errorf("invalid CREATE SUBSCRIPTION SQL format")
+func (h *ConnectionHandler) executeSubscriptionSQL(subscriptionConfig *SubscriptionConfig) error {
+	switch subscriptionConfig.Action {
+	case Create:
+		return h.executeCreate(subscriptionConfig)
+	case Drop:
+		return h.executeDrop(subscriptionConfig)
+	case AlterEnable:
+		return h.executeEnableSubscription(subscriptionConfig)
+	case AlterDisable:
+		return h.executeDisableSubscription(subscriptionConfig)
+	default:
+		return fmt.Errorf("unsupported action: %s", subscriptionConfig.Action)
 	}
-
-	subscriptionName := subscriptionMatch[1]
-	connectionString := subscriptionMatch[2]
-	publicationName := subscriptionMatch[3]
-
-	// Parse the connection string into key-value pairs
-	matches := connectionRegex.FindAllStringSubmatch(connectionString, -1)
-	if matches == nil {
-		return nil, fmt.Errorf("no valid key-value pairs found in connection string")
-	}
-
-	// Initialize SubscriptionConfig struct
-	config := &SubscriptionConfig{
-		SubscriptionName: subscriptionName,
-		PublicationName:  publicationName,
-	}
-
-	// Map the matches to struct fields
-	for _, match := range matches {
-		key := strings.ToLower(match[1])
-		switch key {
-		case "dbname":
-			config.DBName = match[2]
-		case "host":
-			config.Host = match[2]
-		case "port":
-			config.Port = match[2]
-		case "user":
-			config.User = match[2]
-		case "password":
-			config.Password = match[2]
-		}
-	}
-
-	// Handle default values
-	if config.DBName == "" {
-		config.DBName = "postgres"
-	}
-	if config.Port == "" {
-		config.Port = "5432"
-	}
-
-	return config, nil
 }
 
-func (h *ConnectionHandler) executeCreateSubscriptionSQL(subscriptionConfig *SubscriptionConfig) error {
+func (h *ConnectionHandler) executeEnableSubscription(subscriptionConfig *SubscriptionConfig) error {
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
+
+	err = logrepl.UpdateSubscriptionStatus(sqlCtx, true, subscriptionConfig.SubscriptionName)
+	if err != nil {
+		return fmt.Errorf("failed to delete subscription: %w", err)
+	}
+
+	return commitAndUpdate(sqlCtx)
+}
+
+func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *SubscriptionConfig) error {
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
+
+	err = logrepl.UpdateSubscriptionStatus(sqlCtx, false, subscriptionConfig.SubscriptionName)
+	if err != nil {
+		return fmt.Errorf("failed to delete subscription: %w", err)
+	}
+
+	return commitAndUpdate(sqlCtx)
+}
+
+func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) error {
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	if err != nil {
+		return fmt.Errorf("failed to create context for query: %w", err)
+	}
+
+	err = logrepl.DeleteSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
+	if err != nil {
+		return fmt.Errorf("failed to delete subscription: %w", err)
+	}
+
+	return commitAndUpdate(sqlCtx)
+}
+
+func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig) error {
 	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
 		return fmt.Errorf("failed to create context for query: %w", err)
@@ -109,20 +228,10 @@ func (h *ConnectionHandler) executeCreateSubscriptionSQL(subscriptionConfig *Sub
 		return fmt.Errorf("failed to create snapshot for CREATE SUBSCRIPTION: %w", err)
 	}
 
-	// Do a checkpoint here to merge the WAL logs
-	// if _, err := adapter.ExecCatalog(sqlCtx, "FORCE CHECKPOINT"); err != nil {
-	// 	return fmt.Errorf("failed to execute FORCE CHECKPOINT: %w", err)
-	// }
-	// if _, err := adapter.ExecCatalog(sqlCtx, "PRAGMA force_checkpoint;"); err != nil {
-	// 	return fmt.Errorf("failed to execute PRAGMA force_checkpoint: %w", err)
-	// }
-
-	replicator, err := h.doCreateSubscription(sqlCtx, subscriptionConfig, lsn)
+	err = h.doCreateSubscription(sqlCtx, subscriptionConfig, lsn)
 	if err != nil {
 		return fmt.Errorf("failed to execute CREATE SUBSCRIPTION: %w", err)
 	}
-
-	go replicator.StartReplication(h.server.NewInternalCtx(), subscriptionConfig.PublicationName)
 
 	return nil
 }
@@ -224,40 +333,40 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 	return lsn, txn.Commit()
 }
 
-func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) (*logrepl.LogicalReplicator, error) {
-	replicator, err := logrepl.NewLogicalReplicator(subscriptionConfig.ToDNS())
+func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) error {
+	err := logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create logical replicator: %w", err)
+		return fmt.Errorf("failed to create publication: %w", err)
 	}
 
-	err = logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create publication: %w", err)
-	}
-
-	err = replicator.CreateReplicationSlotIfNotExists(subscriptionConfig.PublicationName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create replication slot: %w", err)
-	}
-
-	// `WriteWALPosition` and `WriteSubscription` execute in a transaction internally,
-	// so we start a transaction here and commit it after writing the WAL position.
 	tx, err := adapter.GetCatalogTxn(sqlCtx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get transaction: %w", err)
+		return fmt.Errorf("failed to get transaction: %w", err)
 	}
 	defer tx.Rollback()
 	defer adapter.CloseTxn(sqlCtx)
 
-	err = replicator.WriteWALPosition(sqlCtx, subscriptionConfig.PublicationName, lsn)
+	err = logrepl.CreateSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName, lsn.String(), true)
 	if err != nil {
-		return nil, fmt.Errorf("failed to write WAL position: %w", err)
+		return fmt.Errorf("failed to write subscription: %w", err)
 	}
 
-	err = logrepl.WriteSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write subscription: %w", err)
+	return commitAndUpdate(sqlCtx)
+}
+
+func commitAndUpdate(sqlCtx *sql.Context) error {
+	tx := adapter.TryGetTxn(sqlCtx)
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		adapter.CloseTxn(sqlCtx)
 	}
 
-	return replicator, tx.Commit()
+	err := logrepl.UpdateSubscriptions(sqlCtx)
+	if err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }

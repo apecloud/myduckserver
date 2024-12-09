@@ -1,4 +1,4 @@
-import psycopg2
+import psycopg
 
 class PGTest:
     class Test:
@@ -39,12 +39,13 @@ class PGTest:
 
     def connect(self, ip, port, user, password):
         try:
-            self.conn = psycopg2.connect(
+            self.conn = psycopg.connect(
                 host=ip,
                 port=port,
                 dbname="postgres",
                 user=user,
-                password=password
+                password=password,
+                autocommit=True
             )
         except Exception as e:
             raise RuntimeError(e)
@@ -59,7 +60,6 @@ class PGTest:
         for test in self.tests:
             cursor = None
             try:
-                self.conn.autocommit = False
                 cursor = self.conn.cursor()
                 if not test.run(cursor):
                     return False

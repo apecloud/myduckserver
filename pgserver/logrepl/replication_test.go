@@ -17,6 +17,8 @@ package logrepl_test
 import (
 	"context"
 	"fmt"
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/jackc/pglogrepl"
 	"log"
 	"os"
 	"os/exec"
@@ -660,6 +662,7 @@ func RunReplicationScripts(t *testing.T, scripts []ReplicationTest) {
 }
 
 const slotName = "myduck_slot"
+const subscriptionName = "my_sub_test"
 
 // RunReplicationScript runs the given ReplicationTest.
 func RunReplicationScript(t *testing.T, dsn string, script ReplicationTest) {
@@ -686,8 +689,18 @@ func RunReplicationScript(t *testing.T, dsn string, script ReplicationTest) {
 	})
 }
 
-func newReplicator(t *testing.T, primaryDns string) *logrepl.LogicalReplicator {
-	r, err := logrepl.NewLogicalReplicator(primaryDns)
+func newReplicator(sqlCtx *sql.Context, t *testing.T, primaryDns string) *logrepl.LogicalReplicator {
+	err := logrepl.CreateSubscription(sqlCtx, subscriptionName, primaryDns, slotName, pglogrepl.LSN(0).String(), true)
+	require.NoError(t, err)
+
+	tx := adapter.TryGetTxn(sqlCtx)
+	if tx != nil {
+		err := tx.Commit()
+		require.NoError(t, err)
+		adapter.CloseTxn(sqlCtx)
+	}
+
+	r, err := logrepl.NewLogicalReplicator(subscriptionName, primaryDns)
 	require.NoError(t, err)
 	return r
 }
@@ -701,7 +714,7 @@ func runReplicationScript(
 	replicaConn *pgx.Conn,
 	primaryDns string,
 ) {
-	r := newReplicator(t, primaryDns)
+	r := newReplicator(server.NewInternalCtx(), t, primaryDns)
 	defer r.Stop()
 
 	if script.Skip {
