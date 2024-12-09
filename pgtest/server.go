@@ -10,7 +10,7 @@ import (
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/pgserver"
-	pgConfig "github.com/apecloud/myduckserver/pgserver/config"
+	pgConfig "github.com/apecloud/myduckserver/pgserver/pgconfig"
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/server"

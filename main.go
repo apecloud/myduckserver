@@ -23,8 +23,8 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
-	"github.com/apecloud/myduckserver/pgserver/config"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
+	"github.com/apecloud/myduckserver/pgserver/pgconfig"
 	"github.com/apecloud/myduckserver/plugin"
 	"github.com/apecloud/myduckserver/replica"
 	"github.com/apecloud/myduckserver/transpiler"
@@ -188,7 +188,7 @@ func main() {
 		}
 
 		// Load the configuration for the Postgres server.
-		config.Init()
+		pgconfig.Init()
 		go pgServer.Start()
 	}
 

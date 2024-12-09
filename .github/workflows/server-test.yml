@@ -74,6 +74,89 @@ jobs:
             echo "DuckDB features test failed"
             exit 1
           fi
+      
+      - name: Check the loaded extensions, created secrets and global variables
+        run: |
+          # Check AWS extension status
+          if ! psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT extension_name, installed, description FROM duckdb_extensions() where extension_name = 'aws'" | grep -q "aws.*f"; then
+            echo "AWS extension check failed, extension is installed"
+            psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT extension_name, installed, description FROM duckdb_extensions() where extension_name = 'aws'"
+            exit 1
+          fi
+
+          # Check secrets
+          if [ $(psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT name, type, provider, persistent, storage, secret_string FROM duckdb_secrets()" | grep -c ".") -gt 3 ]; then
+            echo "Secrets check failed - unexpected secrets found"
+            psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT name, type, provider, persistent, storage, secret_string FROM duckdb_secrets()"
+            exit 1
+          fi
+
+          # Check if binlog_expire_logs_seconds equals '12345'
+          if mysql -h127.0.0.1 -P13306 -uroot -e "SHOW VARIABLES LIKE 'binlog_expire_logs_seconds'" | grep -q "12345"; then
+            echo "MySQL variable check failed"
+            mysql -h127.0.0.1 -P13306 -uroot -e "SHOW VARIABLES LIKE 'binlog_expire_logs_seconds'"
+            exit 1
+          fi
+
+          echo "Extension, secrets and global variable check successful"
+      
+      - name: Stop MyDuck Server
+        run: |
+          docker rm -f myduck
+      
+      - name: Start MyDuck Server in server mode with initialization SQLs
+        run: |
+          # This will be executed on PostgreSQL protocol.
+          cat <<EOF > init_duckdb.sql
+          INSTALL aws;
+          CREATE SECRET my_secret (
+              TYPE S3,
+              KEY_ID 'my_secret_key',
+              SECRET 'my_secret_value',
+              REGION 'my_region'
+          );
+          EOF
+
+          # This will be executed on MySQL protocol.
+          cat <<EOF > init_mysql.sql
+          SET GLOBAL binlog_expire_logs_seconds = 12345;
+          EOF
+
+          docker run -d --name myduck \
+            -p 13306:3306 \
+            -p 15432:5432 \
+            --env=SETUP_MODE=SERVER \
+            -v ./init_duckdb.sql:/docker-entrypoint-initdb.d/postgres/init_duckdb.sql \
+            -v ./init_mysql.sql:/docker-entrypoint-initdb.d/mysql/init_mysql.sql \
+            apecloud/myduckserver:latest
+  
+          # Wait for MyDuck to be ready
+          sleep 10
+      
+      - name: Check the loaded extensions, created secrets and global variables after initialization
+        run: |
+          # Check AWS extension status
+          if ! psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT extension_name, installed, description FROM duckdb_extensions() where extension_name = 'aws'" | grep -q "aws.*t"; then
+            echo "AWS extension check failed, extension is not installed"
+            psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT extension_name, installed, description FROM duckdb_extensions() where extension_name = 'aws'"
+            exit 1
+          fi
+
+          # Check secrets
+          if [ $(psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT name, type, provider, persistent, storage, secret_string FROM duckdb_secrets()" | grep -c ".") -ne 4 ]; then
+            echo "Secrets check failed - expected 4 secrets"
+            psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT name, type, provider, persistent, storage, secret_string FROM duckdb_secrets()"
+            exit 1
+          fi
+
+          # Check if binlog_expire_logs_seconds equals '12345'
+          if ! mysql -h127.0.0.1 -P13306 -uroot -e "SHOW VARIABLES LIKE 'binlog_expire_logs_seconds'" | grep -q "12345"; then
+            echo "MySQL variable check failed"
+            mysql -h127.0.0.1 -P13306 -uroot -e "SHOW VARIABLES LIKE 'binlog_expire_logs_seconds'"
+            exit 1
+          fi
+
+          echo "Extension, secrets and global variable check successful"
 
       - name: Cleanup
         if: always()

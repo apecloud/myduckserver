@@ -19,6 +19,7 @@
   - [Installation](#installation)
   - [Usage](#usage)
   - [Replicating Data](#replicating-data)
+  - [Initialize MyDuck Server with Custom SQLs](#initialize-myduck-server-with-custom-sqls)
   - [Connecting to Cloud MySQL & Postgres](#connecting-to-cloud-mysql--postgres)
   - [HTAP Setup](#htap-setup)
   - [Query Parquet Files](#query-parquet-files)
@@ -145,6 +146,19 @@ docker run -d --name myduck \
 
 > [!NOTE]
 > To replicate from a server running on the host machine, use `host.docker.internal` as the hostname instead of `localhost` or `127.0.0.1`. On Linux, you must also add `--add-host=host.docker.internal:host-gateway` to the `docker run` command.
+
+### Initialize MyDuck Server with Custom SQLs
+
+To initialize MyDuck Server by executing custom SQL statements once it’s ready, you can place the SQL statements in a file with the .sql extension and mount the file to either `/docker-entrypoint-initdb.d/mysql/` or `/docker-entrypoint-initdb.d/postgres/` in the Docker container. The choice between these directories depends on the protocol used for executing the SQL statements.
+
+For instance:
+```bash
+# Execute init.sql on MySQL protocol
+docker run -d -p 13306:3306 -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/mysql/init.sql apecloud/myduckserver:latest
+
+# Execute init.sql on PostgreSQL protocol
+docker run -d -p 13306:3306 -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/postgres/init.sql apecloud/myduckserver:latest
+```
 
 ### Connecting to Cloud MySQL & Postgres
 
