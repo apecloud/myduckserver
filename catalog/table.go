@@ -48,6 +48,7 @@ var _ sql.IndexAddressableTable = (*Table)(nil)
 var _ sql.InsertableTable = (*Table)(nil)
 var _ sql.UpdatableTable = (*Table)(nil)
 var _ sql.DeletableTable = (*Table)(nil)
+var _ sql.TruncateableTable = (*Table)(nil)
 var _ sql.ReplaceableTable = (*Table)(nil)
 var _ sql.CommentedTable = (*Table)(nil)
 
@@ -331,6 +332,16 @@ func (t *Table) Inserter(*sql.Context) sql.RowInserter {
 // Deleter implements sql.DeletableTable.
 func (t *Table) Deleter(*sql.Context) sql.RowDeleter {
 	return nil
+}
+
+// Truncate implements sql.TruncateableTable.
+func (t *Table) Truncate(ctx *sql.Context) (int, error) {
+	result, err := adapter.ExecCatalog(ctx, `TRUNCATE TABLE `+FullTableName(t.db.catalog, t.db.name, t.name))
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	return int(affected), err
 }
 
 // Replacer implements sql.ReplaceableTable.
