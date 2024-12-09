@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1331,8 +1332,16 @@ func (a *binlogReplicaApplier) getTableSchema(ctx *sql.Context, engine *gms.Engi
 	// https://github.com/apecloud/myduckserver/issues/272
 	if configuration.IsReplicationWithoutIndex() {
 		if t, ok := table.(*catalog.Table); ok {
+			schema := slices.Clone(t.Schema())
+			for i, col := range schema {
+				copied := *col
+				schema[i] = &copied
+			}
 			pks := t.ExtraTableInfo().PkOrdinals
-			return sql.NewPrimaryKeySchema(t.Schema(), pks...), table.Name(), nil
+			for _, idx := range pks {
+				schema[idx].PrimaryKey = true
+			}
+			return sql.NewPrimaryKeySchema(schema, pks...), table.Name(), nil
 		}
 	}
 
