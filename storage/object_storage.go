@@ -45,7 +45,7 @@ func (storageConfig *ObjectStorageConfig) UploadLocalFile(localDir, localFile, r
 		return "", err
 	}
 
-	bucketBasics := BucketBasics{S3Client: s3.NewFromConfig(*s3Cfg)}
+	bucketBasics := &BucketBasics{S3Client: s3.NewFromConfig(*s3Cfg)}
 
 	// Parse the bucket and key from the remote path
 	bucket, key := parseBucketAndPath(remotePath)
@@ -58,10 +58,10 @@ func (storageConfig *ObjectStorageConfig) UploadLocalFile(localDir, localFile, r
 		return "", err
 	}
 
-	return fmt.Sprintf("File %q successfully uploaded to s3://%s/%s\n", localFullPath, bucket, key), nil
+	return fmt.Sprintf("File %q successfully uploaded to %s://%s/%s\n", localFullPath, storageConfig.Provider, bucket, key), nil
 }
 
-func (basics BucketBasics) UploadFile(ctx context.Context, bucketName string, objectKey string, fileName string) error {
+func (basics *BucketBasics) UploadFile(ctx context.Context, bucketName string, objectKey string, fileName string) error {
 	file, err := os.Open(fileName)
 	if err != nil {
 		return fmt.Errorf("Couldn't open file %v to upload. Here's why: %v\n", fileName, err)
