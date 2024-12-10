@@ -171,10 +171,8 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	}
 
 	// https://github.com/apecloud/myduckserver/issues/272
-	if !(mycontext.IsReplicationQuery(ctx) && configuration.IsReplicationWithoutIndex()) {
-		if len(primaryKeys) > 0 {
-			b.WriteString(fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
-		}
+	if len(primaryKeys) > 0 && !isIndexCreationDisabled(ctx) {
+		b.WriteString(fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
 	}
 
 	b.WriteString(")")
@@ -203,6 +201,23 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	// TODO: support collation
 
 	return nil
+}
+
+func isIndexCreationDisabled(ctx *sql.Context) bool {
+	if !configuration.IsReplicationWithoutIndex() {
+		return false
+	}
+	if mycontext.IsReplicationQuery(ctx) {
+		return true
+	}
+	_, vv, ok := sql.SystemVariables.GetGlobal("replica_is_loading_snapshot")
+	if !ok {
+		return false
+	}
+	if b, ok := vv.(int8); ok {
+		return b != 0
+	}
+	return false
 }
 
 // CreateTable implements sql.TableCreator.
