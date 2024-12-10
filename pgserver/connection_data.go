@@ -58,6 +58,7 @@ type ConvertedQuery struct {
 	StatementTag       string
 	PgParsable         bool
 	SubscriptionConfig *SubscriptionConfig
+	BackupConfig       *BackupConfig
 }
 
 // copyFromStdinState tracks the metadata for an import of data into a table using a COPY FROM STDIN statement. When
