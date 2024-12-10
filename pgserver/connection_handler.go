@@ -984,7 +984,13 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 	if query.SubscriptionConfig != nil {
 		return h.executeSubscriptionSQL(query.SubscriptionConfig)
 	} else if query.BackupConfig != nil {
-		return h.executeBackup(query.BackupConfig)
+		msg, err := h.executeBackup(query.BackupConfig)
+		if err != nil {
+			return err
+		}
+		return h.send(&pgproto3.ErrorResponse{
+			Message: msg,
+		})
 	}
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)

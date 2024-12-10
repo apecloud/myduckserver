@@ -27,9 +27,9 @@ import (
 //     SECRET_ACCESS_KEY = 'xxxxxxxxxxxx'
 
 type BackupConfig struct {
-	DbName     string
-	RemotePath string
-	config     *storage.ObjectStorageConfig
+	DbName        string
+	RemotePath    string
+	StorageConfig *storage.ObjectStorageConfig
 }
 
 var backupRegex = regexp.MustCompile(
@@ -48,70 +48,48 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 	// matches:
 	// [0] entire match
 	// [1] DbName (required)
-	// [2] RemotePath (required)
+	// [2] RemoteUri (required)
 	// [3] Endpoint (required)
 	// [4] AccessKeyId (required)
 	// [5] SecretAccessKey (required)
 	dbName := strings.TrimSpace(matches[1])
-	path := strings.TrimSpace(matches[2])
-	if dbName == "" || path == "" {
+	remoteUri := strings.TrimSpace(matches[2])
+	endpoint := strings.TrimSpace(matches[3])
+	accessKeyId := strings.TrimSpace(matches[4])
+	secretAccessKey := strings.TrimSpace(matches[5])
+
+	if dbName == "" || remoteUri == "" {
 		return nil, fmt.Errorf("missing required backup configuration (database name or path)")
 	}
 
-	provider := ""
-	switch {
-	case strings.HasPrefix(strings.ToLower(path), "s3c://"):
-		provider = "s3c"
-	case strings.HasPrefix(strings.ToLower(path), "s3://"):
-		provider = "s3"
-	default:
-		return nil, fmt.Errorf("unsupported provider in path: %s", path)
-	}
-
-	region := ""
-	if provider == "s3" {
-		region = storage.ParseS3RegionCode(matches[3])
-		if region == "" {
-			return nil, fmt.Errorf("missing region in endpoint: %s", matches[3])
-		}
-	} else {
-		region = storage.DefaultRegion
-	}
-
-	config := &storage.ObjectStorageConfig{
-		Provider:        provider,
-		Endpoint:        strings.TrimSpace(matches[3]),
-		AccessKeyId:     strings.TrimSpace(matches[4]),
-		SecretAccessKey: strings.TrimSpace(matches[5]),
-		Region:          region,
+	storageConfig, remotePath, err := storage.ConstructStorageConfig(remoteUri, endpoint, accessKeyId, secretAccessKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct storage StorageConfig: %w", err)
 	}
 
 	return &BackupConfig{
-		DbName:     dbName,
-		RemotePath: path,
-		config:     config,
+		DbName:        dbName,
+		RemotePath:    remotePath,
+		StorageConfig: storageConfig,
 	}, nil
 }
 
-func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) error {
+func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, error) {
 	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		return fmt.Errorf("failed to create context for query: %w", err)
+		return "", fmt.Errorf("failed to create context for query: %w", err)
 	}
 
 	if err := stopReplication(sqlCtx); err != nil {
-		return fmt.Errorf("failed to stop replication: %w", err)
+		return "", fmt.Errorf("failed to stop replication: %w", err)
 	}
 
 	if err := doCheckpoint(sqlCtx); err != nil {
-		return fmt.Errorf("failed to do checkpoint: %w", err)
+		return "", fmt.Errorf("failed to do checkpoint: %w", err)
 	}
 
-	if err := storage.UploadLocalFile(backupConfig.config, environment.GetDataDirectory(), environment.GetDbFileName(), backupConfig.RemotePath); err != nil {
-		return fmt.Errorf("failed to upload file to object storage: %w", err)
-	}
-
-	return nil
+	return backupConfig.StorageConfig.UploadLocalFile(environment.GetDataDirectory(), environment.GetDbFileName(),
+		backupConfig.RemotePath)
 }
 
 func doCheckpoint(sqlCtx *sql.Context) error {
