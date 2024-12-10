@@ -610,6 +610,29 @@ var replicationTests = []ReplicationTest{
 			},
 		},
 	},
+	{
+		Name: "Truncate table",
+		SetUpScript: []string{
+			dropReplicationSlot,
+			createReplicationSlot,
+			startReplication,
+			"/* replica */ drop table if exists public.test",
+			"drop table if exists public.test",
+			"CREATE TABLE public.test (id INT primary key, name varchar(10))",
+			"INSERT INTO public.test VALUES (1, 'one'), (2, 'two'), (3, 'three')",
+			"TRUNCATE TABLE public.test",
+			"INSERT INTO public.test VALUES (4, 'four')",
+			waitForCatchup,
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query: "/* replica */ SELECT * FROM public.test order by id",
+				Expected: []sql.Row{
+					{int32(4), "four"},
+				},
+			},
+		},
+	},
 }
 
 func TestReplication(t *testing.T) {

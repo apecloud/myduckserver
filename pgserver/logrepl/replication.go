@@ -26,6 +26,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/binlog"
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/delta"
 	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -814,8 +815,8 @@ func (r *LogicalReplicator) processMessage(
 			// No old tuple provided; it means the key columns are unchanged.
 			// It's fine not to append a delete event to the delta in this case.
 			// However, the delta appender implements an optimization that
-			// uses INSERT instead of UPSERT+DELETE when there is no deletion in a batch.
-			// We need to enforce the use of UPSERT here because the deletion count is zero.
+			// uses INSERT instead of UPSERT+DELETE or DELETE+INSERT when there is no deletion in a batch.
+			// We need to enforce the latter code path here because the deletion count is zero.
 			err = r.append(state, logicalMsg.RelationID, nil, binlog.DeleteRowEvent, binlog.UpdateRowEvent, true)
 		}
 		if err != nil {
@@ -836,9 +837,9 @@ func (r *LogicalReplicator) processMessage(
 		if !state.processMessages {
 			r.logger.Debugf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
 			return false, nil
-			// Determine which columns to use based on OldTupleType
 		}
 
+		// Determine which columns to use based on OldTupleType
 		switch logicalMsg.OldTupleType {
 		case pglogrepl.UpdateMessageTupleTypeKey:
 			err = r.append(state, logicalMsg.RelationID, logicalMsg.OldTuple.Columns, binlog.DeleteRowEvent, binlog.DeleteRowEvent, true)
@@ -858,7 +859,27 @@ func (r *LogicalReplicator) processMessage(
 		state.inTxnStmtID += 1
 
 	case *pglogrepl.TruncateMessageV2:
-		r.logger.Debugf("truncate for xid %d\n", logicalMsg.Xid)
+		if !state.processMessages {
+			r.logger.Debugf("Received stale message, ignoring. Last written LSN: %s Message LSN: %s", state.lastWrittenLSN, xld.ServerWALEnd)
+			return false, nil
+		}
+
+		r.logger.Debugf("Truncate message: xid %d\n", logicalMsg.Xid)
+
+		// Flush the delta buffer first
+		r.flushDeltaBuffer(state, nil, nil, delta.DMLStmtFlushReason)
+
+		// Truncate the tables
+		for _, relationID := range logicalMsg.RelationIDs {
+			if err := r.truncate(state, relationID); err != nil {
+				return false, err
+			}
+		}
+
+		state.dirtyTxn = true
+		state.dirtyStream = true
+		state.inTxnStmtID += 1
+
 	case *pglogrepl.TypeMessageV2:
 		r.logger.Debugf("typeMessage for xid %d\n", logicalMsg.Xid)
 	case *pglogrepl.OriginMessage:
@@ -1082,6 +1103,17 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 
 	state.deltaBufSize += uint64(size)
 	return nil
+}
+
+func (r *LogicalReplicator) truncate(state *replicationState, relationID uint32) error {
+	rel, ok := state.relations[relationID]
+	if !ok {
+		return fmt.Errorf("unknown relation ID %d", relationID)
+	}
+
+	r.logger.Debugf("Truncating table %s.%s\n", rel.Namespace, rel.RelationName)
+	_, err := adapter.ExecInTxn(state.replicaCtx, `TRUNCATE `+catalog.ConnectIdentifiersANSI(rel.Namespace, rel.RelationName))
+	return err
 }
 
 func tupleDataFormat(dataType uint8) int16 {
