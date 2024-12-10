@@ -45,7 +45,7 @@ output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION -- util copy-ins
     --bytesPerChunk 256M \
     --ignore-version true \
     --load-indexes false \
-    --defer-table-indexes all
+    --defer-table-indexes all \
 )
 
 if [[ $GTID_MODE == "ON" ]]; then
