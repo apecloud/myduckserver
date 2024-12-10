@@ -71,6 +71,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	switch n.(type) {
 	case *plan.CreateDB, *plan.DropDB, *plan.DropTable, *plan.RenameTable,
 		*plan.CreateTable, *plan.AddColumn, *plan.RenameColumn, *plan.DropColumn, *plan.ModifyColumn,
+		*plan.Truncate,
 		*plan.CreateIndex, *plan.DropIndex, *plan.AlterIndex, *plan.ShowIndexes,
 		*plan.ShowTables, *plan.ShowCreateTable, *plan.ShowColumns,
 		*plan.ShowBinlogs, *plan.ShowBinlogStatus, *plan.ShowWarnings,

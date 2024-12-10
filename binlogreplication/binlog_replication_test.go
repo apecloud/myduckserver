@@ -506,6 +506,31 @@ func TestCharsetsAndCollations(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
+// TestTruncateTable tests that TRUNCATE TABLE is correctly replicated.
+func TestTruncateTable(t *testing.T) {
+	defer teardown(t)
+	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
+	startReplicationAndCreateTestDb(t, mySqlPort)
+
+	// Create a table and insert some data
+	primaryDatabase.MustExec("create table t (pk int primary key);")
+	primaryDatabase.MustExec("insert into t values (1), (2), (3);")
+
+	// Verify the data on the replica
+	waitForReplicaToCatchUp(t)
+	requireReplicaResults(t, "select * from db01.t order by pk;", [][]any{{"1"}, {"2"}, {"3"}})
+
+	// TRUNCATE TABLE and verify the replica
+	primaryDatabase.MustExec("truncate table t;")
+	waitForReplicaToCatchUp(t)
+	requireReplicaResults(t, "select * from db01.t;", [][]any{})
+
+	// Insert some new data and verify the replica
+	primaryDatabase.MustExec("insert into t values (4), (5), (6);")
+	waitForReplicaToCatchUp(t)
+	requireReplicaResults(t, "select * from db01.t order by pk;", [][]any{{"4"}, {"5"}, {"6"}})
+}
+
 //
 // Test Helper Functions
 //

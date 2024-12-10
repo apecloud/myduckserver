@@ -28,6 +28,7 @@ import (
 	"github.com/apecloud/myduckserver/binlogreplication"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/delta"
+	"github.com/apecloud/myduckserver/mycontext"
 )
 
 // registerReplicaController registers the replica controller into the engine
@@ -36,8 +37,11 @@ func RegisterReplicaController(provider *catalog.DatabaseProvider, engine *sqle.
 	replica := binlogreplication.MyBinlogReplicaController
 	replica.SetEngine(engine)
 
+	stdctx := context.Background()
+	stdctx = mycontext.WithQueryOrigin(stdctx, mycontext.MySQLReplicationQueryOrigin)
+
 	session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
-	ctx := sql.NewContext(context.Background(), sql.WithSession(session))
+	ctx := sql.NewContext(stdctx, sql.WithSession(session))
 	ctx.SetCurrentDatabase("mysql")
 	replica.SetExecutionContext(ctx)
 

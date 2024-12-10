@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/configuration"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/marcboeker/go-duckdb"
@@ -17,8 +19,12 @@ type Table struct {
 	mu      *sync.RWMutex
 	name    string
 	db      *Database
-	comment *Comment[any] // save the comment to avoid querying duckdb everytime
+	comment *Comment[ExtraTableInfo] // save the comment to avoid querying duckdb everytime
 	schema  sql.PrimaryKeySchema
+}
+
+type ExtraTableInfo struct {
+	PkOrdinals []int
 }
 
 type ColumnInfo struct {
@@ -42,6 +48,7 @@ var _ sql.IndexAddressableTable = (*Table)(nil)
 var _ sql.InsertableTable = (*Table)(nil)
 var _ sql.UpdatableTable = (*Table)(nil)
 var _ sql.DeletableTable = (*Table)(nil)
+var _ sql.TruncateableTable = (*Table)(nil)
 var _ sql.ReplaceableTable = (*Table)(nil)
 var _ sql.CommentedTable = (*Table)(nil)
 
@@ -53,17 +60,28 @@ func NewTable(name string, db *Database) *Table {
 	}
 }
 
-func (t *Table) WithComment(comment *Comment[any]) *Table {
+func (t *Table) withComment(comment *Comment[ExtraTableInfo]) *Table {
 	t.comment = comment
 	return t
 }
 
-func (t *Table) WithSchema(ctx *sql.Context) *Table {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
+func (t *Table) withSchema(ctx *sql.Context) *Table {
 	t.schema = getPKSchema(ctx, t.db.catalog, t.db.name, t.name)
+
+	// https://github.com/apecloud/myduckserver/issues/272
+	if len(t.schema.PkOrdinals) == 0 && configuration.IsReplicationWithoutIndex() {
+		// Pretend that the primary key exists
+		for _, idx := range t.comment.Meta.PkOrdinals {
+			t.schema.Schema[idx].PrimaryKey = true
+		}
+		t.schema = sql.NewPrimaryKeySchema(t.schema.Schema, t.comment.Meta.PkOrdinals...)
+	}
+
 	return t
+}
+
+func (t *Table) ExtraTableInfo() ExtraTableInfo {
+	return t.comment.Meta
 }
 
 // Collation implements sql.Table.
@@ -316,6 +334,16 @@ func (t *Table) Deleter(*sql.Context) sql.RowDeleter {
 	return nil
 }
 
+// Truncate implements sql.TruncateableTable.
+func (t *Table) Truncate(ctx *sql.Context) (int, error) {
+	result, err := adapter.ExecCatalog(ctx, `TRUNCATE TABLE `+FullTableName(t.db.catalog, t.db.name, t.name))
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	return int(affected), err
+}
+
 // Replacer implements sql.ReplaceableTable.
 func (t *Table) Replacer(*sql.Context) sql.RowReplacer {
 	hasKey := len(t.schema.PkOrdinals) > 0 || !sql.IsKeyless(t.schema.Schema)
@@ -332,6 +360,11 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 	// Lock the table to ensure thread-safety during index creation
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// https://github.com/apecloud/myduckserver/issues/272
+	if mycontext.IsReplicationQuery(ctx) && configuration.IsReplicationWithoutIndex() {
+		return nil
+	}
 
 	if indexDef.IsPrimary() {
 		return fmt.Errorf("primary key cannot be created with CreateIndex, use ALTER TABLE ... ADD PRIMARY KEY instead")

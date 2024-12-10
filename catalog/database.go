@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/configuration"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
@@ -72,7 +74,7 @@ func (d *Database) tablesInsensitive(ctx *sql.Context, pattern string) ([]*Table
 		return nil, err
 	}
 	for _, t := range tables {
-		t.WithSchema(ctx)
+		t.withSchema(ctx)
 	}
 	return tables, nil
 }
@@ -91,7 +93,7 @@ func (d *Database) findTables(ctx *sql.Context, pattern string) ([]*Table, error
 		if err := rows.Scan(&tblName, &comment); err != nil {
 			return nil, ErrDuckDB.New(err)
 		}
-		t := NewTable(tblName, d).WithComment(DecodeComment[any](comment.String))
+		t := NewTable(tblName, d).withComment(DecodeComment[ExtraTableInfo](comment.String))
 		tbls = append(tbls, t)
 	}
 	if err := rows.Err(); err != nil {
@@ -106,13 +108,13 @@ func (d *Database) Name() string {
 	return d.name
 }
 
-func (d *Database) CreateAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, is_temp bool) error {
+func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, temporary bool) error {
 
 	var columns []string
 	var columnCommentSQLs []string
 	var fullTableName string
 
-	if is_temp {
+	if temporary {
 		fullTableName = FullTableName("temp", "main", name)
 	} else {
 		fullTableName = FullTableName(d.catalog, d.name, name)
@@ -142,7 +144,7 @@ func (d *Database) CreateAllTable(ctx *sql.Context, name string, schema sql.Prim
 
 		var fullColumnName string
 
-		if is_temp {
+		if temporary {
 			fullColumnName = FullColumnName("temp", "main", name, col.Name)
 		} else {
 			fullColumnName = FullColumnName(d.catalog, d.name, name, col.Name)
@@ -151,16 +153,16 @@ func (d *Database) CreateAllTable(ctx *sql.Context, name string, schema sql.Prim
 		if col.Comment != "" || typ.mysql.Name != "" || col.Default != nil {
 			columnCommentSQLs = append(columnCommentSQLs,
 				fmt.Sprintf(`COMMENT ON COLUMN %s IS '%s'`, fullColumnName,
-					NewCommentWithMeta[MySQLType](col.Comment, typ.mysql).Encode()))
+					NewCommentWithMeta(col.Comment, typ.mysql).Encode()))
 		}
 	}
 
-	var sqlsBuild strings.Builder
+	var b strings.Builder
 
-	if is_temp {
-		sqlsBuild.WriteString(fmt.Sprintf(`CREATE TEMP TABLE %s (%s`, name, strings.Join(columns, ", ")))
+	if temporary {
+		b.WriteString(fmt.Sprintf(`CREATE TEMP TABLE %s (%s`, name, strings.Join(columns, ", ")))
 	} else {
-		sqlsBuild.WriteString(fmt.Sprintf(`CREATE TABLE %s (%s`, fullTableName, strings.Join(columns, ", ")))
+		b.WriteString(fmt.Sprintf(`CREATE TABLE %s (%s`, fullTableName, strings.Join(columns, ", ")))
 	}
 
 	var primaryKeys []string
@@ -168,24 +170,29 @@ func (d *Database) CreateAllTable(ctx *sql.Context, name string, schema sql.Prim
 		primaryKeys = append(primaryKeys, schema.Schema[pkord].Name)
 	}
 
-	if len(primaryKeys) > 0 {
-		sqlsBuild.WriteString(fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
+	// https://github.com/apecloud/myduckserver/issues/272
+	if !(mycontext.IsReplicationQuery(ctx) && configuration.IsReplicationWithoutIndex()) {
+		if len(primaryKeys) > 0 {
+			b.WriteString(fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
+		}
 	}
 
-	sqlsBuild.WriteString(")")
+	b.WriteString(")")
 
 	// Add comment to the table
-	if comment != "" {
-		sqlsBuild.WriteString(fmt.Sprintf("; COMMENT ON TABLE %s IS '%s'", fullTableName, NewComment[any](comment).Encode()))
-	}
+	b.WriteString(fmt.Sprintf(
+		"; COMMENT ON TABLE %s IS '%s'",
+		fullTableName,
+		NewCommentWithMeta(comment, ExtraTableInfo{schema.PkOrdinals}).Encode(),
+	))
 
 	// Add column comments
 	for _, s := range columnCommentSQLs {
-		sqlsBuild.WriteString(";")
-		sqlsBuild.WriteString(s)
+		b.WriteString(";")
+		b.WriteString(s)
 	}
 
-	_, err := adapter.Exec(ctx, sqlsBuild.String())
+	_, err := adapter.Exec(ctx, b.String())
 	if err != nil {
 		if IsDuckDBTableAlreadyExistsError(err) {
 			return sql.ErrTableAlreadyExists.New(name)
@@ -202,14 +209,14 @@ func (d *Database) CreateAllTable(ctx *sql.Context, name string, schema sql.Prim
 func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.CreateAllTable(ctx, name, schema, collation, comment, false)
+	return d.createAllTable(ctx, name, schema, collation, comment, false)
 }
 
 // CreateTemporaryTable implements sql.CreateTemporaryTable.
 func (d *Database) CreateTemporaryTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.CreateAllTable(ctx, name, schema, collation, "", true)
+	return d.createAllTable(ctx, name, schema, collation, "", true)
 }
 
 // DropTable implements sql.TableDropper.
