@@ -186,7 +186,7 @@ func (h *ConnectionHandler) executeEnableSubscription(subscriptionConfig *Subscr
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
+	return logrepl.CommitAndUpdate(sqlCtx)
 }
 
 func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *SubscriptionConfig) error {
@@ -200,7 +200,7 @@ func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *Subsc
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
+	return logrepl.CommitAndUpdate(sqlCtx)
 }
 
 func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) error {
@@ -214,7 +214,7 @@ func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) 
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
+	return logrepl.CommitAndUpdate(sqlCtx)
 }
 
 func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig) error {
@@ -351,22 +351,5 @@ func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscripti
 		return fmt.Errorf("failed to write subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
-}
-
-func commitAndUpdate(sqlCtx *sql.Context) error {
-	tx := adapter.TryGetTxn(sqlCtx)
-	if tx != nil {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit transaction: %w", err)
-		}
-		adapter.CloseTxn(sqlCtx)
-	}
-
-	err := logrepl.UpdateSubscriptions(sqlCtx)
-	if err != nil {
-		return fmt.Errorf("failed to update subscriptions: %w", err)
-	}
-
-	return nil
+	return logrepl.CommitAndUpdate(sqlCtx)
 }

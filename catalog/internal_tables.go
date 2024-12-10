@@ -38,6 +38,22 @@ func (it *InternalTable) UpdateStmt(keyColumns []string, valueColumns []string) 
 	return b.String()
 }
 
+func (it *InternalTable) UpdateAllStmt(valueColumns []string) string {
+	var b strings.Builder
+	b.Grow(128)
+	b.WriteString("UPDATE ")
+	b.WriteString(it.QualifiedName())
+	b.WriteString(" SET " + valueColumns[0] + " = ?")
+
+	for _, valueColumn := range valueColumns[1:] {
+		b.WriteString(", ")
+		b.WriteString(valueColumn)
+		b.WriteString(" = ?")
+	}
+
+	return b.String()
+}
+
 func (it *InternalTable) UpsertStmt() string {
 	var b strings.Builder
 	b.Grow(128)
