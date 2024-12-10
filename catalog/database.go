@@ -170,8 +170,10 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 		primaryKeys = append(primaryKeys, schema.Schema[pkord].Name)
 	}
 
+	withoutIndex := isIndexCreationDisabled(ctx)
+
 	// https://github.com/apecloud/myduckserver/issues/272
-	if len(primaryKeys) > 0 && !isIndexCreationDisabled(ctx) {
+	if len(primaryKeys) > 0 && !withoutIndex {
 		b.WriteString(fmt.Sprintf(", PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
 	}
 
@@ -181,7 +183,7 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	b.WriteString(fmt.Sprintf(
 		"; COMMENT ON TABLE %s IS '%s'",
 		fullTableName,
-		NewCommentWithMeta(comment, ExtraTableInfo{schema.PkOrdinals}).Encode(),
+		NewCommentWithMeta(comment, ExtraTableInfo{schema.PkOrdinals, withoutIndex}).Encode(),
 	))
 
 	// Add column comments

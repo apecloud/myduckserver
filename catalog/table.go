@@ -24,6 +24,7 @@ type Table struct {
 
 type ExtraTableInfo struct {
 	PkOrdinals []int
+	Replicated bool
 }
 
 type ColumnInfo struct {
