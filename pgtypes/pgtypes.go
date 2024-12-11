@@ -250,10 +250,11 @@ func PostgresTypeSize(oid uint32) int32 {
 }
 
 // GoDuckDBTypeNameToPostgresType parses a type name reported by the go-duckdb driver
-// into a corresponding pgtype.Type and its precision and scale.
+// into a corresponding pgtype.Type with its precision and scale (if applicable).
+// Unknown types are fallback to text.
 //
 // TODO(fan): Make this function more rigorous for nested types.
-func GoDuckDBTypeNameToPostgresType(name string) (pt *pgtype.Type, precision, scale int32, err error) {
+func GoDuckDBTypeNameToPostgresType(name string) (pt *pgtype.Type, precision, scale int32, fallback bool, err error) {
 	var list bool
 	if strings.HasSuffix(name, "[]") {
 		// LIST type
@@ -266,17 +267,26 @@ func GoDuckDBTypeNameToPostgresType(name string) (pt *pgtype.Type, precision, sc
 		// Scan precision and scale from the type name
 		// Ref: logicalTypeNameDecimal in go-duckdb
 		if _, err = fmt.Sscanf(name, "DECIMAL(%d,%d)", &precision, &scale); err != nil {
-			return
+			return nil, 0, 0, false, err
 		}
 		name = "DECIMAL"
 	}
 	pgTypeName, ok := duckdbTypeNameToPostgresTypeName[name]
 	if !ok {
-		return nil, 0, 0, fmt.Errorf("unsupported type %s", name)
+		pgTypeName, fallback = "text", true // Default to text if it is an unknown type
+	}
+	if list {
+		// the pgx/pgtype package prefixes array type names with an underscore:
+		// https://github.com/jackc/pgx/blob/master/pgtype/pgtype_default.go
+		pgTypeName = `_` + pgTypeName
 	}
 	pt, ok = DefaultTypeMap.TypeForName(pgTypeName)
 	if !ok {
-		return nil, 0, 0, fmt.Errorf("unsupported type %s", name)
+		pt, ok = DefaultTypeMap.TypeForName("text")
+		fallback = true
+	}
+	if !ok {
+		return nil, 0, 0, fallback, fmt.Errorf("unsupported type %s", name)
 	}
 	return
 }
@@ -289,29 +299,15 @@ func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 
 	schema := make(sql.Schema, len(types))
 	for i, t := range types {
-		var (
-			dbTypeName       = t.DatabaseTypeName()
-			precision, scale int32
-		)
-		if strings.HasPrefix(dbTypeName, "DECIMAL") {
-			// Scan precision and scale from the type name
-			// Ref: logicalTypeNameDecimal in go-duckdb
-			if _, err := fmt.Sscanf(dbTypeName, "DECIMAL(%d,%d)", &precision, &scale); err != nil {
-				return nil, err
-			}
-			dbTypeName = "DECIMAL"
-		}
-		pgTypeName, ok := duckdbTypeNameToPostgresTypeName[dbTypeName]
-		if !ok {
-			return nil, fmt.Errorf("unsupported type %s", dbTypeName)
-		}
-		pgType, ok := DefaultTypeMap.TypeForName(pgTypeName)
-		if !ok {
-			return nil, fmt.Errorf("unsupported type %s", pgTypeName)
+		pgType, precision, scale, fallback, err := GoDuckDBTypeNameToPostgresType(t.DatabaseTypeName())
+		if err != nil {
+			return nil, err
 		}
 		nullable, _ := t.Nullable()
 
-		if pgType.OID == pgtype.NumericOID {
+		switch pgType.OID {
+		case pgtype.NumericOID, pgtype.NumericArrayOID:
+			// Currently, ok is always false
 			if p, s, ok := t.DecimalSize(); ok {
 				precision = int32(p)
 				scale = int32(s)
@@ -325,6 +321,7 @@ func InferSchema(rows *stdsql.Rows) (sql.Schema, error) {
 				Size:      PostgresTypeSize(pgType.OID),
 				Precision: precision,
 				Scale:     scale,
+				Fallback:  fallback,
 			},
 			Nullable: nullable,
 		}
@@ -337,28 +334,16 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 	columns := rows.Columns()
 	schema := make(sql.Schema, len(columns))
 	for i, colName := range columns {
-		var (
-			pgTypeName       string
-			precision, scale int32
-		)
+		var dbTypeName string
 		if colType, ok := rows.(driver.RowsColumnTypeDatabaseTypeName); ok {
-			dbTypeName := colType.ColumnTypeDatabaseTypeName(i)
-			if strings.HasPrefix(dbTypeName, "DECIMAL") {
-				// Scan precision and scale from the type name
-				// Ref: logicalTypeNameDecimal in go-duckdb
-				if _, err := fmt.Sscanf(dbTypeName, "DECIMAL(%d,%d)", &precision, &scale); err != nil {
-					return nil, err
-				}
-				dbTypeName = "DECIMAL"
-			}
-			pgTypeName = duckdbTypeNameToPostgresTypeName[dbTypeName]
+			dbTypeName = colType.ColumnTypeDatabaseTypeName(i)
 		} else {
-			pgTypeName = "text" // Default to text if type name is not available
+			return nil, fmt.Errorf("driver does not support RowsColumnTypeDatabaseTypeName")
 		}
 
-		pgType, ok := DefaultTypeMap.TypeForName(pgTypeName)
-		if !ok {
-			return nil, fmt.Errorf("unsupported type %s", pgTypeName)
+		pgType, precision, scale, fallback, err := GoDuckDBTypeNameToPostgresType(dbTypeName)
+		if err != nil {
+			return nil, err
 		}
 
 		nullable := true
@@ -366,7 +351,9 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 			nullable, _ = colNullable.ColumnTypeNullable(i)
 		}
 
-		if pgType.OID == pgtype.NumericOID {
+		switch pgType.OID {
+		case pgtype.NumericOID, pgtype.NumericArrayOID:
+			// Currently, ok is always false
 			if colPrecisionScale, ok := rows.(driver.RowsColumnTypePrecisionScale); ok {
 				p, s, ok := colPrecisionScale.ColumnTypePrecisionScale(i)
 				if ok {
@@ -383,6 +370,7 @@ func InferDriverSchema(rows driver.Rows) (sql.Schema, error) {
 				Size:      PostgresTypeSize(pgType.OID),
 				Precision: precision,
 				Scale:     scale,
+				Fallback:  fallback,
 			},
 			Nullable: nullable,
 		}
@@ -396,10 +384,12 @@ type PostgresType struct {
 	Scale     int32
 	// https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ROWDESCRIPTION
 	Size int32
+	// Fallback indicates that the type is not supported by the pgtype package and is approximated to the `text` fallback type.
+	Fallback bool
 }
 
-func NewPostgresType(oid uint32, modifier int32) (PostgresType, error) {
-	t, ok := DefaultTypeMap.TypeForOID(oid)
+func NewPostgresType(registry *pgtype.Map, oid uint32, modifier int32) (PostgresType, error) {
+	t, ok := registry.TypeForOID(oid)
 	if !ok {
 		return PostgresType{}, fmt.Errorf("unsupported type OID %d", oid)
 	}
