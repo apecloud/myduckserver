@@ -48,5 +48,14 @@ func RegisterReplicaOptions(options *ReplicaOptions) {
 			Type:              types.NewSystemStringType("report_password"),
 			Default:           options.ReportPassword,
 		},
+		// MyDuck-specific system variables
+		&sql.MysqlSystemVariable{
+			Name:              "replica_is_loading_snapshot",
+			Scope:             sql.GetMysqlScope(sql.SystemVariableScope_Global),
+			Dynamic:           true,
+			SetVarHintApplies: false,
+			Type:              types.NewSystemBoolType("replica_is_loading_snapshot"),
+			Default:           false,
+		},
 	})
 }
