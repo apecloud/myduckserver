@@ -36,7 +36,17 @@ echo "Thread count set to: $THREAD_COUNT"
 
 echo "Copying data from MySQL to MyDuck..."
 # Run mysqlsh command and capture the output
-output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" --users false --consistent false --ignore-existing-objects true --handle-grant-errors ignore --threads $THREAD_COUNT --bytesPerChunk 256M --ignore-version true)
+output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" \
+    --users false \
+    --consistent false \
+    --ignore-existing-objects true \
+    --handle-grant-errors ignore \
+    --threads $THREAD_COUNT \
+    --bytesPerChunk 256M \
+    --ignore-version true \
+    --load-indexes false \
+    --defer-table-indexes all \
+)
 
 if [[ $GTID_MODE == "ON" ]]; then
     # Extract the EXECUTED_GTID_SET from this output:
@@ -72,3 +82,8 @@ fi
 
 
 echo "Snapshot completed successfully."
+
+echo "Reset replica_is_loading_snapshot..."
+mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT}  --user=root --no-password <<EOF
+SET GLOBAL replica_is_loading_snapshot = OFF;
+EOF
