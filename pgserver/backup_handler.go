@@ -80,7 +80,7 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 		return "", fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	if err := stopReplication(sqlCtx); err != nil {
+	if err := stopAllReplication(sqlCtx); err != nil {
 		return "", fmt.Errorf("failed to stop replication: %w", err)
 	}
 
@@ -88,8 +88,27 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 		return "", fmt.Errorf("failed to do checkpoint: %w", err)
 	}
 
-	return backupConfig.StorageConfig.UploadLocalFile(environment.GetDataDirectory(), environment.GetDbFileName(),
+	err = h.restartServer(true)
+	if err != nil {
+		return "", err
+	}
+
+	msg, err := backupConfig.StorageConfig.UploadLocalFile(environment.GetDataDirectory(), environment.GetDbFileName(),
 		backupConfig.RemotePath)
+	if err != nil {
+		return "", err
+	}
+
+	err = h.restartServer(false)
+	if err != nil {
+		return "", fmt.Errorf("backup finished: %s, but failed to restart server: %w", msg, err)
+	}
+
+	if err = startAllReplication(sqlCtx); err != nil {
+		return "", fmt.Errorf("backup finished: %s, but failed to start replication: %w", msg, err)
+	}
+
+	return msg, nil
 }
 
 func doCheckpoint(sqlCtx *sql.Context) error {
@@ -104,7 +123,7 @@ func doCheckpoint(sqlCtx *sql.Context) error {
 	return nil
 }
 
-func stopReplication(sqlCtx *sql.Context) error {
+func stopAllReplication(sqlCtx *sql.Context) error {
 	err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, false)
 	if err != nil {
 		return err
@@ -113,6 +132,21 @@ func stopReplication(sqlCtx *sql.Context) error {
 	return logrepl.CommitAndUpdate(sqlCtx)
 }
 
-// TODO(neo.zty): add content.
-func stopServer() {
+func startAllReplication(sqlCtx *sql.Context) error {
+	err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, true)
+	if err != nil {
+		return err
+	}
+
+	return logrepl.CommitAndUpdate(sqlCtx)
+}
+
+func (h *ConnectionHandler) restartServer(readOnly bool) error {
+	provider := h.server.Provider
+	err := provider.Restart(readOnly)
+	if err != nil {
+		return err
+	}
+
+	return h.server.ConnPool.ResetAndStart(provider.CatalogName(), provider.Connector(), provider.Storage())
 }

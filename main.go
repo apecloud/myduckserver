@@ -112,6 +112,7 @@ func main() {
 		}
 
 		pgServer, err := pgserver.NewServer(
+			provider, pool,
 			environment.GetAddress(), environment.GetPostgresPort(),
 			func() *sql.Context {
 				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)

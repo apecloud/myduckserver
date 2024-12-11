@@ -24,6 +24,7 @@ type DatabaseProvider struct {
 	storage                   *stdsql.DB
 	catalogName               string
 	dataDir                   string
+	dsn                       string
 	externalProcedureRegistry sql.ExternalStoredProcedureRegistry
 }
 
@@ -31,6 +32,8 @@ var _ sql.DatabaseProvider = (*DatabaseProvider)(nil)
 var _ sql.MutableDatabaseProvider = (*DatabaseProvider)(nil)
 var _ sql.ExternalStoredProcedureProvider = (*DatabaseProvider)(nil)
 var _ configuration.DataDirProvider = (*DatabaseProvider)(nil)
+
+const readOnlySuffix = "?access_mode=read_only"
 
 func NewInMemoryDBProvider() *DatabaseProvider {
 	prov, err := NewDBProvider(".", "")
@@ -114,6 +117,7 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 		storage:                   storage,
 		catalogName:               name,
 		dataDir:                   dataDir,
+		dsn:                       dsn,
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
 	}, nil
 }
@@ -242,6 +246,31 @@ func (prov *DatabaseProvider) DropDatabase(ctx *sql.Context, name string) error 
 	if err != nil {
 		return ErrDuckDB.New(err)
 	}
+
+	return nil
+}
+
+func (prov *DatabaseProvider) Restart(readOnly bool) error {
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+
+	err := prov.Close()
+	if err != nil {
+		return err
+	}
+
+	dsn := prov.dsn
+	if readOnly {
+		dsn += readOnlySuffix
+	}
+
+	connector, err := duckdb.NewConnector(dsn, nil)
+	if err != nil {
+		return err
+	}
+	storage := stdsql.OpenDB(connector)
+	prov.connector = connector
+	prov.storage = storage
 
 	return nil
 }

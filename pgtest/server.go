@@ -52,6 +52,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	var connID atomic.Uint32
 
 	pgServer, err = pgserver.NewServer(
+		provider, pool,
 		"127.0.0.1", port,
 		func() *sql.Context {
 			session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
