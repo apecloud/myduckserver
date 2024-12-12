@@ -17,7 +17,6 @@ jobs:
       minio:
         image: quay.io/minio/minio
         ports:
-          # Expose MinIO server port and console port
           - 9001:9000
           - 9091:9090
         env:
