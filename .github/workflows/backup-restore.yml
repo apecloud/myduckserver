@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
+      - compatibility
+      - test
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   deploy-minio:
