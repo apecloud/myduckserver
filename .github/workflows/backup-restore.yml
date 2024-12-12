@@ -27,8 +27,6 @@ jobs:
           --entrypoint "" # Override entrypoint to use the default command
           --runtime runc
           --detach=true
-        # Start MinIO server with the specified data directory and console address
-        command: server /data --console-address :9091
 
     steps:
       - name: Checkout Repository
