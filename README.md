@@ -24,6 +24,7 @@
   - [HTAP Setup](#htap-setup)
   - [Query Parquet Files](#query-parquet-files)
   - [Already Using DuckDB?](#already-using-duckdb)
+  - [Backup and Restore via Object Storage](#backup-and-restore-via-object-storage)
   - [LLM Integration](#llm-integration)
   - [Access from Python](#access-from-python)
 - [Roadmap](#-roadmap)
@@ -177,6 +178,9 @@ Looking to load Parquet files into MyDuck Server and start querying? Follow our 
 ### Already Using DuckDB?
 
 Already have a DuckDB file? You can seamlessly bootstrap MyDuck Server with it. See our [DuckDB file bootstrapping guide](docs/tutorial/bootstrap.md) for more details.
+
+### Backup and Restore via Object Storage
+If you want to backup and restore your MyDuck Server database to/from object storage, follow our [backup and restore guide](docs/tutorial/backup-restore.md) for detailed instructions.
 
 ### LLM Integration
 
