@@ -24,6 +24,7 @@ type DatabaseProvider struct {
 	storage                   *stdsql.DB
 	catalogName               string
 	dataDir                   string
+	dbFile                    string
 	dsn                       string
 	externalProcedureRegistry sql.ExternalStoredProcedureRegistry
 }
@@ -117,6 +118,7 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 		storage:                   storage,
 		catalogName:               name,
 		dataDir:                   dataDir,
+		dbFile:                    dbFile,
 		dsn:                       dsn,
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
 	}, nil
@@ -141,6 +143,10 @@ func (prov *DatabaseProvider) CatalogName() string {
 
 func (prov *DatabaseProvider) DataDir() string {
 	return prov.dataDir
+}
+
+func (prov *DatabaseProvider) DbFile() string {
+	return prov.dbFile
 }
 
 // ExternalStoredProcedure implements sql.ExternalStoredProcedureProvider.

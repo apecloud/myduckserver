@@ -16,11 +16,11 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
-	"github.com/apecloud/myduckserver/environment"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
@@ -37,6 +37,55 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var (
+	initMode = false
+
+	address       = "0.0.0.0"
+	port          = 3306
+	socket        string
+	defaultDb     = "mysql"
+	dataDirectory = "."
+	dbFileName    = defaultDb + ".db"
+	logLevel      = int(logrus.InfoLevel)
+
+	replicaOptions replica.ReplicaOptions
+
+	postgresPort = 5432
+
+	defaultTimeZone = ""
+
+	// for Restore
+	restoreFile            = ""
+	restoreEndpoint        = ""
+	restoreAccessKeyId     = ""
+	restoreSecretAccessKey = ""
+)
+
+func init() {
+	flag.BoolVar(&initMode, "init", initMode, "Initialize the program and exit. The necessary extensions will be installed.")
+
+	flag.StringVar(&address, "address", address, "The address to bind to.")
+	flag.IntVar(&port, "port", port, "The port to bind to.")
+	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
+	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
+	flag.StringVar(&defaultDb, "default-db", defaultDb, "The default database name to use.")
+	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
+
+	flag.StringVar(&replicaOptions.ReportHost, "report-host", replicaOptions.ReportHost, "The host name or IP address of the replica to be reported to the source during replica registration.")
+	flag.IntVar(&replicaOptions.ReportPort, "report-port", replicaOptions.ReportPort, "The TCP/IP port number for connecting to the replica, to be reported to the source during replica registration.")
+	flag.StringVar(&replicaOptions.ReportUser, "report-user", replicaOptions.ReportUser, "The account user name of the replica to be reported to the source during replica registration.")
+	flag.StringVar(&replicaOptions.ReportPassword, "report-password", replicaOptions.ReportPassword, "The account password of the replica to be reported to the source during replica registration.")
+
+	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
+	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
+
+	flag.StringVar(&restoreFile, "restore-file", restoreFile, "The file to restore from.")
+	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint to restore from.")
+	flag.StringVar(&restoreAccessKeyId, "restore-access-key-id", restoreAccessKeyId, "The access key ID to restore from.")
+	flag.StringVar(&restoreSecretAccessKey, "restore-secret-access-key", restoreSecretAccessKey, "The secret access key to restore from.")
+
+}
+
 func ensureSQLTranslate() {
 	_, err := transpiler.TranslateWithSQLGlot("SELECT 1")
 	if err != nil {
@@ -45,21 +94,25 @@ func ensureSQLTranslate() {
 }
 
 func main() {
-	environment.Init()
+	flag.Parse() // Parse all flags
 
-	logrus.SetLevel(logrus.Level(environment.GetLogLevel()))
+	if replicaOptions.ReportPort == 0 {
+		replicaOptions.ReportPort = port
+	}
+
+	logrus.SetLevel(logrus.Level(logLevel))
 
 	ensureSQLTranslate()
 
 	executeRestoreIfNeeded()
 
-	if environment.GetInitMode() {
+	if initMode {
 		provider := catalog.NewInMemoryDBProvider()
 		provider.Close()
 		return
 	}
 
-	provider, err := catalog.NewDBProvider(environment.GetDataDirectory(), environment.GetDbFileName())
+	provider, err := catalog.NewDBProvider(dataDirectory, dbFileName)
 	if err != nil {
 		logrus.Fatalln("Failed to open the database:", err)
 	}
@@ -71,15 +124,15 @@ func main() {
 		logrus.WithError(err).Fatalln("Failed to enable checkpoint on shutdown")
 	}
 
-	if environment.GetDefaultTimeZone() != "" {
-		_, err := pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, environment.GetDefaultTimeZone()))
+	if defaultTimeZone != "" {
+		_, err := pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, defaultTimeZone))
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to set the default time zone")
 		}
 	}
 
 	// Clear the pipes directory on startup.
-	backend.RemoveAllPipes(environment.GetDataDirectory())
+	backend.RemoveAllPipes(dataDirectory)
 
 	engine := sqle.NewDefault(provider)
 
@@ -92,20 +145,20 @@ func main() {
 		logrus.Fatalln("Failed to set the persister:", err)
 	}
 
-	replica.RegisterReplicaOptions(environment.GetReplicaOptions())
+	replica.RegisterReplicaOptions(&replicaOptions)
 	replica.RegisterReplicaController(provider, engine, pool, builder)
 
 	serverConfig := server.Config{
 		Protocol: "tcp",
-		Address:  fmt.Sprintf("%s:%d", environment.GetAddress(), environment.GetPort()),
-		Socket:   environment.GetSocket(),
+		Address:  fmt.Sprintf("%s:%d", address, port),
+		Socket:   socket,
 	}
 	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
 	if err != nil {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
 
-	if environment.GetPostgresPort() > 0 {
+	if postgresPort > 0 {
 		// Postgres tables are created in the `public` schema by default.
 		// Create the `public` schema if it doesn't exist.
 		_, err := pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
@@ -115,7 +168,7 @@ func main() {
 
 		pgServer, err := pgserver.NewServer(
 			provider, pool,
-			environment.GetAddress(), environment.GetPostgresPort(),
+			address, postgresPort,
 			func() *sql.Context {
 				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
 				return sql.NewContext(context.Background(), sql.WithSession(session))
@@ -145,13 +198,8 @@ func main() {
 }
 
 func executeRestoreIfNeeded() {
-	restoreFile := environment.GetRestoreFile()
-	restoreEndpoint := environment.GetRestoreEndpoint()
-	restoreAccessKeyID := environment.GetRestoreAccessKeyId()
-	restoreSecretAccessKey := environment.GetRestoreSecretAccessKey()
-
 	// If none of the restore parameters are set, return early.
-	if restoreFile == "" && restoreEndpoint == "" && restoreAccessKeyID == "" && restoreSecretAccessKey == "" {
+	if restoreFile == "" && restoreEndpoint == "" && restoreAccessKeyId == "" && restoreSecretAccessKey == "" {
 		return
 	}
 
@@ -159,7 +207,7 @@ func executeRestoreIfNeeded() {
 	required := map[string]string{
 		restoreFile:            "restore file",
 		restoreEndpoint:        "restore endpoint",
-		restoreAccessKeyID:     "restore access key ID",
+		restoreAccessKeyId:     "restore access key ID",
 		restoreSecretAccessKey: "restore secret access key",
 	}
 
@@ -171,10 +219,12 @@ func executeRestoreIfNeeded() {
 	}
 
 	msg, err := pgserver.ExecuteRestore(
-		environment.GetDbFileName(),
+		defaultDb,
+		dataDirectory,
+		dbFileName,
 		restoreFile,
 		restoreEndpoint,
-		restoreAccessKeyID,
+		restoreAccessKeyId,
 		restoreSecretAccessKey,
 	)
 	if err != nil {

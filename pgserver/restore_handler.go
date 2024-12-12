@@ -2,7 +2,6 @@ package pgserver
 
 import (
 	"fmt"
-	"github.com/apecloud/myduckserver/environment"
 	"github.com/apecloud/myduckserver/storage"
 	"strings"
 )
@@ -34,13 +33,13 @@ func NewRestoreConfig(dbName, remoteUri, endpoint, accessKeyId, secretAccessKey 
 	}, nil
 }
 
-func ExecuteRestore(dbName, remoteUri, endpoint, accessKeyId, secretAccessKey string) (string, error) {
+func ExecuteRestore(dbName, localDir, localFile, remoteUri, endpoint, accessKeyId, secretAccessKey string) (string, error) {
 	config, err := NewRestoreConfig(dbName, remoteUri, endpoint, accessKeyId, secretAccessKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to create restore configuration: %w", err)
 	}
 
-	msg, err := config.StorageConfig.DownloadFile(config.RemoteFile, environment.GetDataDirectory(), environment.GetDbFileName())
+	msg, err := config.StorageConfig.DownloadFile(config.RemoteFile, localDir, localFile)
 	if err != nil {
 		return "", fmt.Errorf("failed to download file: %w", err)
 	}

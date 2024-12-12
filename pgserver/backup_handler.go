@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/apecloud/myduckserver/adapter"
-	"github.com/apecloud/myduckserver/environment"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/apecloud/myduckserver/storage"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -114,8 +113,8 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 		return "", err
 	}
 
-	msg, err := backupConfig.StorageConfig.UploadFile(environment.GetDataDirectory(), environment.GetDbFileName(),
-		backupConfig.RemotePath)
+	msg, err := backupConfig.StorageConfig.UploadFile(
+		h.server.Provider.DataDir(), h.server.Provider.DbFile(), backupConfig.RemotePath)
 	if err != nil {
 		return "", err
 	}
