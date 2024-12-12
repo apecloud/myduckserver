@@ -46,25 +46,36 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 	}
 
 	// matches:
-	// [0] entire match
-	// [1] DbName (required)
-	// [2] RemoteUri (required)
-	// [3] Endpoint (required)
-	// [4] AccessKeyId (required)
-	// [5] SecretAccessKey (required)
+	// [1] DbName
+	// [2] RemoteUri
+	// [3] Endpoint
+	// [4] AccessKeyId
+	// [5] SecretAccessKey
 	dbName := strings.TrimSpace(matches[1])
 	remoteUri := strings.TrimSpace(matches[2])
 	endpoint := strings.TrimSpace(matches[3])
 	accessKeyId := strings.TrimSpace(matches[4])
 	secretAccessKey := strings.TrimSpace(matches[5])
 
-	if dbName == "" || remoteUri == "" {
-		return nil, fmt.Errorf("missing required backup configuration (database name or path)")
+	if dbName == "" {
+		return nil, fmt.Errorf("missing required backup configuration: DATABASE")
+	}
+	if remoteUri == "" {
+		return nil, fmt.Errorf("missing required backup configuration: TO '<URI>'")
+	}
+	if endpoint == "" {
+		return nil, fmt.Errorf("missing required backup configuration: ENDPOINT")
+	}
+	if accessKeyId == "" {
+		return nil, fmt.Errorf("missing required backup configuration: ACCESS_KEY_ID")
+	}
+	if secretAccessKey == "" {
+		return nil, fmt.Errorf("missing required backup configuration: SECRET_ACCESS_KEY")
 	}
 
 	storageConfig, remotePath, err := storage.ConstructStorageConfig(remoteUri, endpoint, accessKeyId, secretAccessKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct storage StorageConfig: %w", err)
+		return nil, fmt.Errorf("failed to construct storage configuration: %w", err)
 	}
 
 	return &BackupConfig{
@@ -75,6 +86,12 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 }
 
 func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, error) {
+	// TODO(neo.zty): Add support for backing up multiple databases once MyDuck Server supports multi-database functionality.
+	if backupConfig.DbName != h.server.Provider.CatalogName() {
+		return "", fmt.Errorf("backup database name %s does not match server database name %s",
+			backupConfig.DbName, h.server.Provider.CatalogName())
+	}
+
 	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to create context for query: %w", err)
