@@ -80,10 +80,9 @@ func init() {
 	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
 
 	flag.StringVar(&restoreFile, "restore-file", restoreFile, "The file to restore from.")
-	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint to restore from.")
+	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint of object storage service to restore from.")
 	flag.StringVar(&restoreAccessKeyId, "restore-access-key-id", restoreAccessKeyId, "The access key ID to restore from.")
 	flag.StringVar(&restoreSecretAccessKey, "restore-secret-access-key", restoreSecretAccessKey, "The secret access key to restore from.")
-
 }
 
 func ensureSQLTranslate() {

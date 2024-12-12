@@ -127,7 +127,7 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver $LOG_LEVEL $PROFILER_PORT | tee -a "${LOG_PATH}"/server.log 2>&1 &
+      nohup myduckserver $LOG_LEVEL $PROFILER_PORT $RESTORE_FILE $RESTORE_ENDPOINT $RESTORE_ACCESS_KEY_ID $RESTORE_SECRET_ACCESS_KEY|tee -a "${LOG_PATH}/server.log" 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
@@ -204,11 +204,27 @@ setup() {
     trap cleanup SIGTERM SIGINT SIGQUIT
 
     if [ -n "$LOG_LEVEL" ]; then
-        export LOG_LEVEL="-loglevel $LOG_LEVEL"
+        export LOG_LEVEL="--loglevel=$LOG_LEVEL"
     fi
     
     if [ -n "$PROFILER_PORT" ]; then
-        export PROFILER_PORT="-profiler-port $PROFILER_PORT"
+        export PROFILER_PORT="--profiler-port=$PROFILER_PORT"
+    fi
+
+    if [ -n "$RESTORE_FILE" ]; then
+        export RESTORE_FILE="--restore-file=$RESTORE_FILE"
+    fi
+
+    if [ -n "$RESTORE_ENDPOINT" ]; then
+        export RESTORE_ENDPOINT="--restore-endpoint=$RESTORE_ENDPOINT"
+    fi
+
+    if [ -n "$RESTORE_ACCESS_KEY_ID" ]; then
+        export RESTORE_ACCESS_KEY_ID="--restore-access-key-id=$RESTORE_ACCESS_KEY_ID"
+    fi
+
+    if [ -n "$RESTORE_SECRET_ACCESS_KEY" ]; then
+        export RESTORE_SECRET_ACCESS_KEY="--restore-secret-access-key=$RESTORE_SECRET_ACCESS_KEY"
     fi
 
     # Ensure required directories exist
