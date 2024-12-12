@@ -1,0 +1,72 @@
+name: Deploy MinIO and Create Bucket
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy-minio:
+    runs-on: ubuntu-latest
+
+    services:
+      minio:
+        image: quay.io/minio/minio
+        ports:
+          # Expose MinIO server port and console port
+          - 9001:9000
+          - 9091:9090
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: >-
+          --entrypoint "" # Override entrypoint to use the default command
+          --runtime runc
+          --detach=true
+        # Start MinIO server with the specified data directory and console address
+        command: server /data --console-address :9091
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Wait for MinIO to be Ready
+        run: |
+          echo "Waiting for MinIO server to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:9001/minio/health/ready | grep '"status":"ok"'; then
+              echo "MinIO is ready."
+              break
+            else
+              echo "MinIO not ready yet. Waiting..."
+              sleep 2
+            fi
+            if [ $i -eq 30 ]; then
+              echo "MinIO did not become ready in time."
+              exit 1
+            fi
+          done
+
+      - name: Install mc (MinIO Client)
+        run: |
+          wget https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x mc
+          sudo mv mc /usr/local/bin/
+
+      - name: Configure mc Client
+        run: |
+          mc alias set myminio http://localhost:9001 minioadmin minioadmin
+
+      - name: Create myduck-backup Bucket
+        run: |
+          mc mb myminio/myduck-backup
+          # Optionally, make the bucket public or set policies
+          # mc policy set public myminio/myduck-backup
+
+      - name: Verify Bucket Creation
+        run: |
+          mc ls myminio
+
+      # Optional: Add any additional steps like running tests or deploying applications
+
