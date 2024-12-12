@@ -21,8 +21,8 @@ type ObjectStorageConfig struct {
 }
 
 const (
-	DefaultRegion = "cn-northwest-1"
-	HTTPPrefix    = "http://"
+	DummyRegion = "my-duck-server"
+	HTTPPrefix  = "http://"
 )
 
 var supportedProvider = map[string]struct{}{
@@ -177,7 +177,7 @@ func parseRegionFromEndpoint(provider, endpoint string) (string, error) {
 			return "", fmt.Errorf("missing region in endpoint: %s", endpoint)
 		}
 	} else {
-		region = DefaultRegion
+		region = DummyRegion
 	}
 	return region, nil
 }

@@ -19,8 +19,8 @@ type Bucket struct {
 }
 
 const (
-	uploadPartSize   = 5 * 1024 * 1024 // 5 MiB
-	downloadPartSize = 5 * 1024 * 1024 // 5 MiB
+	uploadPartSize   = 8 * 1024 * 1024 // 8 MiB
+	downloadPartSize = 8 * 1024 * 1024 // 8 MiB
 )
 
 func NewBucket(config *aws.Config) *Bucket {
