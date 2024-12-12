@@ -23,8 +23,6 @@ jobs:
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
-        options: >-
-          --detach=true
 
     steps:
       - name: Checkout Repository
