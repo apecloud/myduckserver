@@ -38,6 +38,14 @@ var backupRegex = regexp.MustCompile(
 		`(?:\s+ACCESS_KEY_ID\s*=\s*'([^']+)')?` +
 		`(?:\s+SECRET_ACCESS_KEY\s*=\s*'([^']+)')?`)
 
+func NewBackupConfig(dbName, remotePath string, storageConfig *storage.ObjectStorageConfig) *BackupConfig {
+	return &BackupConfig{
+		DbName:        dbName,
+		RemotePath:    remotePath,
+		StorageConfig: storageConfig,
+	}
+}
+
 func parseBackupSQL(sql string) (*BackupConfig, error) {
 	matches := backupRegex.FindStringSubmatch(sql)
 	if matches == nil {
@@ -75,14 +83,10 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 
 	storageConfig, remotePath, err := storage.ConstructStorageConfig(remoteUri, endpoint, accessKeyId, secretAccessKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct storage configuration: %w", err)
+		return nil, fmt.Errorf("failed to construct storage configuration for backup: %w", err)
 	}
 
-	return &BackupConfig{
-		DbName:        dbName,
-		RemotePath:    remotePath,
-		StorageConfig: storageConfig,
-	}, nil
+	return NewBackupConfig(dbName, remotePath, storageConfig), nil
 }
 
 func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, error) {
@@ -110,7 +114,7 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 		return "", err
 	}
 
-	msg, err := backupConfig.StorageConfig.UploadLocalFile(environment.GetDataDirectory(), environment.GetDbFileName(),
+	msg, err := backupConfig.StorageConfig.UploadFile(environment.GetDataDirectory(), environment.GetDbFileName(),
 		backupConfig.RemotePath)
 	if err != nil {
 		return "", err
@@ -126,6 +130,16 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 	}
 
 	return msg, nil
+}
+
+func (h *ConnectionHandler) restartServer(readOnly bool) error {
+	provider := h.server.Provider
+	err := provider.Restart(readOnly)
+	if err != nil {
+		return err
+	}
+
+	return h.server.ConnPool.ResetAndStart(provider.CatalogName(), provider.Connector(), provider.Storage())
 }
 
 func doCheckpoint(sqlCtx *sql.Context) error {
@@ -156,14 +170,4 @@ func startAllReplication(sqlCtx *sql.Context) error {
 	}
 
 	return logrepl.CommitAndUpdate(sqlCtx)
-}
-
-func (h *ConnectionHandler) restartServer(readOnly bool) error {
-	provider := h.server.Provider
-	err := provider.Restart(readOnly)
-	if err != nil {
-		return err
-	}
-
-	return h.server.ConnPool.ResetAndStart(provider.CatalogName(), provider.Connector(), provider.Storage())
 }

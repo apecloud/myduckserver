@@ -51,6 +51,8 @@ func main() {
 
 	ensureSQLTranslate()
 
+	executeRestoreIfNeeded()
+
 	if environment.GetInitMode() {
 		provider := catalog.NewInMemoryDBProvider()
 		provider.Close()
@@ -140,4 +142,44 @@ func main() {
 	if err = myServer.Start(); err != nil {
 		logrus.WithError(err).Fatalln("Failed to start MySQL-protocol server")
 	}
+}
+
+func executeRestoreIfNeeded() {
+	restoreFile := environment.GetRestoreFile()
+	restoreEndpoint := environment.GetRestoreEndpoint()
+	restoreAccessKeyID := environment.GetRestoreAccessKeyId()
+	restoreSecretAccessKey := environment.GetRestoreSecretAccessKey()
+
+	// If none of the restore parameters are set, return early.
+	if restoreFile == "" && restoreEndpoint == "" && restoreAccessKeyID == "" && restoreSecretAccessKey == "" {
+		return
+	}
+
+	// Map of required parameters to their names for validation.
+	required := map[string]string{
+		restoreFile:            "restore file",
+		restoreEndpoint:        "restore endpoint",
+		restoreAccessKeyID:     "restore access key ID",
+		restoreSecretAccessKey: "restore secret access key",
+	}
+
+	// Validate that all required parameters are set.
+	for val, name := range required {
+		if val == "" {
+			logrus.Fatalf("The %s is required.", name)
+		}
+	}
+
+	msg, err := pgserver.ExecuteRestore(
+		environment.GetDbFileName(),
+		restoreFile,
+		restoreEndpoint,
+		restoreAccessKeyID,
+		restoreSecretAccessKey,
+	)
+	if err != nil {
+		logrus.WithError(err).Fatalln("Failed to execute restore:", msg)
+	}
+
+	logrus.Infoln("Restore completed successfully:", msg)
 }

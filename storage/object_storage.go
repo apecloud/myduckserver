@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 )
 
 type ObjectStorageConfig struct {
@@ -29,7 +30,34 @@ var supportedProvider = map[string]struct{}{
 	"s3c": {},
 }
 
-func (storageConfig *ObjectStorageConfig) UploadLocalFile(localDir, localFile, remotePath string) (string, error) {
+func (storageConfig *ObjectStorageConfig) UploadFile(localDir, localFile, remotePath string) (string, error) {
+	startMillis := time.Now().UnixMilli()
+	localFullPath := path.Join(localDir, localFile)
+	s3Cfg, err := storageConfig.buildConfig()
+	if err != nil {
+		return "", err
+	}
+
+	bucket, key := parseBucketAndPath(remotePath)
+	if strings.HasSuffix(key, "/") {
+		key += localFile
+	}
+
+	backupBucket := NewBucket(s3Cfg)
+
+	size, err := backupBucket.UploadFile(context.TODO(), bucket, key, localFullPath)
+	if err != nil {
+		return "", err
+	}
+
+	timeCost := time.Now().UnixMilli() - startMillis
+	return fmt.Sprintf("Uploaded %s (%d bytes) to %s://%s/%s in %d ms\n",
+		localFullPath, size, storageConfig.Provider, bucket, key, timeCost), nil
+}
+
+// DownloadFile downloads a file from the remote storage to the local storage.
+func (storageConfig *ObjectStorageConfig) DownloadFile(remotePath, localDir, localFile string) (string, error) {
+	startMillis := time.Now().UnixMilli()
 	localFullPath := path.Join(localDir, localFile)
 	s3Cfg, err := storageConfig.buildConfig()
 	if err != nil {
@@ -42,14 +70,17 @@ func (storageConfig *ObjectStorageConfig) UploadLocalFile(localDir, localFile, r
 		key += localFile
 	}
 
-	bucketBasics := NewBucketBasics(s3Cfg)
+	bucketBasics := NewBucket(s3Cfg)
 
-	err = bucketBasics.UploadFile(context.TODO(), bucket, key, localFullPath)
+	size, err := bucketBasics.DownloadFile(context.TODO(), bucket, key, localFullPath)
 	if err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("File %q successfully uploaded to %s://%s/%s\n", localFullPath, storageConfig.Provider, bucket, key), nil
+	timeCost := time.Now().UnixMilli() - startMillis
+	return fmt.Sprintf("Downloaded from %s://%s/%s (%d bytes) to %s in %d ms\n",
+		storageConfig.Provider, bucket, key, size, localFullPath, timeCost), nil
+
 }
 
 func (storageConfig *ObjectStorageConfig) buildConfig() (cfg *aws.Config, err error) {

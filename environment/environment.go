@@ -22,6 +22,12 @@ var (
 	postgresPort = 5432
 
 	defaultTimeZone = ""
+
+	// for Restore
+	restoreFile            = ""
+	restoreEndpoint        = ""
+	restoreAccessKeyId     = ""
+	restoreSecretAccessKey = ""
 )
 
 func Init() {
@@ -31,6 +37,7 @@ func Init() {
 	flag.IntVar(&port, "port", port, "The port to bind to.")
 	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
+	flag.StringVar(&dbFileName, "db-file", dbFileName, "The file name to store the database.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
 
 	flag.StringVar(&replicaOptions.ReportHost, "report-host", replicaOptions.ReportHost, "The host name or IP address of the replica to be reported to the source during replica registration.")
@@ -40,6 +47,11 @@ func Init() {
 
 	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
 	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
+
+	flag.StringVar(&restoreFile, "restore-file", restoreFile, "The file to restore from.")
+	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint to restore from.")
+	flag.StringVar(&restoreAccessKeyId, "restore-access-key-id", restoreAccessKeyId, "The access key ID to restore from.")
+	flag.StringVar(&restoreSecretAccessKey, "restore-secret-access-key", restoreSecretAccessKey, "The secret access key to restore from.")
 
 	flag.Parse() // Parse all flags
 
@@ -86,4 +98,20 @@ func GetDefaultTimeZone() string {
 
 func GetDbFileName() string {
 	return dbFileName
+}
+
+func GetRestoreFile() string {
+	return restoreFile
+}
+
+func GetRestoreEndpoint() string {
+	return restoreEndpoint
+}
+
+func GetRestoreAccessKeyId() string {
+	return restoreAccessKeyId
+}
+
+func GetRestoreSecretAccessKey() string {
+	return restoreSecretAccessKey
 }
