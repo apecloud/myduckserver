@@ -31,11 +31,13 @@ jobs:
         run: |
           echo "Waiting for MinIO server to be ready..."
           for i in {1..30}; do
-            if curl -s http://localhost:9001/minio/health/ready | grep '"status":"ok"'; then
+            msg=$(curl -s http://localhost:9001/minio/health/ready)
+            if echo $msg|grep '"status":"ok"'; then
               echo "MinIO is ready."
               break
             else
               echo "MinIO not ready yet. Waiting..."
+              echo $msg
               sleep 2
             fi
             if [ $i -eq 30 ]; then
