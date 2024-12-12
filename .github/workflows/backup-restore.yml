@@ -24,8 +24,6 @@ jobs:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
         options: >-
-          --entrypoint "" # Override entrypoint to use the default command
-          --runtime runc
           --detach=true
 
     steps:
