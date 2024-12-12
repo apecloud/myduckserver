@@ -310,6 +310,9 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 		return 0, nil
 	}
 
+	// This must be called before (NOT after!) appending elements to the value builder
+	builder.Append(true)
+
 	var (
 		et     = ac.ElementType
 		oid    = et.OID
@@ -326,67 +329,97 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 	switch oid {
 	case pgtype.BoolOID:
 		if values, ok := values.(*array.BooleanBuilder); ok {
-			var v pgtype.FlatArray[bool]
+			var v pgtype.FlatArray[pgtype.Bool]
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			values.AppendValues(v, nil)
-			builder.Append(true)
+			for _, e := range v {
+				if e.Valid {
+					values.Append(e.Bool)
+				} else {
+					values.AppendNull()
+				}
+			}
 			return len(v) * 1, nil
 		}
 
 	case pgtype.Int2OID:
 		if values, ok := values.(*array.Int16Builder); ok {
-			var v pgtype.FlatArray[int16]
+			var v pgtype.FlatArray[pgtype.Int2]
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			values.AppendValues(v, nil)
-			builder.Append(true)
+			for _, e := range v {
+				if e.Valid {
+					values.Append(e.Int16)
+				} else {
+					values.AppendNull()
+				}
+			}
 			return len(v) * 2, nil
 		}
 
 	case pgtype.Int4OID:
 		if values, ok := values.(*array.Int32Builder); ok {
-			var v pgtype.FlatArray[int32]
+			var v pgtype.FlatArray[pgtype.Int4]
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			values.AppendValues(v, nil)
-			builder.Append(true)
+			for _, e := range v {
+				if e.Valid {
+					values.Append(e.Int32)
+				} else {
+					values.AppendNull()
+				}
+			}
 			return len(v) * 4, nil
 		}
 
 	case pgtype.Int8OID:
 		if values, ok := values.(*array.Int64Builder); ok {
-			var v pgtype.FlatArray[int64]
+			var v pgtype.FlatArray[pgtype.Int8]
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			values.AppendValues(v, nil)
-			builder.Append(true)
+			for _, e := range v {
+				if e.Valid {
+					values.Append(e.Int64)
+				} else {
+					values.AppendNull()
+				}
+			}
 			return len(v) * 8, nil
 		}
 
 	case pgtype.Float4OID:
 		if values, ok := values.(*array.Float32Builder); ok {
-			var v pgtype.FlatArray[float32]
+			var v pgtype.FlatArray[pgtype.Float4]
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			values.AppendValues(v, nil)
-			builder.Append(true)
+			for _, e := range v {
+				if e.Valid {
+					values.Append(e.Float32)
+				} else {
+					values.AppendNull()
+				}
+			}
 			return len(v) * 4, nil
 		}
 
 	case pgtype.Float8OID:
 		if values, ok := values.(*array.Float64Builder); ok {
-			var v pgtype.FlatArray[float64]
+			var v pgtype.FlatArray[pgtype.Float8]
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			values.AppendValues(v, nil)
-			builder.Append(true)
+			for _, e := range v {
+				if e.Valid {
+					values.Append(e.Float64)
+				} else {
+					values.AppendNull()
+				}
+			}
 			return len(v) * 8, nil
 		}
 
@@ -396,10 +429,13 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			for _, item := range v {
-				values.Append(arrow.Date32FromTime(item.Time))
+			for _, e := range v {
+				if e.Valid {
+					values.Append(arrow.Date32FromTime(e.Time))
+				} else {
+					values.AppendNull()
+				}
 			}
-			builder.Append(true)
 			return len(v) * 4, nil
 		}
 
@@ -409,10 +445,13 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			for _, item := range v {
-				values.Append(arrow.Time64(item.Microseconds * 1000))
+			for _, e := range v {
+				if e.Valid {
+					values.Append(arrow.Time64(e.Microseconds * 1000))
+				} else {
+					values.AppendNull()
+				}
 			}
-			builder.Append(true)
 			return len(v) * 8, nil
 		}
 
@@ -422,10 +461,13 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			for _, item := range v {
-				values.AppendTime(item.Time)
+			for _, e := range v {
+				if e.Valid {
+					values.AppendTime(e.Time)
+				} else {
+					values.AppendNull()
+				}
 			}
-			builder.Append(true)
 			return len(v) * 8, nil
 		}
 
@@ -435,37 +477,32 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			for _, item := range v {
-				values.AppendTime(item.Time)
+			for _, e := range v {
+				if e.Valid {
+					values.AppendTime(e.Time)
+				} else {
+					values.AppendNull()
+				}
 			}
-			builder.Append(true)
 			return len(v) * 8, nil
 		}
 
-	case pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.NameOID, pgtype.JSONOID, pgtype.JSONBOID:
+	case pgtype.ByteaOID, pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.NameOID, pgtype.JSONOID, pgtype.JSONBOID:
 		if values, ok := values.(*array.BinaryBuilder); ok {
 			var v pgtype.FlatArray[pgtype.DriverBytes]
 			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
 				return 0, err
 			}
-			for _, item := range v {
-				values.Append(item)
+			var total int
+			for _, e := range v {
+				if e != nil {
+					values.Append(e)
+					total += len(e)
+				} else {
+					values.AppendNull()
+				}
 			}
-			builder.Append(true)
-			return len(v), nil
-		}
-
-	case pgtype.ByteaOID:
-		if values, ok := values.(*array.BinaryBuilder); ok {
-			var v pgtype.FlatArray[pgtype.DriverBytes]
-			if err := ac.PlanScan(typeMap, oid, format, &v).Scan(data, &v); err != nil {
-				return 0, err
-			}
-			for _, item := range v {
-				values.Append(item)
-			}
-			builder.Append(true)
-			return len(v), nil
+			return total, nil
 		}
 
 	case pgtype.NumericOID:
@@ -476,39 +513,41 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 
 		switch values := values.(type) {
 		case *array.Decimal128Builder:
-			for _, item := range v {
-				if item.NaN || item.InfinityModifier != 0 {
+			for _, e := range v {
+				if e.NaN || e.InfinityModifier != 0 || !e.Valid {
 					values.AppendNull()
 					continue
 				}
-				if exp := item.Exp + scale; exp != 0 {
+				if exp := e.Exp + scale; exp != 0 {
 					if exp >= 40 || exp <= -40 {
 						return 0, fmt.Errorf("unsupported scale %d for Decimal128 array", exp)
 					}
 					if exp > 0 {
-						item.Int.Mul(item.Int, &pow10s[exp])
+						e.Int.Mul(e.Int, &pow10s[exp])
 					} else {
-						item.Int.Div(item.Int, &pow10s[-exp])
+						e.Int.Div(e.Int, &pow10s[-exp])
 					}
 				}
-				values.Append(decimal128.FromBigInt(item.Int))
+				values.Append(decimal128.FromBigInt(e.Int))
 			}
-			builder.Append(true)
 			return len(v) * 16, nil
 
 		case *array.BinaryBuilder:
 			codec := pgtype.NumericCodec{}
 			var total int
 			var buf [64]byte
-			for _, item := range v {
-				res, err := codec.PlanEncode(typeMap, oid, pgtype.TextFormatCode, item).Encode(item, buf[:0])
+			for _, e := range v {
+				if e.NaN || e.InfinityModifier != 0 || !e.Valid {
+					values.AppendNull()
+					continue
+				}
+				res, err := codec.PlanEncode(typeMap, oid, pgtype.TextFormatCode, e).Encode(e, buf[:0])
 				if err != nil {
 					return 0, err
 				}
 				values.Append(res)
 				total += len(res)
 			}
-			builder.Append(true)
 			return total, nil
 		}
 
@@ -519,17 +558,24 @@ func decodeArrayToArrow(typeMap *pgtype.Map, ac *pgtype.ArrayCodec, data []byte,
 		}
 		switch values := values.(type) {
 		case *array.FixedSizeBinaryBuilder:
-			for _, item := range v {
-				values.Append(item.Bytes[:])
+			for _, e := range v {
+				if e.Valid {
+					values.Append(e.Bytes[:])
+				} else {
+					values.AppendNull()
+				}
 			}
-			builder.Append(true)
 			return len(v) * 16, nil
 		case *array.BinaryBuilder:
 			codec := pgtype.UUIDCodec{}
 			var buf [36]byte
-			for _, item := range v {
-				codec.PlanEncode(typeMap, oid, pgtype.TextFormatCode, &item).Encode(&item, buf[:0])
-				values.Append(buf[:])
+			for _, e := range v {
+				if e.Valid {
+					codec.PlanEncode(typeMap, oid, pgtype.TextFormatCode, &e).Encode(&e, buf[:0])
+					values.Append(buf[:])
+				} else {
+					values.AppendNull()
+				}
 			}
 			return len(v) * 36, nil
 		}

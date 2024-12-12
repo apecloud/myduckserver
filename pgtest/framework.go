@@ -228,7 +228,7 @@ func NormalizeValToString(typ *pgtype.Type, v any) any {
 		} else if !val.Valid {
 			return nil
 		} else {
-			decStr := decimal.NewFromBigInt(val.Int, val.Exp).StringFixed(val.Exp * -1)
+			decStr := decimal.NewFromBigInt(val.Int, val.Exp).String()
 			return Numeric(decStr)
 		}
 	case []any:
@@ -286,7 +286,10 @@ func NormalizeVal(typ *pgtype.Type, v any) any {
 		} else if !val.Valid {
 			return nil
 		} else {
-			return decimal.NewFromBigInt(val.Int, val.Exp)
+			d := decimal.NewFromBigInt(val.Int, val.Exp)
+			s := d.String() // trim trailing zeros
+			d, _ = decimal.NewFromString(s)
+			return d
 		}
 	case pgtype.Time:
 		// This value type is used for TIME type.
