@@ -1,5 +1,7 @@
-##!/usr/bin/env bats
+#!/usr/bin/env bats
+
+load helper
 
 @test "cli_show_databases" {
-    mysql -h 127.0.0.1 -P 3306 -u root -e "SHOW DATABASES;" | grep -q 'mysql'
+    mysql_exec "SHOW DATABASES;" | grep -q 'mysql'
 }
