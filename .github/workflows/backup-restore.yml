@@ -131,7 +131,7 @@ jobs:
            
       - name: Do backup
         run: |
-          psql "postgres://postgres:@127.0.0.1:5432/testdb" <<-EOSQL
+          psql "postgres://postgres:@127.0.0.1:5432" <<-EOSQL
             BACKUP DATABASE mysql TO 's3c://myduck-backup/myduck/myduck.bak' 
               ENDPOINT = '127.0.0.1:9001' 
               ACCESS_KEY_ID = 'minioadmin' 
