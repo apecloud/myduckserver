@@ -156,6 +156,23 @@ func (iter *SqlRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 				return nil, err
 			}
 			iter.buffer[idx] = n
+		case []any:
+			array := make([]pgtype.Numeric, len(v))
+			for i, x := range v {
+				switch y := x.(type) {
+				case nil:
+					array[i] = pgtype.Numeric{}
+				case duckdb.Decimal:
+					array[i] = pgtype.Numeric{Int: y.Value, Exp: -int32(y.Scale), Valid: true}
+				case string:
+					if err := array[i].Scan(y); err != nil {
+						return nil, err
+					}
+				default:
+					return nil, fmt.Errorf("unexpected type %T for decimal value", x)
+				}
+			}
+			iter.buffer[idx] = array
 		default:
 			return nil, fmt.Errorf("unexpected type %T for decimal value", v)
 		}
@@ -167,6 +184,9 @@ func (iter *SqlRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		switch v := iter.buffer[idx].(type) {
 		case nil:
 			list = nil
+		case []pgtype.Numeric: // from the previous decimal processing step
+			iter.buffer[idx] = pgtype.FlatArray[pgtype.Numeric](v)
+			continue
 		case []any:
 			list = v
 		case duckdb.Composite[[]any]:

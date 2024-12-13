@@ -460,6 +460,7 @@ func (p PostgresType) String() string {
 
 func DecodePrecisionScale(typmod int) (precision, scale int32, ok bool) {
 	if typmod > 0 {
+		typmod -= 4 // remove VARHDRSZ
 		precision = int32((typmod >> 16) & 0xFFFF)
 		scale = int32(typmod & 0xFFFF)
 		ok = true
