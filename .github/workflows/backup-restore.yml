@@ -72,7 +72,94 @@ jobs:
           mc mb myminio/myduck-backup
           mc ls myminio
 
+      - name: Start Primary PostgreSQL
+        run: |
+          docker run -d --name pg-primary \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=password \
+            -e POSTGRES_DB=testdb \
+            -p 15432:5432 \
+            postgres:latest \
+            -c wal_level=logical \
+            -c max_wal_senders=30
+
+          # Wait for PostgreSQL to be ready
+          for i in {1..30}; do
+            if psql "postgres://postgres:password@localhost:15432/testdb" -c "SELECT 1" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Configure Primary for Replication
+        run: |
+          # Create test data
+          psql "postgres://postgres:password@localhost:15432/testdb" <<-EOSQL
+            CREATE TABLE test_table (id int primary key, name text);
+            INSERT INTO test_table VALUES (1, 'initial data 1'), (2, 'initial data 2');
+          
+            CREATE PUBLICATION testpub FOR TABLE test_table;
+          EOSQL
+
+      - name: Start MyDuck and Test Initial Replication
+        run: |
+          # Start MyDuck
+          ./myduckserver &
+          sleep 5
+          
+          # Create subscription
+          psql -h 127.0.0.1 -p 5432 -U postgres <<-EOSQL
+            CREATE SUBSCRIPTION testsub
+            CONNECTION 'dbname=testdb host=localhost port=15432 user=postgres password=password'
+            PUBLICATION testpub;
+          EOSQL
+          sleep 5
+          
+          # Verify initial data
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 1 AND name = 'initial data 1';" | grep -q 1
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 2 AND name = 'initial data 2';" | grep -q 1
+
+      - name: Test Ongoing Replication
+        run: |
+          # Insert new data in primary
+          psql "postgres://postgres:password@localhost:15432/testdb" \
+            -c "INSERT INTO test_table VALUES (3, 'new data 3');"
+          sleep 2
+          
+          # Verify replication of new data
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 3 AND name = 'new data 3';" | grep -q 1
+           
+      - name: Do backup
+        run: |
+          psql -h 127.0.0.1 -p 5432 -U postgres -c \
+          "BACKUP DATABASE mysql TO 's3c://myduck-backup/myduck/myduck.bak' ENDPOINT = '127.0.0.1:9001' ACCESS_KEY_ID = 'minioadmin' SECRET_ACCESS_KEY = 'minioadmin';"
+          
+          mc stat myminio/myduck-backup/myduck/mysql.db
+          pkill myduckserver
+          rm -f ./mysql.db
+
+      - name: Test Replication Recovery
+        run: |
+          # Insert more data in primary while MyDuck is down
+          psql "postgres://postgres:password@localhost:15432/testdb" \
+            -c "INSERT INTO test_table VALUES (4, 'offline data 4');"
+           
+          # Restart MyDuck
+          ./myduckserver \
+          --restore-file=s3c://myduck-backup/myduck/myduck.bak \
+          --restore-endpoint=127.0.0.1:9001 \
+          --restore-access-key-id=minioadmin \
+          --restore-secret-access-key=minioadmin &
+          sleep 15
+          
+          # Verify replication catches up
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
+          
+          # Kill MyDuck
+          pkill myduckserver
+
       - name: Cleanup
         if: always()
         run: |
-          docker rm -f minio || true
+          pkill myduckserver || true
+          docker rm -f pg-primary minio || true
