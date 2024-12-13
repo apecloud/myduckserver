@@ -117,6 +117,16 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 	b.Grow(256)
 
 	keyless := sql.IsKeyless(dst.Schema())
+	// TODO(fan): This is an ugly hack for MySQL Shell's utilities to work properly.
+	if !keyless {
+		if t, ok := dst.(*catalog.Table); ok {
+			// Replicated tables do not have physical primary keys.
+			// Their logical primary keys are fake and should not be used in INSERT INTO statements.
+			// https://github.com/apecloud/myduckserver/issues/272
+			keyless = t.ExtraTableInfo().Replicated
+		}
+	}
+
 	b.WriteString("INSERT")
 	if load.IsIgnore && !keyless {
 		b.WriteString(" OR IGNORE")

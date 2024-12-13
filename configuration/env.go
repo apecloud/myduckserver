@@ -11,7 +11,7 @@ const (
 
 func IsReplicationWithoutIndex() bool {
 	switch strings.ToLower(os.Getenv(replicationWithoutIndex)) {
-	case "", "t", "1", "true":
+	case "", "y", "t", "1", "on", "yes", "true":
 		return true
 	}
 	return false
