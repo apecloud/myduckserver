@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/apecloud/myduckserver/test"
+	"github.com/apecloud/myduckserver/testutil"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
@@ -420,11 +420,11 @@ func TestSessParam(t *testing.T) {
 	}
 
 	// Setup MyDuck Server
-	testDir := test.CreateTestDir(t)
-	testEnv := test.NewTestEnv()
-	err := test.StartDuckSqlServer(t, testDir, nil, testEnv)
+	testDir := testutil.CreateTestDir(t)
+	testEnv := testutil.NewTestEnv()
+	err := testutil.StartDuckSqlServer(t, testDir, nil, testEnv)
 	require.NoError(t, err)
-	defer test.StopDuckSqlServer(t, testEnv.DuckProcess)
+	defer testutil.StopDuckSqlServer(t, testEnv.DuckProcess)
 	dsn := "postgresql://postgres@localhost:" + strconv.Itoa(testEnv.DuckPgPort) + "/postgres"
 
 	// https://pkg.go.dev/github.com/jackc/pgx/v5#ParseConfig
