@@ -23,6 +23,7 @@ import (
 
 	"github.com/Shopify/toxiproxy/v2"
 	toxiproxyclient "github.com/Shopify/toxiproxy/v2/client"
+	"github.com/apecloud/myduckserver/testutil"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
