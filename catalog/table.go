@@ -8,7 +8,6 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/configuration"
-	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/marcboeker/go-duckdb"
@@ -25,6 +24,7 @@ type Table struct {
 
 type ExtraTableInfo struct {
 	PkOrdinals []int
+	Replicated bool
 }
 
 type ColumnInfo struct {
@@ -362,7 +362,7 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 	defer t.mu.Unlock()
 
 	// https://github.com/apecloud/myduckserver/issues/272
-	if mycontext.IsReplicationQuery(ctx) && configuration.IsReplicationWithoutIndex() {
+	if isIndexCreationDisabled(ctx) {
 		return nil
 	}
 
