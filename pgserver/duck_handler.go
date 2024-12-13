@@ -527,7 +527,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 			rows.Close()
 			break
 		}
-		iter, err = backend.NewSQLRowIter(rows, schema)
+		iter, err = NewSqlRowIter(rows, schema)
 		if err != nil {
 			rows.Close()
 			break

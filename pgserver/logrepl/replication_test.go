@@ -503,9 +503,10 @@ var replicationTests = []ReplicationTest{
 				"binary_data BYTEA, " +
 				"description TEXT, " +
 				"code CHAR(3), " +
-				// "tags TEXT[], " +
-				// "scores INTEGER[], " +
-				// "real_nums REAL[], " +
+				"tags TEXT[], " +
+				"scores INTEGER[], " +
+				"real_nums REAL[], " +
+				"decimal_nums DECIMAL(8,3)[], " +
 				"small_num SMALLINT, " +
 				"big_num BIGINT, " +
 				"json_data JSON)",
@@ -524,9 +525,10 @@ var replicationTests = []ReplicationTest{
 				"binary_data BYTEA, " +
 				"description TEXT, " +
 				"code CHAR(3), " +
-				// "tags TEXT[], " +
-				// "scores INTEGER[], " +
-				// "real_nums REAL[], " +
+				"tags TEXT[], " +
+				"scores INTEGER[], " +
+				"real_nums REAL[], " +
+				"decimal_nums DECIMAL(8,3)[], " +
 				"small_num SMALLINT, " +
 				"big_num BIGINT, " +
 				"json_data JSONB)",
@@ -535,14 +537,14 @@ var replicationTests = []ReplicationTest{
 				"'2021-01-01', '12:00:00', '2021-01-01 12:00:00', '2021-01-01 20:00:00+8', " +
 				"12345678.9, " +
 				`'\x0123456789ABCDEF', 'long text description', 'ABC', ` +
-				// "ARRAY['tag1', 'tag2'], ARRAY[1, 2, 3], ARRAY[1.1, 2.2, 3.3]::real[], " +
+				"ARRAY['tag1', 'tag2'], ARRAY[1, 2, 3], ARRAY[1.1, 2.2, 3.3]::real[], ARRAY[1.1, 22.22, 333.333], " +
 				`123, 9223372036854775807, '{"key": "value"}')`,
 			"INSERT INTO public.test VALUES (2, " +
 				"'two', 2, false, 2.2, " +
 				"'2021-02-02', '13:00:00.123456', '2021-02-02 13:00:00.123456', '2021-02-02 05:00:00.123456-8', " +
 				"98765432.1, " +
 				`'\xDEADBEEF', 'another description', 'XYZ', ` +
-				// "ARRAY['tag3', 'tag4'], ARRAY[4, 5, 6], ARRAY[4.4, 5.5, 6.6]::real[], " +
+				"ARRAY['tag3', 'tag4', NULL, 'NULL'], ARRAY[4, 5, 6, 7, NULL], ARRAY[NULL, 4.4, 5.5, 6.6, 7.7]::real[], ARRAY[4.4, 55.55, NULL, 66.66, 777.777], " +
 				`-123, -9223372036854775808, '{"array": [1, 2, 3]}')`,
 			"UPDATE public.test SET name = 'three' WHERE id = 2",
 			`UPDATE public.test SET json_data = jsonb_set(json_data, '{key}', '"new_value"') WHERE id = 1`,
@@ -559,9 +561,10 @@ var replicationTests = []ReplicationTest{
 						pgtest.Numeric("12345678.9"),
 						[]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF},
 						"long text description", "ABC",
-						// []string{"tag1", "tag2"},
-						// []int32{1, 2, 3},
-						// []float32{1.1, 2.2, 3.3},
+						`{tag1,tag2}`,
+						`{1,2,3}`,
+						`{1.1,2.2,3.3}`,
+						`{1.1,22.22,333.333}`,
 						int16(123),
 						int64(9223372036854775807),
 						`{"key": "new_value"}`,
@@ -574,9 +577,10 @@ var replicationTests = []ReplicationTest{
 						pgtest.Numeric("98765432.1"),
 						[]byte{0xDE, 0xAD, 0xBE, 0xEF},
 						"another description", "XYZ",
-						// []string{"tag3", "tag4"},
-						// []int32{4, 5, 6},
-						// []float32{4.4, 5.5, 6.6},
+						`{tag3,tag4,NULL,"NULL"}`,
+						`{4,5,6,7,NULL}`,
+						`{NULL,4.4,5.5,6.6,7.7}`,
+						`{4.4,55.55,NULL,66.66,777.777}`,
 						int16(-123),
 						int64(-9223372036854775808),
 						`{"array": [1, 2, 3]}`,
@@ -931,7 +935,7 @@ func waitForCaughtUp(r *logrepl.LogicalReplicator) error {
 		}
 
 		log.Println("replication not caught up, waiting")
-		if time.Since(start) >= 10*time.Second {
+		if time.Since(start) >= 30*time.Second {
 			return errors.New("Replication did not catch up")
 		}
 		time.Sleep(1 * time.Second)

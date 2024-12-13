@@ -23,7 +23,7 @@ import (
 
 	"github.com/Shopify/toxiproxy/v2"
 	toxiproxyclient "github.com/Shopify/toxiproxy/v2/client"
-	"github.com/apecloud/myduckserver/test"
+	"github.com/apecloud/myduckserver/testutil"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -153,7 +153,7 @@ func showReplicaStatus(t *testing.T) map[string]interface{} {
 }
 
 func configureToxiProxy(t *testing.T) {
-	toxiproxyPort := test.FindFreePort()
+	toxiproxyPort := testutil.FindFreePort()
 
 	metrics := toxiproxy.NewMetricsContainer(prometheus.NewRegistry())
 	toxiproxyServer := toxiproxy.NewServer(metrics, zerolog.Nop())
@@ -165,7 +165,7 @@ func configureToxiProxy(t *testing.T) {
 
 	toxiClient = toxiproxyclient.NewClient(fmt.Sprintf("localhost:%d", toxiproxyPort))
 
-	proxyPort = test.FindFreePort()
+	proxyPort = testutil.FindFreePort()
 	var err error
 	mysqlProxy, err = toxiClient.CreateProxy("mysql",
 		fmt.Sprintf("localhost:%d", proxyPort), // downstream
