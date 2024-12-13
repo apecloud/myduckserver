@@ -30,7 +30,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apecloud/myduckserver/test"
+	"github.com/apecloud/myduckserver/testutil"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
@@ -70,7 +70,7 @@ func teardown(t *testing.T) {
 		stopMySqlServer(t)
 	}
 	if duckProcess != nil {
-		test.StopDuckSqlServer(t, duckProcess)
+		testutil.StopDuckSqlServer(t, duckProcess)
 	}
 	if mysqlLogFile != nil {
 		mysqlLogFile.Close()
@@ -101,7 +101,7 @@ func teardown(t *testing.T) {
 	}
 }
 
-func setupTestEnv(testEnv *test.TestEnv) {
+func setupTestEnv(testEnv *testutil.TestEnv) {
 	testEnv.MySqlContainer = mySqlContainer
 	testEnv.MySqlPort = mySqlPort
 	testEnv.DuckPort = duckPort
@@ -116,7 +116,7 @@ func setupTestEnv(testEnv *test.TestEnv) {
 	testEnv.OriginalWorkingDir = originalWorkingDir
 }
 
-func loadEnvFromTestEnv(testEnv *test.TestEnv) {
+func loadEnvFromTestEnv(testEnv *testutil.TestEnv) {
 	mySqlContainer = testEnv.MySqlContainer
 	mySqlPort = testEnv.MySqlPort
 	duckPort = testEnv.DuckPort
@@ -185,11 +185,11 @@ func TestAutoRestartReplica(t *testing.T) {
 	require.True(t, fileExists(filepath.Join(testDir, duckSubdir, ".replica", "replica-running")))
 
 	// Restart the Dolt replica
-	test.StopDuckSqlServer(t, duckProcess)
+	testutil.StopDuckSqlServer(t, duckProcess)
 	var err error
-	testEnv := test.NewTestEnv()
+	testEnv := testutil.NewTestEnv()
 	setupTestEnv(testEnv)
-	err = test.StartDuckSqlServer(t, testDir, nil, testEnv)
+	err = testutil.StartDuckSqlServer(t, testDir, nil, testEnv)
 	require.NoError(t, err)
 	loadEnvFromTestEnv(testEnv)
 
@@ -214,9 +214,9 @@ func TestAutoRestartReplica(t *testing.T) {
 	require.False(t, fileExists(filepath.Join(testDir, duckSubdir, ".replica", "replica-running")))
 
 	// Restart the Dolt replica
-	test.StopDuckSqlServer(t, duckProcess)
+	testutil.StopDuckSqlServer(t, duckProcess)
 	setupTestEnv(testEnv)
-	err = test.StartDuckSqlServer(t, testDir, nil, testEnv)
+	err = testutil.StartDuckSqlServer(t, testDir, nil, testEnv)
 	require.NoError(t, err)
 	loadEnvFromTestEnv(testEnv)
 
@@ -688,15 +688,15 @@ func startSqlServersWithSystemVars(t *testing.T, persistentSystemVars map[string
 		t.Skip("Skipping binlog replication integ tests in CI environment on Mac OS")
 	}
 
-	testDir = test.CreateTestDir(t)
+	testDir = testutil.CreateTestDir(t)
 	var err error
 
 	// Start up primary and replica databases
 	mySqlPort, mySqlContainer, err = startMySqlServer(testDir)
 	require.NoError(t, err)
-	testEnv := test.NewTestEnv()
+	testEnv := testutil.NewTestEnv()
 	setupTestEnv(testEnv)
-	err = test.StartDuckSqlServer(t, testDir, persistentSystemVars, testEnv)
+	err = testutil.StartDuckSqlServer(t, testDir, persistentSystemVars, testEnv)
 	require.NoError(t, err)
 	loadEnvFromTestEnv(testEnv)
 }
@@ -825,7 +825,7 @@ func getGtidEnabled() bool {
 // startMySqlServer configures a starts a fresh MySQL server instance in a Docker container
 // and returns the port it is running on. If unable to start up the MySQL server, an error is returned.
 func startMySqlServer(dir string) (int, string, error) {
-	mySqlPort = test.FindFreePort()
+	mySqlPort = testutil.FindFreePort()
 
 	// Use a random name for the container to avoid conflicts
 	mySqlContainer = "mysql-test-" + strconv.Itoa(rand.Int())
@@ -863,7 +863,7 @@ func startMySqlServer(dir string) (int, string, error) {
 	dsn := fmt.Sprintf("root:password@tcp(127.0.0.1:%v)/", mySqlPort)
 	primaryDatabase = sqlx.MustOpen("mysql", dsn)
 
-	err = test.WaitForSqlServerToStart(primaryDatabase)
+	err = testutil.WaitForSqlServerToStart(primaryDatabase)
 	if err != nil {
 		return -1, "", err
 	}
