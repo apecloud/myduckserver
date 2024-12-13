@@ -136,7 +136,8 @@ jobs:
               ENDPOINT = '127.0.0.1:9001' 
               ACCESS_KEY_ID = 'minioadmin' 
               SECRET_ACCESS_KEY = 'minioadmin';
-          EOSQL 
+          EOSQL
+          sleep 5
           
           mc ls myminio
           mc stat myminio/myduck-backup/myduck/myduck.bak
