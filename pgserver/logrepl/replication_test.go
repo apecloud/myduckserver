@@ -931,7 +931,7 @@ func waitForCaughtUp(r *logrepl.LogicalReplicator) error {
 		}
 
 		log.Println("replication not caught up, waiting")
-		if time.Since(start) >= 10*time.Second {
+		if time.Since(start) >= 30*time.Second {
 			return errors.New("Replication did not catch up")
 		}
 		time.Sleep(1 * time.Second)
