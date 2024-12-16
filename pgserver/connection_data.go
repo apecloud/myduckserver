@@ -86,12 +86,13 @@ type copyFromStdinState struct {
 }
 
 type PortalData struct {
-	Query        ConvertedQuery
-	IsEmptyQuery bool
-	Fields       []pgproto3.FieldDescription
-	Stmt         *duckdb.Stmt
-	Vars         []any
-	Closed       *atomic.Bool
+	Query             ConvertedQuery
+	IsEmptyQuery      bool
+	Fields            []pgproto3.FieldDescription
+	ResultFormatCodes []int16
+	Stmt              *duckdb.Stmt
+	Vars              []any
+	Closed            *atomic.Bool
 }
 
 type PreparedStatementData struct {

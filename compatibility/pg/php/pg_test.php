@@ -100,9 +100,14 @@ class Test {
                 return false;
             }
             foreach ($rows as $i => $row) {
-                if ($row != $this->expectedResults[$i]) {
-                    echo "Expected: " . implode(", ", $this->expectedResults[$i]) . ", got: " . implode(", ", $row) . "\n";
-                    return false;
+                $row = array_map('strval', $row);
+                foreach ($row as $j => $value) {
+                    $value = trim($value);
+                    $expectedValue = trim($this->expectedResults[$i][$j]);
+                    if ($value !== $expectedValue) {
+                        echo "Expected: " . $expectedValue . ", got: " . $value . "\n";
+                        return false;
+                    }
                 }
             }
             echo "Returns " . count($rows) . " rows\n";

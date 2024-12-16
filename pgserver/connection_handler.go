@@ -702,11 +702,12 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 	}
 
 	h.portals[message.DestinationPortal] = PortalData{
-		Query:  preparedData.Query,
-		Fields: fields,
-		Stmt:   preparedData.Stmt,
-		Closed: preparedData.Closed,
-		Vars:   bindVars,
+		Query:             preparedData.Query,
+		Fields:            fields,
+		ResultFormatCodes: message.ResultFormatCodes,
+		Stmt:              preparedData.Stmt,
+		Closed:            preparedData.Closed,
+		Vars:              bindVars,
 	}
 	return h.send(&pgproto3.BindComplete{})
 }

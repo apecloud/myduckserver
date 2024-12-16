@@ -102,13 +102,12 @@ func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared Prepa
 		return nil, err
 	}
 
-	// TODO(fan): Theoretically, the field descriptions may change after binding.
 	return prepared.ReturnFields, nil
 }
 
 // ComExecuteBound implements the Handler interface.
 func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, portal PortalData, callback func(*Result) error) error {
-	err := h.doQuery(ctx, conn, portal.Query.String, portal.Query.AST, portal.Stmt, portal.Vars, ExtendedQueryMode, h.executeBoundPlan, callback)
+	err := h.doQuery(ctx, conn, portal.Query.String, portal.Query.AST, portal.Stmt, portal.Vars, portal.ResultFormatCodes, ExtendedQueryMode, h.executeBoundPlan, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -200,7 +199,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		if err != nil {
 			break
 		}
-		fields = schemaToFieldDescriptions(sqlCtx, schema, ExtendedQueryMode)
+		fields = schemaToFieldDescriptions(sqlCtx, schema, nil, ExtendedQueryMode)
 	default:
 		// For other statements, we just return the "affected rows" field.
 		fields = []pgproto3.FieldDescription{
@@ -221,7 +220,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 
 // ComQuery implements the Handler interface.
 func (h *DuckHandler) ComQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, callback func(*Result) error) error {
-	err := h.doQuery(ctx, c, query, parsed, nil, nil, SimpleQueryMode, h.executeQuery, callback)
+	err := h.doQuery(ctx, c, query, parsed, nil, nil, nil, SimpleQueryMode, h.executeQuery, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -298,7 +297,7 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 
 var queryLoggingRegex = regexp.MustCompile(`[\r\n\t ]+`)
 
-func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, mode QueryMode, queryExec QueryExecutor, callback func(*Result) error) error {
+func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, resultFormatCodes []int16, mode QueryMode, queryExec QueryExecutor, callback func(*Result) error) error {
 	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
 	if err != nil {
 		return err
@@ -358,10 +357,10 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 	} else if schema == nil {
 		r, err = resultForEmptyIter(sqlCtx, rowIter)
 	} else if analyzer.FlagIsSet(qFlags, sql.QFlagMax1Row) {
-		resultFields := schemaToFieldDescriptions(sqlCtx, schema, mode)
+		resultFields := schemaToFieldDescriptions(sqlCtx, schema, resultFormatCodes, mode)
 		r, err = resultForMax1RowIter(sqlCtx, schema, rowIter, resultFields)
 	} else {
-		resultFields := schemaToFieldDescriptions(sqlCtx, schema, mode)
+		resultFields := schemaToFieldDescriptions(sqlCtx, schema, resultFormatCodes, mode)
 		r, processedAtLeastOneBatch, err = h.resultForDefaultIter(sqlCtx, schema, rowIter, callback, resultFields)
 	}
 	if err != nil {
@@ -569,7 +568,7 @@ func (h *DuckHandler) maybeReleaseAllLocks(c *mysql.Conn) {
 	}
 }
 
-func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema, mode QueryMode) []pgproto3.FieldDescription {
+func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema, resultFormatCodes []int16, mode QueryMode) []pgproto3.FieldDescription {
 	fields := make([]pgproto3.FieldDescription, len(s))
 	for i, c := range s {
 		var oid uint32
@@ -581,9 +580,18 @@ func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema, mode QueryMode) [
 			if mode == SimpleQueryMode {
 				// https://www.postgresql.org/docs/current/protocol-flow.html
 				// > In simple Query mode, the format of retrieved values is always text, except ...
-				format = pgtype.TextFormatCode
+				format = pgproto3.TextFormat
 			} else {
-				format = pgType.PG.Codec.PreferredFormat()
+				if resultFormatCodes != nil && len(resultFormatCodes) > 0 {
+					// Specified overall or per-column format codes
+					if len(resultFormatCodes) == 1 {
+						format = resultFormatCodes[0]
+					} else {
+						format = resultFormatCodes[i]
+					}
+				} else {
+					format = pgType.PG.Codec.PreferredFormat()
+				}
 			}
 			size = int16(pgType.Size)
 		} else {
@@ -592,7 +600,7 @@ func schemaToFieldDescriptions(ctx *sql.Context, s sql.Schema, mode QueryMode) [
 				panic(err)
 			}
 			size = int16(c.Type.MaxTextResponseByteLength(ctx))
-			format = 0
+			format = pgproto3.TextFormat
 		}
 
 		// "Format" field: The format code being used for the field.
