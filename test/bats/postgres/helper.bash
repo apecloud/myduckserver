@@ -12,5 +12,5 @@ psql_exec() {
 }
 
 psql_exec_stdin() {
-    psql -h "$PG_HOST" -U "$PG_USER" -F ',' --no-align --field-separator ',' --pset footer=off" "$@"
+    psql -h "$PG_HOST" -U "$PG_USER" -F ',' --no-align --field-separator ',' --pset footer=off "$@"
 }
