@@ -25,7 +25,7 @@ jobs:
       - name: Install system packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: bats mysql-client
+          packages: bats mysql-client postgresql-client
           version: 1.0
 
       - name: Install dependencies

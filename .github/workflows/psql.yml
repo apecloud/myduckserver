@@ -23,6 +23,12 @@ jobs:
       with:
         python-version: '3.10'
 
+    - name: Install system packages
+      uses: awalsh128/cache-apt-pkgs-action@latest
+      with:
+        packages: postgresql-client
+        version: 1.0
+
     - name: Install dependencies
       run: |
         go get .
@@ -36,17 +42,14 @@ jobs:
         duckdb -c 'INSTALL json from core'
         duckdb -c 'SELECT extension_name, loaded, install_path FROM duckdb_extensions() where installed'
 
-        sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends postgresql-client
-
     - name: Build
       run: go build -v
-    
+  
     - name: Start MyDuck Server
       run: |
         ./myduckserver &
         sleep 5
-    
+
     - name: Run the SQL scripts
       run: |
         # for each SQL script in the `pgtest/psql` directory (recursively)

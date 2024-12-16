@@ -417,16 +417,6 @@ func TestSessParam(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "Show all tables",
-			executions: []Execution{
-				{
-					SQL:      "SHOW ALL TABLES;",
-					Expected: [][]string{},
-					WantErr:  false,
-				},
-			},
-		},
 	}
 
 	// Setup MyDuck Server
