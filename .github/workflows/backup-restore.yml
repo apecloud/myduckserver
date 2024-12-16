@@ -129,7 +129,7 @@ jobs:
           # Verify replication of new data
           psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 3 AND name = 'new data 3';" | grep -q 1
            
-      - name: Do backup
+      - name: Backup MyDuck and Insert more data into source PG
         run: |
           psql "postgres://postgres:@127.0.0.1:5432" <<-EOSQL
             BACKUP DATABASE mysql TO 's3c://myduck-backup/myduck/myduck.bak' 
@@ -139,25 +139,27 @@ jobs:
           EOSQL
           sleep 5
           
-          mc ls myminio
           mc stat myminio/myduck-backup/myduck/myduck.bak
           pkill myduckserver
           rm -f ./mysql.db
-
-      - name: Test Replication Recovery
-        run: |
+          
           # Insert more data in primary while MyDuck is down
           psql "postgres://postgres:password@localhost:15432/testdb" \
             -c "INSERT INTO test_table VALUES (4, 'offline data 4');"
-           
+
+      - name: Restore MyDuck
+        run: |
           # Restart MyDuck
           ./myduckserver \
           --restore-file=s3c://myduck-backup/myduck/myduck.bak \
           --restore-endpoint=127.0.0.1:9001 \
           --restore-access-key-id=minioadmin \
           --restore-secret-access-key=minioadmin &
+          
           sleep 15
           
+      - name: Test Replication
+        run: |
           # Verify replication catches up
           psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
           
