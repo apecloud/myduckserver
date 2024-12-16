@@ -174,14 +174,6 @@ func (h *ConnectionHandler) handlePgCatalog(query ConvertedQuery) (bool, error) 
 	})
 }
 
-// handler for show all tables
-func (h *ConnectionHandler) handleShowAllTables() (bool, error) {
-	return true, h.query(ConvertedQuery{
-		String:       "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",
-		StatementTag: "SELECT",
-	})
-}
-
 type PGCatalogHandler struct {
 	// HandledInPlace is a function that determines if the query should be handled in place and not passed to the engine.
 	HandledInPlace func(ConvertedQuery) (bool, error)
