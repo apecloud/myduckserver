@@ -178,7 +178,7 @@ func (p *ConnectionPool) Close() error {
 	return errors.Join(lastErr, p.DB.Close())
 }
 
-func (p *ConnectionPool) ResetAndStart(catalog string, connector *duckdb.Connector, db *stdsql.DB) error {
+func (p *ConnectionPool) Reset(catalog string, connector *duckdb.Connector, db *stdsql.DB) error {
 	err := p.Close()
 	if err != nil {
 		return fmt.Errorf("failed to close connection pool: %w", err)

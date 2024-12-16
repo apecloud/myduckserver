@@ -140,16 +140,3 @@ func SelectSubscriptionLsn(ctx *sql.Context, subscription string) (pglogrepl.LSN
 
 	return pglogrepl.ParseLSN(lsn)
 }
-
-func CommitAndUpdate(sqlCtx *sql.Context) error {
-	if err := adapter.CommitAndCloseTxn(sqlCtx); err != nil {
-		return err
-	}
-
-	err := UpdateSubscriptions(sqlCtx)
-	if err != nil {
-		return fmt.Errorf("failed to update subscriptions: %w", err)
-	}
-
-	return nil
-}

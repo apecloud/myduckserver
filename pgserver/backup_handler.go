@@ -138,7 +138,7 @@ func (h *ConnectionHandler) restartServer(readOnly bool) error {
 		return err
 	}
 
-	return h.server.ConnPool.ResetAndStart(provider.CatalogName(), provider.Connector(), provider.Storage())
+	return h.server.ConnPool.Reset(provider.CatalogName(), provider.Connector(), provider.Storage())
 }
 
 func doCheckpoint(sqlCtx *sql.Context) error {
@@ -154,19 +154,33 @@ func doCheckpoint(sqlCtx *sql.Context) error {
 }
 
 func stopAllReplication(sqlCtx *sql.Context) error {
-	err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, false)
-	if err != nil {
+	if err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, false); err != nil {
 		return err
 	}
 
-	return logrepl.CommitAndUpdate(sqlCtx)
+	if err := adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
+	}
+
+	if err := logrepl.UpdateSubscriptions(sqlCtx); err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }
 
 func startAllReplication(sqlCtx *sql.Context) error {
-	err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, true)
-	if err != nil {
+	if err := logrepl.UpdateAllSubscriptionStatus(sqlCtx, true); err != nil {
 		return err
 	}
 
-	return logrepl.CommitAndUpdate(sqlCtx)
+	if err := adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
+	}
+
+	if err := logrepl.UpdateSubscriptions(sqlCtx); err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }

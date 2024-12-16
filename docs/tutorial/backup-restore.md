@@ -34,7 +34,7 @@ BACKUP DATABASE my_database TO 's3://my_bucket/my_database/'
 
 **Notes:**
 - `s3` refers to AWS S3.
-- `s3c` refers to other S3-compatible object storage services, such as MinIO or Aliyun OSS.
+- `s3c` refers to other S3-compatible object storage services, such as [MinIO](https://min.io/) or [Alibaba Cloud OSS](https://www.alibabacloud.com/help/en/oss/).
 
 ## Restore
 

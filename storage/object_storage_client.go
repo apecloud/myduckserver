@@ -40,7 +40,7 @@ func (basics *Bucket) UploadFile(ctx context.Context, bucketName string, objectK
 		defer file.Close()
 
 		uploader := manager.NewUploader(basics.S3Client, func(u *manager.Uploader) {
-			u.PartSize = uploadPartSize // 5 MiB
+			u.PartSize = uploadPartSize
 		})
 
 		_, err := uploader.Upload(ctx, &s3.PutObjectInput{
@@ -73,7 +73,7 @@ func (basics *Bucket) DownloadFile(ctx context.Context, bucketName string, objec
 	defer f.Close()
 
 	downloader := manager.NewDownloader(basics.S3Client, func(u *manager.Downloader) {
-		u.PartSize = downloadPartSize // 5 MiB
+		u.PartSize = downloadPartSize
 	})
 
 	numBytes, err := downloader.Download(ctx, f, &s3.GetObjectInput{
