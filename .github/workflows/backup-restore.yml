@@ -156,7 +156,7 @@ jobs:
           --restore-access-key-id=minioadmin \
           --restore-secret-access-key=minioadmin &
           
-          sleep 15
+          sleep 10
           
       - name: Test Replication
         run: |
