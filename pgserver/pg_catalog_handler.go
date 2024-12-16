@@ -23,7 +23,7 @@ var pgIsInRecoveryRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.pg_is
 var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current_wal_lsn|pg_last_wal_replay_lsn)\(\s*\)\s*;?\s*$`)
 
 // precompile a regex to match "select pg_catalog.current_setting('xxx');".
-var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+(pg_catalog.)?current_setting\(\s*'([^']+)'\s*\)\s*;?\s*$`)
+var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+(pg_catalog.)?current_setting\(\s*'([^']+)'(\s*,\s*true)?\s*\)\s*;?\s*$`)
 
 // precompile a regex to match any "from pg_catalog.pg_stat_replication" in the query.
 var pgCatalogRegex = regexp.MustCompile(`(?i)\s+from\s+pg_catalog\.(pg_stat_replication)`)
@@ -174,6 +174,14 @@ func (h *ConnectionHandler) handlePgCatalog(query ConvertedQuery) (bool, error) 
 	})
 }
 
+// handler for show all tables
+func (h *ConnectionHandler) handleShowAllTables() (bool, error) {
+	return true, h.query(ConvertedQuery{
+		String:       "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",
+		StatementTag: "SELECT",
+	})
+}
+
 type PGCatalogHandler struct {
 	// HandledInPlace is a function that determines if the query should be handled in place and not passed to the engine.
 	HandledInPlace func(ConvertedQuery) (bool, error)
@@ -209,6 +217,11 @@ func isPgCurrentSetting(query ConvertedQuery) bool {
 func isSpecialPgCatalog(query ConvertedQuery) bool {
 	sql := RemoveComments(query.String)
 	return pgCatalogRegex.MatchString(sql)
+}
+
+func isShowAllTables(query ConvertedQuery) bool {
+	sql := RemoveComments(query.String)
+	return strings.EqualFold(sql, "SHOW ALL TABLES")
 }
 
 // The key is the statement tag of the query.
@@ -253,11 +266,17 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 			case *tree.ShowVar:
 				return true, nil
 			}
+			if isShowAllTables(query) {
+				return true, nil
+			}
 			return false, nil
 		},
 		Handler: func(h *ConnectionHandler, query ConvertedQuery) (bool, error) {
 			showVar, ok := query.AST.(*tree.ShowVar)
 			if !ok {
+				if isShowAllTables(query) {
+					return h.handleShowAllTables()
+				}
 				return false, fmt.Errorf("error: invalid show_variables query: %v", query.String)
 			}
 			key := strings.ToLower(showVar.Name)
