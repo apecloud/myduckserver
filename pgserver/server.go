@@ -2,19 +2,21 @@ package pgserver
 
 import (
 	"fmt"
-
+	"github.com/apecloud/myduckserver/backend"
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
 )
 
 type Server struct {
-	Listener *Listener
-
+	Listener       *Listener
+	Provider       *catalog.DatabaseProvider
+	ConnPool       *backend.ConnectionPool
 	NewInternalCtx func() *sql.Context
 }
 
-func NewServer(host string, port int, newCtx func() *sql.Context, options ...ListenerOpt) (*Server, error) {
+func NewServer(provider *catalog.DatabaseProvider, connPool *backend.ConnectionPool, host string, port int, newCtx func() *sql.Context, options ...ListenerOpt) (*Server, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	l, err := server.NewListener("tcp", addr, "")
 	if err != nil {
@@ -31,7 +33,7 @@ func NewServer(host string, port int, newCtx func() *sql.Context, options ...Lis
 	if err != nil {
 		return nil, err
 	}
-	return &Server{Listener: listener, NewInternalCtx: newCtx}, nil
+	return &Server{Listener: listener, Provider: provider, ConnPool: connPool, NewInternalCtx: newCtx}, nil
 }
 
 func (s *Server) Start() {

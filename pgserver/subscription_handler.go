@@ -181,12 +181,19 @@ func (h *ConnectionHandler) executeEnableSubscription(subscriptionConfig *Subscr
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	err = logrepl.UpdateSubscriptionStatus(sqlCtx, true, subscriptionConfig.SubscriptionName)
-	if err != nil {
+	if err = logrepl.UpdateSubscriptionStatus(sqlCtx, true, subscriptionConfig.SubscriptionName); err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
+	if err = adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
+	}
+
+	if err = logrepl.UpdateSubscriptions(sqlCtx); err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }
 
 func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *SubscriptionConfig) error {
@@ -195,12 +202,19 @@ func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *Subsc
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	err = logrepl.UpdateSubscriptionStatus(sqlCtx, false, subscriptionConfig.SubscriptionName)
-	if err != nil {
+	if err = logrepl.UpdateSubscriptionStatus(sqlCtx, false, subscriptionConfig.SubscriptionName); err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
+	if err = adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
+	}
+
+	if err = logrepl.UpdateSubscriptions(sqlCtx); err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }
 
 func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) error {
@@ -209,12 +223,19 @@ func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) 
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	err = logrepl.DeleteSubscription(sqlCtx, subscriptionConfig.SubscriptionName)
-	if err != nil {
+	if err = logrepl.DeleteSubscription(sqlCtx, subscriptionConfig.SubscriptionName); err != nil {
 		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
+	if err = adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
+	}
+
+	if err = logrepl.UpdateSubscriptions(sqlCtx); err != nil {
+		return fmt.Errorf("failed to update subscriptions: %w", err)
+	}
+
+	return nil
 }
 
 func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig) error {
@@ -346,25 +367,15 @@ func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscripti
 	defer tx.Rollback()
 	defer adapter.CloseTxn(sqlCtx)
 
-	err = logrepl.CreateSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName, lsn.String(), true)
-	if err != nil {
+	if err = logrepl.CreateSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName, lsn.String(), true); err != nil {
 		return fmt.Errorf("failed to write subscription: %w", err)
 	}
 
-	return commitAndUpdate(sqlCtx)
-}
-
-func commitAndUpdate(sqlCtx *sql.Context) error {
-	tx := adapter.TryGetTxn(sqlCtx)
-	if tx != nil {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit transaction: %w", err)
-		}
-		adapter.CloseTxn(sqlCtx)
+	if err = adapter.CommitAndCloseTxn(sqlCtx); err != nil {
+		return err
 	}
 
-	err := logrepl.UpdateSubscriptions(sqlCtx)
-	if err != nil {
+	if err = logrepl.UpdateSubscriptions(sqlCtx); err != nil {
 		return fmt.Errorf("failed to update subscriptions: %w", err)
 	}
 

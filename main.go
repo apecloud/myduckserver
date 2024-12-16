@@ -37,20 +37,15 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// After running the executable, you may connect to it using the following:
-//
-// > mysql --host=localhost --port=3306 --user=root
-//
-// The included MySQL client is used in this example, however any MySQL-compatible client will work.
-
 var (
 	initMode = false
 
 	address       = "0.0.0.0"
 	port          = 3306
 	socket        string
+	defaultDb     = "mysql"
 	dataDirectory = "."
-	dbFileName    = "mysql.db"
+	dbFileName    = defaultDb + ".db"
 	logLevel      = int(logrus.InfoLevel)
 
 	replicaOptions replica.ReplicaOptions
@@ -58,6 +53,12 @@ var (
 	postgresPort = 5432
 
 	defaultTimeZone = ""
+
+	// for Restore
+	restoreFile            = ""
+	restoreEndpoint        = ""
+	restoreAccessKeyId     = ""
+	restoreSecretAccessKey = ""
 )
 
 func init() {
@@ -67,26 +68,21 @@ func init() {
 	flag.IntVar(&port, "port", port, "The port to bind to.")
 	flag.StringVar(&socket, "socket", socket, "The Unix domain socket to bind to.")
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
+	flag.StringVar(&defaultDb, "default-db", defaultDb, "The default database name to use.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
 
-	// The following options need to be set for MySQL Shell's utilities to work properly.
-
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_host
 	flag.StringVar(&replicaOptions.ReportHost, "report-host", replicaOptions.ReportHost, "The host name or IP address of the replica to be reported to the source during replica registration.")
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_port
 	flag.IntVar(&replicaOptions.ReportPort, "report-port", replicaOptions.ReportPort, "The TCP/IP port number for connecting to the replica, to be reported to the source during replica registration.")
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_user
 	flag.StringVar(&replicaOptions.ReportUser, "report-user", replicaOptions.ReportUser, "The account user name of the replica to be reported to the source during replica registration.")
-	// https://dev.mysql.com/doc/refman/8.4/en/replication-options-replica.html#sysvar_report_password
 	flag.StringVar(&replicaOptions.ReportPassword, "report-password", replicaOptions.ReportPassword, "The account password of the replica to be reported to the source during replica registration.")
 
-	// The following options are used to configure the Postgres server.
-
 	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
-
-	// The following options configure default DuckDB settings.
-
 	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
+
+	flag.StringVar(&restoreFile, "restore-file", restoreFile, "The file to restore from.")
+	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint of object storage service to restore from.")
+	flag.StringVar(&restoreAccessKeyId, "restore-access-key-id", restoreAccessKeyId, "The access key ID to restore from.")
+	flag.StringVar(&restoreSecretAccessKey, "restore-secret-access-key", restoreSecretAccessKey, "The secret access key to restore from.")
 }
 
 func ensureSQLTranslate() {
@@ -97,7 +93,7 @@ func ensureSQLTranslate() {
 }
 
 func main() {
-	flag.Parse()
+	flag.Parse() // Parse all flags
 
 	if replicaOptions.ReportPort == 0 {
 		replicaOptions.ReportPort = port
@@ -106,6 +102,8 @@ func main() {
 	logrus.SetLevel(logrus.Level(logLevel))
 
 	ensureSQLTranslate()
+
+	executeRestoreIfNeeded()
 
 	if initMode {
 		provider := catalog.NewInMemoryDBProvider()
@@ -168,6 +166,7 @@ func main() {
 		}
 
 		pgServer, err := pgserver.NewServer(
+			provider, pool,
 			address, postgresPort,
 			func() *sql.Context {
 				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
@@ -195,4 +194,41 @@ func main() {
 	if err = myServer.Start(); err != nil {
 		logrus.WithError(err).Fatalln("Failed to start MySQL-protocol server")
 	}
+}
+
+func executeRestoreIfNeeded() {
+	// If none of the restore parameters are set, return early.
+	if restoreFile == "" && restoreEndpoint == "" && restoreAccessKeyId == "" && restoreSecretAccessKey == "" {
+		return
+	}
+
+	// Map of required parameters to their names for validation.
+	required := map[string]string{
+		restoreFile:            "restore file",
+		restoreEndpoint:        "restore endpoint",
+		restoreAccessKeyId:     "restore access key ID",
+		restoreSecretAccessKey: "restore secret access key",
+	}
+
+	// Validate that all required parameters are set.
+	for val, name := range required {
+		if val == "" {
+			logrus.Fatalf("The %s is required.", name)
+		}
+	}
+
+	msg, err := pgserver.ExecuteRestore(
+		defaultDb,
+		dataDirectory,
+		dbFileName,
+		restoreFile,
+		restoreEndpoint,
+		restoreAccessKeyId,
+		restoreSecretAccessKey,
+	)
+	if err != nil {
+		logrus.WithError(err).Fatalln("Failed to execute restore:", msg)
+	}
+
+	logrus.Infoln("Restore completed successfully:", msg)
 }

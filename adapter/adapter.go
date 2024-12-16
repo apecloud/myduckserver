@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	stdsql "database/sql"
+	"fmt"
 
 	"github.com/dolthub/go-mysql-server/sql"
 )
@@ -113,4 +114,15 @@ func ExecInTxn(ctx *sql.Context, query string, args ...any) (stdsql.Result, erro
 		return nil, err
 	}
 	return tx.ExecContext(ctx, query, args...)
+}
+
+func CommitAndCloseTxn(sqlCtx *sql.Context) error {
+	tx := TryGetTxn(sqlCtx)
+	if tx != nil {
+		defer CloseTxn(sqlCtx)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+	}
+	return nil
 }

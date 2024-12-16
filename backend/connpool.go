@@ -17,6 +17,7 @@ import (
 	"context"
 	stdsql "database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -175,4 +176,19 @@ func (p *ConnectionPool) Close() error {
 		}
 	}
 	return errors.Join(lastErr, p.DB.Close())
+}
+
+func (p *ConnectionPool) Reset(catalog string, connector *duckdb.Connector, db *stdsql.DB) error {
+	err := p.Close()
+	if err != nil {
+		return fmt.Errorf("failed to close connection pool: %w", err)
+	}
+
+	p.conns.Clear()
+	p.txns.Clear()
+	p.catalog = catalog
+	p.DB = db
+	p.connector = connector
+
+	return nil
 }

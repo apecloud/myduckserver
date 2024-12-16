@@ -1,0 +1,173 @@
+name: Backup and Restore test
+
+on:
+  push:
+    branches:
+      - main
+      - compatibility
+      - test
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  backup-restore-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          go get .
+          pip3 install "sqlglot[rs]" pyarrow pandas
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-client
+          
+          # Install DuckDB CLI and extensions
+          curl -LJO https://github.com/duckdb/duckdb/releases/download/v1.1.3/duckdb_cli-linux-amd64.zip
+          unzip duckdb_cli-linux-amd64.zip
+          chmod +x duckdb
+          sudo mv duckdb /usr/local/bin
+          duckdb -c 'INSTALL json from core'
+          
+          wget https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x mc
+          sudo mv mc /usr/local/bin/
+
+      - name: Build MyDuck
+        run: go build -v
+
+      - name: Start MinIO service
+        run: |
+          docker run \
+            -p 9001:9000 \
+            -p 9091:9090 \
+            -e "MINIO_ROOT_USER=minioadmin" \
+            -e "MINIO_ROOT_PASSWORD=minioadmin" \
+            -v /Users/neo/minio/data:/data \
+            --name minio \
+            --detach=true \
+            quay.io/minio/minio server /data --console-address ":9090"
+          
+          # Wait for MinIO to be ready
+          for i in {1..30}; do
+            if curl -I http://127.0.0.1:9001/minio/health/live|grep -q '200 OK'; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Configure mc Client
+        run: |
+          mc alias set myminio http://localhost:9001 minioadmin minioadmin
+          mc mb myminio/myduck-backup
+          mc ls myminio
+
+      - name: Start Primary PostgreSQL
+        run: |
+          docker run -d --name pg-primary \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=password \
+            -e POSTGRES_DB=testdb \
+            -p 15432:5432 \
+            postgres:latest \
+            -c wal_level=logical \
+            -c max_wal_senders=30
+
+          # Wait for PostgreSQL to be ready
+          for i in {1..30}; do
+            if psql "postgres://postgres:password@localhost:15432/testdb" -c "SELECT 1" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Configure Primary for Replication
+        run: |
+          # Create test data
+          psql "postgres://postgres:password@localhost:15432/testdb" <<-EOSQL
+            CREATE TABLE test_table (id int primary key, name text);
+            INSERT INTO test_table VALUES (1, 'initial data 1'), (2, 'initial data 2');
+          
+            CREATE PUBLICATION testpub FOR TABLE test_table;
+          EOSQL
+
+      - name: Start MyDuck and Test Initial Replication
+        run: |
+          # Start MyDuck
+          ./myduckserver &
+          sleep 5
+          
+          # Create subscription
+          psql -h 127.0.0.1 -p 5432 -U postgres <<-EOSQL
+            CREATE SUBSCRIPTION testsub
+            CONNECTION 'dbname=testdb host=localhost port=15432 user=postgres password=password'
+            PUBLICATION testpub;
+          EOSQL
+          sleep 5
+          
+          # Verify initial data
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 1 AND name = 'initial data 1';" | grep -q 1
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 2 AND name = 'initial data 2';" | grep -q 1
+
+      - name: Test Ongoing Replication
+        run: |
+          # Insert new data in primary
+          psql "postgres://postgres:password@localhost:15432/testdb" \
+            -c "INSERT INTO test_table VALUES (3, 'new data 3');"
+          sleep 2
+          
+          # Verify replication of new data
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 3 AND name = 'new data 3';" | grep -q 1
+           
+      - name: Backup MyDuck and Insert more data into source PG
+        run: |
+          psql "postgres://postgres:@127.0.0.1:5432" <<-EOSQL
+            BACKUP DATABASE mysql TO 's3c://myduck-backup/myduck/myduck.bak' 
+              ENDPOINT = '127.0.0.1:9001' 
+              ACCESS_KEY_ID = 'minioadmin' 
+              SECRET_ACCESS_KEY = 'minioadmin';
+          EOSQL
+          sleep 5
+          
+          mc stat myminio/myduck-backup/myduck/myduck.bak
+          pkill myduckserver
+          rm -f ./mysql.db
+          
+          # Insert more data in primary while MyDuck is down
+          psql "postgres://postgres:password@localhost:15432/testdb" \
+            -c "INSERT INTO test_table VALUES (4, 'offline data 4');"
+
+      - name: Restore MyDuck
+        run: |
+          # Restart MyDuck
+          ./myduckserver \
+          --restore-file=s3c://myduck-backup/myduck/myduck.bak \
+          --restore-endpoint=127.0.0.1:9001 \
+          --restore-access-key-id=minioadmin \
+          --restore-secret-access-key=minioadmin &
+          
+          sleep 10
+          
+      - name: Test Replication
+        run: |
+          # Verify replication catches up
+          psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
+          
+          # Kill MyDuck
+          pkill myduckserver
+
+      - name: Cleanup
+        if: always()
+        run: |
+          pkill myduckserver || true
+          docker rm -f pg-primary minio || true

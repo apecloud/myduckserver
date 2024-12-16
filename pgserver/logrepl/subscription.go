@@ -113,6 +113,11 @@ func UpdateSubscriptionStatus(ctx *sql.Context, enabled bool, name string) error
 	return err
 }
 
+func UpdateAllSubscriptionStatus(ctx *sql.Context, enabled bool) error {
+	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpdateAllStmt(statusValueColumns), enabled)
+	return err
+}
+
 func DeleteSubscription(ctx *sql.Context, name string) error {
 	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.DeleteStmt(), name)
 	return err

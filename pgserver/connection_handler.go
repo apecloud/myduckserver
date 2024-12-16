@@ -983,6 +983,14 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 
 	if query.SubscriptionConfig != nil {
 		return h.executeSubscriptionSQL(query.SubscriptionConfig)
+	} else if query.BackupConfig != nil {
+		msg, err := h.executeBackup(query.BackupConfig)
+		if err != nil {
+			return err
+		}
+		return h.send(&pgproto3.ErrorResponse{
+			Message: msg,
+		})
 	}
 
 	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
@@ -1199,6 +1207,16 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 			String:             query,
 			PgParsable:         true,
 			SubscriptionConfig: subscriptionConfig,
+		}, nil
+	}
+
+	// Check if the query is a backup query, and if so, parse it as a backup query.
+	backupConfig, err := parseBackupSQL(query)
+	if backupConfig != nil && err == nil {
+		return ConvertedQuery{
+			String:       query,
+			PgParsable:   true,
+			BackupConfig: backupConfig,
 		}, nil
 	}
 
