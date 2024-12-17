@@ -6,7 +6,7 @@
 **MyDuck Server** unlocks serious power for your MySQL & Postgres analytics. Imagine the simplicity of (MySQL|Postgres)’s familiar interface fused with the raw analytical speed of [DuckDB](https://duckdb.org/). Now you can supercharge your analytical queries with DuckDB’s lightning-fast OLAP engine, all while using the tools and dialect you know.
 
 <h1 style="display: flex; align-items: center;">
-    <img alt="duck under dolphin" style="margin-right: 0.2em" src="logo/MyDuckServer.pdf">
+    <img alt="duck under dolphin" style="margin-right: 0.2em" src="logo/MyDuck.svg">
 </h1>
 
 ## 📑 Table of Contents
