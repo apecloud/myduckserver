@@ -12,13 +12,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.30
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.15
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.60.1
-	github.com/aws/smithy-go v1.20.4
 	github.com/cockroachdb/apd/v3 v3.2.1
 	github.com/cockroachdb/cockroachdb-parser v0.23.2
 	github.com/cockroachdb/errors v1.9.0
 	github.com/dolthub/doltgresql v0.13.0
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241127000145-a1809677932e
-	github.com/dolthub/vitess v0.0.0-20241126223332-cd8f828f26ac
+	github.com/dolthub/go-mysql-server v0.18.2-0.20241215013221-68ab2c34608f
+	github.com/dolthub/vitess v0.0.0-20241211024425-b00987f7ba54
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
@@ -37,8 +36,8 @@ require (
 )
 
 replace (
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241127000145-a1809677932e => github.com/apecloud/go-mysql-server v0.0.0-20241127073935-94c04f2f750d
-	github.com/dolthub/vitess v0.0.0-20241126223332-cd8f828f26ac => github.com/apecloud/dolt-vitess v0.0.0-20241127063501-5c7c985f0e57
+	github.com/dolthub/go-mysql-server v0.18.2-0.20241215013221-68ab2c34608f => github.com/apecloud/go-mysql-server v0.0.0-20241217030038-1ec40b6e7e7f
+	github.com/dolthub/vitess v0.0.0-20241211024425-b00987f7ba54 => github.com/apecloud/dolt-vitess v0.0.0-20241217030333-e641a5d88d61
 	github.com/marcboeker/go-duckdb v1.8.3 => github.com/apecloud/go-duckdb v0.0.0-20241127093618-047c1a233928
 )
 
@@ -59,6 +58,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.22.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.26.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.30.5 // indirect
+	github.com/aws/smithy-go v1.20.4 // indirect
 	github.com/bazelbuild/rules_go v0.46.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/biogo/store v0.0.0-20201120204734-aad293a2328f // indirect
@@ -69,7 +69,7 @@ require (
 	github.com/dave/dst v0.27.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dolthub/flatbuffers/v23 v23.3.3-dh.2 // indirect
-	github.com/dolthub/go-icu-regex v0.0.0-20240916130659-0118adc6b662 // indirect
+	github.com/dolthub/go-icu-regex v0.0.0-20241215010122-db690dd53c90 // indirect
 	github.com/dolthub/jsonpath v0.0.2-0.20240227200619-19675ab05c71 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/getsentry/sentry-go v0.12.0 // indirect
@@ -111,7 +111,7 @@ require (
 	github.com/rs/xid v1.5.0 // indirect
 	github.com/sasha-s/go-deadlock v0.3.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/tetratelabs/wazero v1.1.0 // indirect
+	github.com/tetratelabs/wazero v1.8.2 // indirect
 	github.com/twpayne/go-geom v1.4.1 // indirect
 	github.com/twpayne/go-kml v1.5.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
