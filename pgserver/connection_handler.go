@@ -470,7 +470,7 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 		return true, err
 	}
 
-	query, err := h.convertQuery(message.String)
+	statements, err := h.convertQuery(message.String)
 	if err != nil {
 		return true, err
 	}
@@ -479,53 +479,64 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	h.deletePreparedStatement("")
 	h.deletePortal("")
 
-	// Certain statement types get handled directly by the handler instead of being passed to the engine
-	handled, endOfMessages, err = h.handleQueryOutsideEngine(query)
-	if handled {
-		return endOfMessages, err
-	} else if err != nil {
-		h.logger.Warnf("Failed to handle query %v outside engine: %v", query, err)
+	for _, statement := range statements {
+		// Certain statement types get handled directly by the handler instead of being passed to the engine
+		handled, endOfMessages, err = h.handleStatementOutsideEngine(statement)
+		if handled {
+			if err != nil {
+				h.logger.Warnf("Failed to handle statement %v outside engine: %v", statement, err)
+				return true, err
+			}
+		} else {
+			if err != nil {
+				h.logger.Warnf("Failed to handle statement %v outside engine: %v", statement, err)
+			}
+			endOfMessages, err = true, h.run(statement)
+			if err != nil {
+				return true, err
+			}
+		}
 	}
 
-	return true, h.query(query)
+	return endOfMessages, nil
 }
 
-// handleQueryOutsideEngine handles any queries that should be handled by the handler directly, rather than being
+// handleStatementOutsideEngine handles any queries that should be handled by the handler directly, rather than being
 // passed to the engine. The response parameter |handled| is true if the query was handled, |endOfMessages| is true
 // if no more messages are expected for this query and server should send the client a READY FOR QUERY message,
 // and any error that occurred while handling the query.
-func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (handled bool, endOfMessages bool, err error) {
-	switch stmt := query.AST.(type) {
+func (h *ConnectionHandler) handleStatementOutsideEngine(statement ConvertedStatement) (handled bool, endOfMessages bool, err error) {
+	switch stmt := statement.AST.(type) {
 	case *tree.Deallocate:
 		// TODO: handle ALL keyword
-		return true, true, h.deallocatePreparedStatement(stmt.Name.String(), h.preparedStatements, query, h.Conn())
+		return true, true, h.deallocatePreparedStatement(stmt.Name.String(), h.preparedStatements, statement, h.Conn())
 	case *tree.Discard:
-		return true, true, h.discardAll(query)
+		return true, true, h.discardAll(statement)
 	case *tree.CopyFrom:
 		// When copying data from STDIN, the data is sent to the server as CopyData messages
 		// We send endOfMessages=false since the server will be in COPY DATA mode and won't
 		// be ready for more queries util COPY DATA mode is completed.
 		if stmt.Stdin {
-			return true, false, h.handleCopyFromStdinQuery(query, stmt, "")
+			return true, false, h.handleCopyFromStdinQuery(statement, stmt, "")
 		}
 	case *tree.CopyTo:
-		return true, true, h.handleCopyToStdout(query, stmt, "" /* unused */, stmt.Options.CopyFormat, "")
+		return true, true, h.handleCopyToStdout(statement, stmt, "" /* unused */, stmt.Options.CopyFormat, "")
 	}
 
-	if query.StatementTag == "COPY" {
-		if target, format, options, ok := ParseCopyFrom(query.String); ok {
+	if statement.Tag == "COPY" {
+		if target, format, options, ok := ParseCopyFrom(statement.String); ok {
 			stmt, err := parser.ParseOne("COPY " + target + " FROM STDIN")
 			if err != nil {
 				return false, true, err
 			}
 			copyFrom := stmt.AST.(*tree.CopyFrom)
 			copyFrom.Options.CopyFormat = format
-			return true, false, h.handleCopyFromStdinQuery(query, copyFrom, options)
+			return true, false, h.handleCopyFromStdinQuery(statement, copyFrom, options)
 		}
-		if subquery, format, options, ok := ParseCopyTo(query.String); ok {
+		if subquery, format, options, ok := ParseCopyTo(statement.String); ok {
 			if strings.HasPrefix(subquery, "(") && strings.HasSuffix(subquery, ")") {
 				// subquery may be richer than Postgres supports, so we just pass it as a string
-				return true, true, h.handleCopyToStdout(query, nil, subquery, format, options)
+				return true, true, h.handleCopyToStdout(statement, nil, subquery, format, options)
 			}
 			// subquery is "table [(column_list)]", so we can parse it and pass the AST
 			stmt, err := parser.ParseOne("COPY " + subquery + " TO STDOUT")
@@ -534,11 +545,11 @@ func (h *ConnectionHandler) handleQueryOutsideEngine(query ConvertedQuery) (hand
 			}
 			copyTo := stmt.AST.(*tree.CopyTo)
 			copyTo.Options.CopyFormat = format
-			return true, true, h.handleCopyToStdout(query, copyTo, "", format, options)
+			return true, true, h.handleCopyToStdout(statement, copyTo, "", format, options)
 		}
 	}
 
-	handled, err = h.handlePgCatalogQueries(query)
+	handled, err = h.handlePgCatalogQueries(statement)
 	if handled || err != nil {
 		return true, true, err
 	}
@@ -551,26 +562,28 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	h.waitForSync = true
 
 	// TODO: "Named prepared statements must be explicitly closed before they can be redefined by another Parse message, but this is not required for the unnamed statement"
-	query, err := h.convertQuery(message.Query)
+	statements, err := h.convertQuery(message.Query)
 	if err != nil {
 		return err
 	}
 
-	if query.AST == nil {
+	// TODO(Noy): handle multiple statements
+	statement := statements[0]
+	if statement.AST == nil {
 		// special case: empty query
 		h.preparedStatements[message.Name] = PreparedStatementData{
-			Query: query,
+			Statement: statement,
 		}
 		return nil
 	}
 
-	handledOutsideEngine, err := shouldQueryBeHandledInPlace(query)
+	handledOutsideEngine, err := shouldQueryBeHandledInPlace(statement)
 	if err != nil {
 		return err
 	}
 	if handledOutsideEngine {
 		h.preparedStatements[message.Name] = PreparedStatementData{
-			Query:        query,
+			Statement:    statement,
 			ReturnFields: nil,
 			BindVarTypes: nil,
 			Stmt:         nil,
@@ -579,13 +592,13 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		return h.send(&pgproto3.ParseComplete{})
 	}
 
-	stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, query.String, query.AST)
+	stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, statement.String, statement.AST)
 	if err != nil {
 		return err
 	}
 
-	if !query.PgParsable {
-		query.StatementTag = GetStatementTag(stmt)
+	if !statement.PgParsable {
+		statement.Tag = GetStatementTag(stmt)
 	}
 
 	// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
@@ -606,7 +619,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		}
 	}
 	h.preparedStatements[message.Name] = PreparedStatementData{
-		Query:        query,
+		Statement:    statement,
 		ReturnFields: fields,
 		BindVarTypes: bindVarTypes,
 		Stmt:         stmt,
@@ -639,7 +652,7 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 			}
 
 			bindvarTypes = preparedStatementData.BindVarTypes
-			tag = preparedStatementData.Query.StatementTag
+			tag = preparedStatementData.Statement.Tag
 		}
 
 		if bindvarTypes == nil {
@@ -653,7 +666,7 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 
 		if portalData.Stmt != nil {
 			fields = portalData.Fields
-			tag = portalData.Query.StatementTag
+			tag = portalData.Statement.Tag
 		}
 	}
 
@@ -674,18 +687,18 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 
 	if preparedData.Stmt == nil {
 		h.portals[message.DestinationPortal] = PortalData{
-			Query:  preparedData.Query,
-			Fields: nil,
-			Stmt:   nil,
-			Vars:   nil,
+			Statement: preparedData.Statement,
+			Fields:    nil,
+			Stmt:      nil,
+			Vars:      nil,
 		}
 		return h.send(&pgproto3.BindComplete{})
 	}
 
-	if preparedData.Query.AST == nil {
+	if preparedData.Statement.AST == nil {
 		// special case: empty query
 		h.portals[message.DestinationPortal] = PortalData{
-			Query:        preparedData.Query,
+			Statement:    preparedData.Statement,
 			IsEmptyQuery: true,
 		}
 		return h.send(&pgproto3.BindComplete{})
@@ -702,7 +715,7 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 	}
 
 	h.portals[message.DestinationPortal] = PortalData{
-		Query:             preparedData.Query,
+		Statement:         preparedData.Statement,
 		Fields:            fields,
 		ResultFormatCodes: message.ResultFormatCodes,
 		Stmt:              preparedData.Stmt,
@@ -723,14 +736,14 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	}
 
 	logrus.Tracef("executing portal %s with contents %v", message.Portal, portalData)
-	query := portalData.Query
+	query := portalData.Statement
 
 	if portalData.IsEmptyQuery {
 		return h.send(&pgproto3.EmptyQueryResponse{})
 	}
 
 	// Certain statement types get handled directly by the handler instead of being passed to the engine
-	handled, _, err := h.handleQueryOutsideEngine(query)
+	handled, _, err := h.handleStatementOutsideEngine(query)
 	if handled {
 		return err
 	}
@@ -738,13 +751,13 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
 
-	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, true)
+	callback := h.spoolRowsCallback(query.Tag, &rowsAffected, true)
 	err = h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, portalData, callback)
 	if err != nil {
 		return err
 	}
 
-	return h.send(makeCommandComplete(query.StatementTag, rowsAffected))
+	return h.send(makeCommandComplete(query.Tag, rowsAffected))
 }
 
 func makeCommandComplete(tag string, rows int32) *pgproto3.CommandComplete {
@@ -912,7 +925,7 @@ func (h *ConnectionHandler) handleCopyFail(_ *pgproto3.CopyFail) (stop bool, end
 	return false, true, nil
 }
 
-func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedStatements map[string]PreparedStatementData, query ConvertedQuery, conn net.Conn) error {
+func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedStatements map[string]PreparedStatementData, query ConvertedStatement, conn net.Conn) error {
 	_, ok := preparedStatements[name]
 	if !ok {
 		return fmt.Errorf("prepared statement %s does not exist", name)
@@ -920,7 +933,7 @@ func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedSta
 	h.deletePreparedStatement(name)
 
 	return h.send(&pgproto3.CommandComplete{
-		CommandTag: []byte(query.StatementTag),
+		CommandTag: []byte(query.Tag),
 	})
 }
 
@@ -965,27 +978,27 @@ func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []
 	return vars, nil
 }
 
-// query runs the given query and sends a CommandComplete message to the client
-func (h *ConnectionHandler) query(query ConvertedQuery) error {
-	h.logger.Tracef("running query %v", query)
+// run runs the given statement and sends a CommandComplete message to the client
+func (h *ConnectionHandler) run(statement ConvertedStatement) error {
+	h.logger.Tracef("running statement %v", statement)
 
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
 
-	// Get the accurate statement tag for the query
-	if !query.PgParsable && !IsWellKnownStatementTag(query.StatementTag) {
-		tag, err := h.duckHandler.getStatementTag(h.mysqlConn, query.String)
+	// Get the accurate statement tag for the statement
+	if !statement.PgParsable && !IsWellKnownStatementTag(statement.Tag) {
+		tag, err := h.duckHandler.getStatementTag(h.mysqlConn, statement.String)
 		if err != nil {
 			return err
 		}
-		h.logger.Tracef("getting statement tag for query %v via preparing in DuckDB: %s", query, tag)
-		query.StatementTag = tag
+		h.logger.Tracef("getting statement tag for statement %v via preparing in DuckDB: %s", statement, tag)
+		statement.Tag = tag
 	}
 
-	if query.SubscriptionConfig != nil {
-		return h.executeSubscriptionSQL(query.SubscriptionConfig)
-	} else if query.BackupConfig != nil {
-		msg, err := h.executeBackup(query.BackupConfig)
+	if statement.SubscriptionConfig != nil {
+		return h.executeSubscriptionSQL(statement.SubscriptionConfig)
+	} else if statement.BackupConfig != nil {
+		msg, err := h.executeBackup(statement.BackupConfig)
 		if err != nil {
 			return err
 		}
@@ -994,18 +1007,18 @@ func (h *ConnectionHandler) query(query ConvertedQuery) error {
 		})
 	}
 
-	callback := h.spoolRowsCallback(query.StatementTag, &rowsAffected, false)
+	callback := h.spoolRowsCallback(statement.Tag, &rowsAffected, false)
 	if err := h.duckHandler.ComQuery(
 		context.Background(),
 		h.mysqlConn,
-		query.String,
-		query.AST,
+		statement.String,
+		statement.AST,
 		callback,
 	); err != nil {
-		return fmt.Errorf("fallback query execution failed: %w", err)
+		return fmt.Errorf("fallback statement execution failed: %w", err)
 	}
 
-	return h.send(makeCommandComplete(query.StatementTag, rowsAffected))
+	return h.send(makeCommandComplete(statement.Tag, rowsAffected))
 }
 
 // spoolRowsCallback returns a callback function that will send RowDescription message,
@@ -1076,7 +1089,7 @@ func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) 
 		if err != nil {
 			return false, err
 		}
-		return true, h.query(query)
+		return true, h.run(query[0])
 	}
 	// Command: \l on psql 16
 	if statement == "select\n  d.datname as \"name\",\n  pg_catalog.pg_get_userbyid(d.datdba) as \"owner\",\n  pg_catalog.pg_encoding_to_char(d.encoding) as \"encoding\",\n  case d.datlocprovider when 'c' then 'libc' when 'i' then 'icu' end as \"locale provider\",\n  d.datcollate as \"collate\",\n  d.datctype as \"ctype\",\n  d.daticulocale as \"icu locale\",\n  null as \"icu rules\",\n  pg_catalog.array_to_string(d.datacl, e'\\n') as \"access privileges\"\nfrom pg_catalog.pg_database d\norder by 1;" {
@@ -1084,27 +1097,27 @@ func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) 
 		if err != nil {
 			return false, err
 		}
-		return true, h.query(query)
+		return true, h.run(query[0])
 	}
 	// Command: \dt
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\n     left join pg_catalog.pg_am am on am.oid = c.relam\nwhere c.relkind in ('r','p','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'table' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' ORDER BY 2;`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'table' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' ORDER BY 2;`,
+			Tag:    "SELECT",
 		})
 	}
 	// Command: \d
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\n     left join pg_catalog.pg_am am on am.oid = c.relam\nwhere c.relkind in ('r','p','v','m','s','f','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
+			Tag:    "SELECT",
 		})
 	}
 	// Alternate \d for psql 14
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 's' then 'special' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\n     left join pg_catalog.pg_am am on am.oid = c.relam\nwhere c.relkind in ('r','p','v','m','s','f','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
+			Tag:    "SELECT",
 		})
 	}
 	// Command: \d table_name
@@ -1115,31 +1128,31 @@ func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) 
 	}
 	// Command: \dn
 	if statement == "select n.nspname as \"name\",\n  pg_catalog.pg_get_userbyid(n.nspowner) as \"owner\"\nfrom pg_catalog.pg_namespace n\nwhere n.nspname !~ '^pg_' and n.nspname <> 'information_schema'\norder by 1;" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT 'public' AS "Name", 'pg_database_owner' AS "Owner";`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT 'public' AS "Name", 'pg_database_owner' AS "Owner";`,
+			Tag:    "SELECT",
 		})
 	}
 	// Command: \df
 	if statement == "select n.nspname as \"schema\",\n  p.proname as \"name\",\n  pg_catalog.pg_get_function_result(p.oid) as \"result data type\",\n  pg_catalog.pg_get_function_arguments(p.oid) as \"argument data types\",\n case p.prokind\n  when 'a' then 'agg'\n  when 'w' then 'window'\n  when 'p' then 'proc'\n  else 'func'\n end as \"type\"\nfrom pg_catalog.pg_proc p\n     left join pg_catalog.pg_namespace n on n.oid = p.pronamespace\nwhere pg_catalog.pg_function_is_visible(p.oid)\n      and n.nspname <> 'pg_catalog'\n      and n.nspname <> 'information_schema'\norder by 1, 2, 4;" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT '' AS "Schema", '' AS "Name", '' AS "Result data type", '' AS "Argument data types", '' AS "Type" LIMIT 0;`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT '' AS "Schema", '' AS "Name", '' AS "Result data type", '' AS "Argument data types", '' AS "Type" LIMIT 0;`,
+			Tag:    "SELECT",
 		})
 	}
 	// Command: \dv
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\nwhere c.relkind in ('v','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'view' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'VIEW' ORDER BY 2;`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'view' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'VIEW' ORDER BY 2;`,
+			Tag:    "SELECT",
 		})
 	}
 	// Command: \du
 	if statement == "select r.rolname, r.rolsuper, r.rolinherit,\n  r.rolcreaterole, r.rolcreatedb, r.rolcanlogin,\n  r.rolconnlimit, r.rolvaliduntil,\n  array(select b.rolname\n        from pg_catalog.pg_auth_members m\n        join pg_catalog.pg_roles b on (m.roleid = b.oid)\n        where m.member = r.oid) as memberof\n, r.rolreplication\n, r.rolbypassrls\nfrom pg_catalog.pg_roles r\nwhere r.rolname !~ '^pg_'\norder by 1;" {
 		// We don't support users yet, so we'll just return nothing for now
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT '' FROM dual LIMIT 0;`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT '' FROM dual LIMIT 0;`,
+			Tag:    "SELECT",
 		})
 	}
 	return false, nil
@@ -1149,15 +1162,15 @@ func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) 
 func (h *ConnectionHandler) handledWorkbenchCommands(statement string) (bool, error) {
 	lower := strings.ToLower(statement)
 	if lower == "select * from current_schema()" || lower == "select * from current_schema();" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT search_path AS "current_schema";`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT search_path AS "current_schema";`,
+			Tag:    "SELECT",
 		})
 	}
 	if lower == "select * from current_database()" || lower == "select * from current_database();" {
-		return true, h.query(ConvertedQuery{
-			String:       `SELECT DATABASE() AS "current_database";`,
-			StatementTag: "SELECT",
+		return true, h.run(ConvertedStatement{
+			String: `SELECT DATABASE() AS "current_database";`,
+			Tag:    "SELECT",
 		})
 	}
 	return false, nil
@@ -1193,69 +1206,64 @@ func (h *ConnectionHandler) sendError(err error) {
 	}
 }
 
-// convertQuery takes the given Postgres query, and converts it as an ast.ConvertedQuery that will work with the handler.
-func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifier) (ConvertedQuery, error) {
+// convertQuery takes the given Postgres query, and converts it as a list of ast.ConvertedStatement that will work with the handler.
+func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifier) ([]ConvertedStatement, error) {
 	for _, modifier := range modifiers {
 		query = modifier(query)
 	}
 
-	parsable := true
-
 	// Check if the query is a subscription query, and if so, parse it as a subscription query.
 	subscriptionConfig, err := parseSubscriptionSQL(query)
 	if subscriptionConfig != nil && err == nil {
-		return ConvertedQuery{
+		return []ConvertedStatement{{
 			String:             query,
 			PgParsable:         true,
 			SubscriptionConfig: subscriptionConfig,
-		}, nil
+		}}, nil
 	}
 
 	// Check if the query is a backup query, and if so, parse it as a backup query.
 	backupConfig, err := parseBackupSQL(query)
 	if backupConfig != nil && err == nil {
-		return ConvertedQuery{
+		return []ConvertedStatement{{
 			String:       query,
 			PgParsable:   true,
 			BackupConfig: backupConfig,
-		}, nil
+		}}, nil
 	}
 
 	stmts, err := parser.Parse(query)
 	if err != nil {
 		// DuckDB syntax is not fully compatible with PostgreSQL, so we need to handle some queries differently.
-		parsable = false
 		stmts, _ = parser.Parse("SELECT 'SQL syntax is incompatible with PostgreSQL' AS error")
+		return []ConvertedStatement{{
+			String:     query,
+			AST:        stmts[0].AST,
+			Tag:        GuessStatementTag(query),
+			PgParsable: false,
+		}}, nil
 	}
 
-	if len(stmts) > 1 {
-		return ConvertedQuery{}, fmt.Errorf("only a single statement at a time is currently supported")
-	}
 	if len(stmts) == 0 {
-		return ConvertedQuery{String: query}, nil
+		return []ConvertedStatement{{String: query}}, nil
 	}
 
-	var stmtTag string
-	if parsable {
-		stmtTag = stmts[0].AST.StatementTag()
-	} else {
-		stmtTag = GuessStatementTag(query)
+	convertedStmts := make([]ConvertedStatement, len(stmts))
+	for i, stmt := range stmts {
+		convertedStmts[i].String = stmt.SQL
+		convertedStmts[i].AST = stmt.AST
+		convertedStmts[i].Tag = stmt.AST.StatementTag()
+		convertedStmts[i].PgParsable = true
 	}
-
-	return ConvertedQuery{
-		String:       query,
-		AST:          stmts[0].AST,
-		StatementTag: stmtTag,
-		PgParsable:   parsable,
-	}, nil
+	return convertedStmts, nil
 }
 
 // discardAll handles the DISCARD ALL command
-func (h *ConnectionHandler) discardAll(query ConvertedQuery) error {
+func (h *ConnectionHandler) discardAll(query ConvertedStatement) error {
 	h.closeBackendConn()
 
 	return h.send(&pgproto3.CommandComplete{
-		CommandTag: []byte(query.StatementTag),
+		CommandTag: []byte(query.Tag),
 	})
 }
 
@@ -1263,7 +1271,7 @@ func (h *ConnectionHandler) discardAll(query ConvertedQuery) error {
 // COPY FROM STDIN can't be handled directly by the GMS engine, since COPY FROM STDIN relies on multiple messages sent
 // over the wire.
 func (h *ConnectionHandler) handleCopyFromStdinQuery(
-	query ConvertedQuery, copyFrom *tree.CopyFrom,
+	query ConvertedStatement, copyFrom *tree.CopyFrom,
 	rawOptions string, // For non-PG-parseable COPY FROM
 ) error {
 	sqlCtx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, query.String)
@@ -1327,7 +1335,7 @@ func returnsRow(tag string) bool {
 	}
 }
 
-func (h *ConnectionHandler) handleCopyToStdout(query ConvertedQuery, copyTo *tree.CopyTo, subquery string, format tree.CopyFormat, rawOptions string) error {
+func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo *tree.CopyTo, subquery string, format tree.CopyFormat, rawOptions string) error {
 	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, query.String)
 	if err != nil {
 		return err

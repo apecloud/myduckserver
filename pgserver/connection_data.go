@@ -48,14 +48,14 @@ const (
 	ReadyForQueryTransactionIndicator_FailedTransactionBlock ReadyForQueryTransactionIndicator = 'E'
 )
 
-// ConvertedQuery represents a query that has been converted from the Postgres representation to the Vitess
-// representation. String may contain the string version of the converted query. AST will contain the tree
-// version of the converted query, and is the recommended form to use. If AST is nil, then use the String version,
+// ConvertedStatement represents a statement that has been converted from the Postgres representation to the Vitess
+// representation. String may contain the string version of the converted statement. AST will contain the tree
+// version of the converted statement, and is the recommended form to use. If AST is nil, then use the String version,
 // otherwise always prefer to AST.
-type ConvertedQuery struct {
+type ConvertedStatement struct {
 	String             string
 	AST                tree.Statement
-	StatementTag       string
+	Tag                string
 	PgParsable         bool
 	SubscriptionConfig *SubscriptionConfig
 	BackupConfig       *BackupConfig
@@ -86,7 +86,7 @@ type copyFromStdinState struct {
 }
 
 type PortalData struct {
-	Query             ConvertedQuery
+	Statement         ConvertedStatement
 	IsEmptyQuery      bool
 	Fields            []pgproto3.FieldDescription
 	ResultFormatCodes []int16
@@ -96,7 +96,7 @@ type PortalData struct {
 }
 
 type PreparedStatementData struct {
-	Query        ConvertedQuery
+	Statement    ConvertedStatement
 	ReturnFields []pgproto3.FieldDescription
 	BindVarTypes []uint32
 	Stmt         *duckdb.Stmt

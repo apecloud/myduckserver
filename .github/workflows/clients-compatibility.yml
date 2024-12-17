@@ -33,7 +33,7 @@ jobs:
       - name: Install system packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: bats cpanminus libmysqlclient-dev dotnet-sdk-8.0 dotnet-runtime-8.0 php-mysql r-base-core
+          packages: bats cpanminus libmysqlclient-dev dotnet-sdk-8.0 dotnet-runtime-8.0 php-mysql r-base-core libblas-dev
           version: 1.0
 
       - name: Install dependencies
@@ -90,7 +90,7 @@ jobs:
       - name: Install system packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core
+          packages: bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core libblas-dev
           version: 1.0
 
       - name: Install dependencies
