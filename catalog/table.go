@@ -3,6 +3,7 @@ package catalog
 import (
 	stdsql "database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,6 +26,7 @@ type Table struct {
 type ExtraTableInfo struct {
 	PkOrdinals []int
 	Replicated bool
+	Sequence   string
 }
 
 type ColumnInfo struct {
@@ -51,6 +53,7 @@ var _ sql.DeletableTable = (*Table)(nil)
 var _ sql.TruncateableTable = (*Table)(nil)
 var _ sql.ReplaceableTable = (*Table)(nil)
 var _ sql.CommentedTable = (*Table)(nil)
+var _ sql.AutoIncrementTable = (*Table)(nil)
 
 func NewTable(name string, db *Database) *Table {
 	return &Table{
@@ -132,6 +135,7 @@ func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) sql.Pr
 			Source:         tableName,
 			DatabaseSource: dbName,
 			Default:        defaultValue,
+			AutoIncrement:  decodedComment.Meta.AutoIncrement,
 			Comment:        decodedComment.Text,
 		}
 
@@ -201,11 +205,12 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	}
 
 	if column.Default != nil {
-		columnDefault, err := typ.mysql.withDefault(column.Default.String())
+		typ.mysql.Default = column.Default.String()
+		defaultExpr, err := parseDefaultValue(typ.mysql.Default)
 		if err != nil {
 			return err
 		}
-		sql += fmt.Sprintf(" DEFAULT %s", columnDefault)
+		sql += " DEFAULT " + defaultExpr
 	}
 
 	// add comment
@@ -257,11 +262,12 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 	}
 
 	if column.Default != nil {
-		columnDefault, err := typ.mysql.withDefault(column.Default.String())
+		typ.mysql.Default = column.Default.String()
+		defaultExpr, err := parseDefaultValue(typ.mysql.Default)
 		if err != nil {
 			return err
 		}
-		sqls = append(sqls, fmt.Sprintf(`%s SET DEFAULT %s`, baseSQL, columnDefault))
+		sqls = append(sqls, fmt.Sprintf(`%s SET DEFAULT %s`, baseSQL, defaultExpr))
 	} else {
 		sqls = append(sqls, fmt.Sprintf(`%s DROP DEFAULT`, baseSQL))
 	}
@@ -577,4 +583,89 @@ func queryColumns(ctx *sql.Context, catalogName, schemaName, tableName string) (
 
 func (t *IndexedTable) LookupPartitions(ctx *sql.Context, lookup sql.IndexLookup) (sql.PartitionIter, error) {
 	return nil, fmt.Errorf("unimplemented(LookupPartitions) (table: %s, query: %s)", t.name, ctx.Query())
+}
+
+// PeekNextAutoIncrementValue implements sql.AutoIncrementTable.
+func (t *Table) PeekNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
+	if t.comment.Meta.Sequence == "" {
+		return 0, sql.ErrNoAutoIncrementCol
+	}
+
+	// For PeekNextAutoIncrementValue, we want to see what the next value would be
+	// without actually incrementing. We can do this by getting currval + 1.
+	var val uint64
+	err := adapter.QueryRowCatalog(ctx, `SELECT currval('`+t.comment.Meta.Sequence+`') + 1`).Scan(&val)
+	if err != nil {
+		return 0, ErrDuckDB.New(err)
+	}
+
+	return val, nil
+}
+
+// GetNextAutoIncrementValue implements sql.AutoIncrementTable.
+func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal interface{}) (uint64, error) {
+	if t.comment.Meta.Sequence == "" {
+		return 0, sql.ErrNoAutoIncrementCol
+	}
+
+	// If insertVal is provided and greater than current sequence value, update sequence
+	if insertVal != nil {
+		var start uint64
+		switch v := insertVal.(type) {
+		case uint64:
+			start = v
+		case int64:
+			if v > 0 {
+				start = uint64(v)
+			}
+		}
+		if start > 0 {
+			err := t.setAutoIncrementValue(ctx, start)
+			if err != nil {
+				return 0, err
+			}
+			return start, nil
+		}
+	}
+
+	// Get next value from sequence
+	var val uint64
+	err := adapter.QueryRowCatalog(ctx, `SELECT nextval('`+t.comment.Meta.Sequence+`')`).Scan(&val)
+	if err != nil {
+		return 0, ErrDuckDB.New(err)
+	}
+
+	return val, nil
+}
+
+// AutoIncrementSetter implements sql.AutoIncrementTable.
+func (t *Table) AutoIncrementSetter(ctx *sql.Context) sql.AutoIncrementSetter {
+	if t.comment.Meta.Sequence == "" {
+		return nil
+	}
+	return &autoIncrementSetter{t: t}
+}
+
+// setAutoIncrementValue is a helper function to update the sequence value
+func (t *Table) setAutoIncrementValue(ctx *sql.Context, value uint64) error {
+	_, err := adapter.ExecCatalog(ctx, `CREATE OR REPLACE SEQUENCE `+t.comment.Meta.Sequence+` START WITH `+strconv.FormatUint(value, 10))
+	return err
+}
+
+// autoIncrementSetter implements the AutoIncrementSetter interface
+type autoIncrementSetter struct {
+	t *Table
+}
+
+func (s *autoIncrementSetter) SetAutoIncrementValue(ctx *sql.Context, value uint64) error {
+	return s.t.setAutoIncrementValue(ctx, value)
+}
+
+func (s *autoIncrementSetter) Close(ctx *sql.Context) error {
+	return nil
+}
+
+func (s *autoIncrementSetter) AcquireAutoIncrementLock(ctx *sql.Context) (func(), error) {
+	// DuckDB handles sequence synchronization internally
+	return func() {}, nil
 }

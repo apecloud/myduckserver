@@ -29,15 +29,16 @@ func (t AnnotatedDuckType) MySQL() MySQLType {
 }
 
 type MySQLType struct {
-	Name      string
-	Length    uint32   `json:",omitempty"`
-	Precision uint8    `json:",omitempty"`
-	Scale     uint8    `json:",omitempty"`
-	Unsigned  bool     `json:",omitempty"`
-	Display   uint8    `json:",omitempty"` // Display width for integer types
-	Collation uint16   `json:",omitempty"` // For string types
-	Values    []string `json:",omitempty"` // For ENUM and SET
-	Default   string   `json:",omitempty"` // Default value of column
+	Name          string
+	Length        uint32   `json:",omitempty"`
+	Precision     uint8    `json:",omitempty"`
+	Scale         uint8    `json:",omitempty"`
+	Unsigned      bool     `json:",omitempty"`
+	Display       uint8    `json:",omitempty"` // Display width for integer types
+	Collation     uint16   `json:",omitempty"` // For string types
+	Values        []string `json:",omitempty"` // For ENUM and SET
+	Default       string   `json:",omitempty"` // Default value of column
+	AutoIncrement bool     `json:",omitempty"` // Auto increment flag
 }
 
 func newCommonType(name string) AnnotatedDuckType {
@@ -316,9 +317,8 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 	}
 }
 
-func (typ *MySQLType) withDefault(defaultValue string) (string, error) {
-	typ.Default = defaultValue
-	parsed, err := sqlparser.Parse(fmt.Sprintf("SELECT %s", defaultValue))
+func parseDefaultValue(defaultValue string) (string, error) {
+	parsed, err := sqlparser.Parse("SELECT " + defaultValue)
 	if err != nil {
 		return "", err
 	}

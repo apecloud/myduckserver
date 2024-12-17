@@ -10,6 +10,8 @@ import (
 	"github.com/apecloud/myduckserver/configuration"
 	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 type Database struct {
@@ -120,6 +122,8 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 		fullTableName = FullTableName(d.catalog, d.name, name)
 	}
 
+	var sequenceName, fullSequenceName string
+
 	for _, col := range schema.Schema {
 		typ, err := DuckdbDataType(col.Type)
 		if err != nil {
@@ -133,11 +137,30 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 		}
 
 		if col.Default != nil {
-			columnDefault, err := typ.mysql.withDefault(col.Default.String())
+			typ.mysql.Default = col.Default.String()
+			defaultExpr, err := parseDefaultValue(typ.mysql.Default)
 			if err != nil {
 				return err
 			}
-			colDef += " DEFAULT " + columnDefault
+			colDef += " DEFAULT " + defaultExpr
+		} else if col.AutoIncrement {
+			typ.mysql.AutoIncrement = true
+
+			// Generate a random sequence name.
+			// TODO(fan): Drop the sequence when the table is dropped or the column is removed.
+			uuid, err := uuid.NewRandom()
+			if err != nil {
+				return err
+			}
+			sequenceName = SequenceNamePrefix + uuid.String()
+			if temporary {
+				fullSequenceName = `temp.main."` + sequenceName + `"`
+			} else {
+				fullSequenceName = InternalSchemas.SYS.Schema + `."` + sequenceName + `"`
+			}
+
+			defaultExpr := `nextval('` + fullSequenceName + `')`
+			colDef += " DEFAULT " + defaultExpr
 		}
 
 		columns = append(columns, colDef)
@@ -158,6 +181,20 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	}
 
 	var b strings.Builder
+	b.Grow(256)
+
+	if sequenceName != "" {
+		b.WriteString(`CREATE `)
+		if temporary {
+			b.WriteString(`TEMP SEQUENCE "`)
+			b.WriteString(sequenceName)
+			b.WriteString(`"`)
+		} else {
+			b.WriteString(`SEQUENCE `)
+			b.WriteString(fullSequenceName)
+		}
+		b.WriteString(`;`)
+	}
 
 	if temporary {
 		b.WriteString(fmt.Sprintf(`CREATE TEMP TABLE %s (%s`, name, strings.Join(columns, ", ")))
@@ -180,10 +217,11 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	b.WriteString(")")
 
 	// Add comment to the table
+	info := ExtraTableInfo{schema.PkOrdinals, withoutIndex, fullSequenceName}
 	b.WriteString(fmt.Sprintf(
 		"; COMMENT ON TABLE %s IS '%s'",
 		fullTableName,
-		NewCommentWithMeta(comment, ExtraTableInfo{schema.PkOrdinals, withoutIndex}).Encode(),
+		NewCommentWithMeta(comment, info).Encode(),
 	))
 
 	// Add column comments
@@ -192,7 +230,13 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 		b.WriteString(s)
 	}
 
-	_, err := adapter.Exec(ctx, b.String())
+	ddl := b.String()
+
+	if logger := ctx.GetLogger(); logger.Logger.GetLevel() >= logrus.DebugLevel {
+		logger.WithField("DuckSQL", ddl).Debug("Executing DDL")
+	}
+
+	_, err := adapter.Exec(ctx, ddl)
 	if err != nil {
 		if IsDuckDBTableAlreadyExistsError(err) {
 			return sql.ErrTableAlreadyExists.New(name)
