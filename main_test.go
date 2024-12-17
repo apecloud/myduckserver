@@ -319,7 +319,6 @@ func TestQueriesSimple(t *testing.T) {
 		"select_sha1(i)_from_mytable_order_by_1",
 		"select_sha2(i,_256)_from_mytable_order_by_1",
 		"select_octet_length(s)_from_mytable_order_by_i",
-		// "select_char_length(s)_from_mytable_order_by_i",
 		"select_locate(upper(\"roW\"),_upper(s),_power(10,_0))_from_mytable_order_by_i",
 		"select_log2(i)_from_mytable_order_by_i",
 		"select_ln(i)_from_mytable_order_by_i",
