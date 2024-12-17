@@ -1,4 +1,3 @@
-from psycopg import sql
 import psycopg
 
 rows = [
@@ -13,16 +12,14 @@ rows = [
 with psycopg.connect("dbname=postgres user=postgres host=127.0.0.1 port=5432", autocommit=True) as conn:
     # Open a cursor to perform database operations
     with conn.cursor() as cur:
-        cur.execute("DROP SCHEMA IF EXISTS test CASCADE")
-        cur.execute("CREATE SCHEMA test")
-
         cur.execute("""
-            CREATE TABLE test.tb1 (
-                id integer PRIMARY KEY,
-                num integer,
-                data text)
-            """)
-
+        DROP SCHEMA IF EXISTS test CASCADE;
+        CREATE SCHEMA test;
+        CREATE TABLE test.tb1 (
+            id integer PRIMARY KEY,
+            num integer,
+            data text)
+        """)
 
         # Pass data to fill a query placeholders and let Psycopg perform the correct conversion
         cur.execute(

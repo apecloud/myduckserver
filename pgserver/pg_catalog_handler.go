@@ -130,9 +130,9 @@ func (h *ConnectionHandler) handleIsInRecovery() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return true, h.query(ConvertedQuery{
-		String:       fmt.Sprintf(`SELECT '%s' AS "pg_is_in_recovery";`, isInRecovery),
-		StatementTag: "SELECT",
+	return true, h.run(ConvertedStatement{
+		String: fmt.Sprintf(`SELECT '%s' AS "pg_is_in_recovery";`, isInRecovery),
+		Tag:    "SELECT",
 	})
 }
 
@@ -142,14 +142,14 @@ func (h *ConnectionHandler) handleWALSN() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return true, h.query(ConvertedQuery{
-		String:       fmt.Sprintf(`SELECT '%s' AS "%s";`, lsnStr, "pg_current_wal_lsn"),
-		StatementTag: "SELECT",
+	return true, h.run(ConvertedStatement{
+		String: fmt.Sprintf(`SELECT '%s' AS "%s";`, lsnStr, "pg_current_wal_lsn"),
+		Tag:    "SELECT",
 	})
 }
 
 // handler for currentSetting
-func (h *ConnectionHandler) handleCurrentSetting(query ConvertedQuery) (bool, error) {
+func (h *ConnectionHandler) handleCurrentSetting(query ConvertedStatement) (bool, error) {
 	sql := RemoveComments(query.String)
 	matches := currentSettingRegex.FindStringSubmatch(sql)
 	if len(matches) != 3 {
@@ -159,38 +159,38 @@ func (h *ConnectionHandler) handleCurrentSetting(query ConvertedQuery) (bool, er
 	if err != nil {
 		return false, err
 	}
-	return true, h.query(ConvertedQuery{
-		String:       fmt.Sprintf(`SELECT '%s' AS "current_setting";`, fmt.Sprintf("%v", setting)),
-		StatementTag: "SELECT",
+	return true, h.run(ConvertedStatement{
+		String: fmt.Sprintf(`SELECT '%s' AS "current_setting";`, fmt.Sprintf("%v", setting)),
+		Tag:    "SELECT",
 	})
 }
 
 // handler for pgCatalog
-func (h *ConnectionHandler) handlePgCatalog(query ConvertedQuery) (bool, error) {
+func (h *ConnectionHandler) handlePgCatalog(query ConvertedStatement) (bool, error) {
 	sql := RemoveComments(query.String)
-	return true, h.query(ConvertedQuery{
-		String:       pgCatalogRegex.ReplaceAllString(sql, " FROM __sys__.$1"),
-		StatementTag: "SELECT",
+	return true, h.run(ConvertedStatement{
+		String: pgCatalogRegex.ReplaceAllString(sql, " FROM __sys__.$1"),
+		Tag:    "SELECT",
 	})
 }
 
 type PGCatalogHandler struct {
 	// HandledInPlace is a function that determines if the query should be handled in place and not passed to the engine.
-	HandledInPlace func(ConvertedQuery) (bool, error)
-	Handler        func(*ConnectionHandler, ConvertedQuery) (bool, error)
+	HandledInPlace func(ConvertedStatement) (bool, error)
+	Handler        func(*ConnectionHandler, ConvertedStatement) (bool, error)
 }
 
-func isPgIsInRecovery(query ConvertedQuery) bool {
+func isPgIsInRecovery(query ConvertedStatement) bool {
 	sql := RemoveComments(query.String)
 	return pgIsInRecoveryRegex.MatchString(sql)
 }
 
-func isPgWALSN(query ConvertedQuery) bool {
+func isPgWALSN(query ConvertedStatement) bool {
 	sql := RemoveComments(query.String)
 	return pgWALLSNRegex.MatchString(sql)
 }
 
-func isPgCurrentSetting(query ConvertedQuery) bool {
+func isPgCurrentSetting(query ConvertedStatement) bool {
 	sql := RemoveComments(query.String)
 	if !currentSettingRegex.MatchString(sql) {
 		return false
@@ -206,7 +206,7 @@ func isPgCurrentSetting(query ConvertedQuery) bool {
 	return true
 }
 
-func isSpecialPgCatalog(query ConvertedQuery) bool {
+func isSpecialPgCatalog(query ConvertedStatement) bool {
 	sql := RemoveComments(query.String)
 	return pgCatalogRegex.MatchString(sql)
 }
@@ -214,7 +214,7 @@ func isSpecialPgCatalog(query ConvertedQuery) bool {
 // The key is the statement tag of the query.
 var pgCatalogHandlers = map[string]PGCatalogHandler{
 	"SELECT": {
-		HandledInPlace: func(query ConvertedQuery) (bool, error) {
+		HandledInPlace: func(query ConvertedStatement) (bool, error) {
 			// TODO(sean): Evaluate the conditions by iterating over the AST.
 			if isPgIsInRecovery(query) {
 				return true, nil
@@ -230,7 +230,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 			}
 			return false, nil
 		},
-		Handler: func(h *ConnectionHandler, query ConvertedQuery) (bool, error) {
+		Handler: func(h *ConnectionHandler, query ConvertedStatement) (bool, error) {
 			if isPgIsInRecovery(query) {
 				return h.handleIsInRecovery()
 			}
@@ -248,14 +248,14 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 		},
 	},
 	"SHOW": {
-		HandledInPlace: func(query ConvertedQuery) (bool, error) {
+		HandledInPlace: func(query ConvertedStatement) (bool, error) {
 			switch query.AST.(type) {
 			case *tree.ShowVar:
 				return true, nil
 			}
 			return false, nil
 		},
-		Handler: func(h *ConnectionHandler, query ConvertedQuery) (bool, error) {
+		Handler: func(h *ConnectionHandler, query ConvertedStatement) (bool, error) {
 			showVar, ok := query.AST.(*tree.ShowVar)
 			if !ok {
 				return false, nil
@@ -266,9 +266,9 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 				if err != nil {
 					return false, err
 				}
-				return true, h.query(ConvertedQuery{
-					String:       fmt.Sprintf(`SELECT '%s' AS "%s";`, fmt.Sprintf("%v", setting), key),
-					StatementTag: "SELECT",
+				return true, h.run(ConvertedStatement{
+					String: fmt.Sprintf(`SELECT '%s' AS "%s";`, fmt.Sprintf("%v", setting), key),
+					Tag:    "SELECT",
 				})
 			}
 			// TODO(sean): Implement SHOW ALL
@@ -281,7 +281,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 		},
 	},
 	"SET": {
-		HandledInPlace: func(query ConvertedQuery) (bool, error) {
+		HandledInPlace: func(query ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				key := strings.ToLower(stmt.Name)
@@ -301,7 +301,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 			}
 			return false, nil
 		},
-		Handler: func(h *ConnectionHandler, query ConvertedQuery) (bool, error) {
+		Handler: func(h *ConnectionHandler, query ConvertedStatement) (bool, error) {
 			setVar, ok := query.AST.(*tree.SetVar)
 			if !ok {
 				return false, fmt.Errorf("error: invalid set statement: %v", query.String)
@@ -337,7 +337,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 		},
 	},
 	"RESET": {
-		HandledInPlace: func(query ConvertedQuery) (bool, error) {
+		HandledInPlace: func(query ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				if !stmt.Reset && !stmt.ResetAll {
@@ -351,7 +351,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 			}
 			return false, nil
 		},
-		Handler: func(h *ConnectionHandler, query ConvertedQuery) (bool, error) {
+		Handler: func(h *ConnectionHandler, query ConvertedStatement) (bool, error) {
 			resetVar, ok := query.AST.(*tree.SetVar)
 			if !ok || (!resetVar.Reset && !resetVar.ResetAll) {
 				return false, fmt.Errorf("error: invalid reset statement: %v", query.String)
@@ -378,8 +378,8 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 // shouldQueryBeHandledInPlace determines whether a query should be handled in place, rather than being
 // passed to the engine. This is useful for queries that are not supported by the engine, or that require
 // special handling.
-func shouldQueryBeHandledInPlace(sql ConvertedQuery) (bool, error) {
-	handler, ok := pgCatalogHandlers[sql.StatementTag]
+func shouldQueryBeHandledInPlace(sql ConvertedStatement) (bool, error) {
+	handler, ok := pgCatalogHandlers[sql.Tag]
 	if !ok {
 		return false, nil
 	}
@@ -392,8 +392,8 @@ func shouldQueryBeHandledInPlace(sql ConvertedQuery) (bool, error) {
 
 // TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
 // Remove this once we add the views for 'pg_catalog'.
-func (h *ConnectionHandler) handlePgCatalogQueries(sql ConvertedQuery) (bool, error) {
-	handler, ok := pgCatalogHandlers[sql.StatementTag]
+func (h *ConnectionHandler) handlePgCatalogQueries(sql ConvertedStatement) (bool, error) {
+	handler, ok := pgCatalogHandlers[sql.Tag]
 	if !ok {
 		return false, nil
 	}
