@@ -33,8 +33,8 @@ jobs:
       - name: Install system packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: bats cpanminus libmysqlclient-dev dotnet-sdk-8.0 dotnet-runtime-8.0 php-mysql r-base-core libblas-dev
-          version: 1.0
+          packages: bats cpanminus libmysqlclient-dev dotnet-sdk-8.0 dotnet-runtime-8.0 php-mysql r-base-core
+          version: 1.1
 
       - name: Install dependencies
         run: |
@@ -52,6 +52,7 @@ jobs:
           npm install mysql
           sudo cpanm --notest DBD::mysql
           pip3 install mysql-connector-python
+          sudo apt-get install -y libblas-dev
           sudo R -e "install.packages('RMySQL', repos='http://cran.r-project.org')"
           sudo gem install mysql2
 
@@ -90,8 +91,8 @@ jobs:
       - name: Install system packages
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core libblas-dev
-          version: 1.0
+          packages: bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core
+          version: 1.1
 
       - name: Install dependencies
         run: |
@@ -109,6 +110,7 @@ jobs:
           npm install pg
           sudo cpanm --notest DBD::Pg
           pip3 install "psycopg[binary]" pandas pyarrow polars
+          sudo apt-get install -y libblas-dev
           # TODO: Speed up the installation of RPostgres
           sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
           sudo gem install pg
