@@ -42,3 +42,13 @@ func IsDuckDBIndexAlreadyExistsError(err error) bool {
 func IsDuckDBUniqueConstraintViolationError(err error) bool {
 	return strings.Contains(err.Error(), "Constraint Error: Data contains duplicates on indexed column(s)")
 }
+
+// Constraint Error: NOT NULL constraint failed: <column>
+func IsDuckDBNotNullConstraintViolationError(err error) (bool, string) {
+	msg := err.Error()
+	pattern := "Constraint Error: NOT NULL constraint failed: "
+	if idx := strings.Index(msg, pattern); idx >= 0 {
+		return true, msg[idx+len(pattern):]
+	}
+	return false, ""
+}

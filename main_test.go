@@ -21,6 +21,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1644,12 +1645,10 @@ func TestModifyColumn(t *testing.T) {
 			SetUpScript: []string{},
 			Assertions: []queries.ScriptTestAssertion{
 				{
-					Skip:     true,
 					Query:    "ALTER TABLE mytable MODIFY i BIGINT auto_increment",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Skip:  true,
 					Query: "SHOW FULL COLUMNS FROM mytable /* 1 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "auto_increment", "", ""},
@@ -1657,25 +1656,20 @@ func TestModifyColumn(t *testing.T) {
 					},
 				},
 				{
-					Skip:  true,
 					Query: "insert into mytable (s) values ('new row')",
 				},
 				{
-					Skip:        true,
 					Query:       "ALTER TABLE mytable add column i2 bigint auto_increment",
 					ExpectedErr: sql.ErrInvalidAutoIncCols,
 				},
 				{
-					Skip:  true,
 					Query: "alter table mytable add column i2 bigint",
 				},
 				{
-					Skip:        true,
 					Query:       "ALTER TABLE mytable modify column i2 bigint auto_increment",
 					ExpectedErr: sql.ErrInvalidAutoIncCols,
 				},
 				{
-					Skip:  true,
 					Query: "SHOW FULL COLUMNS FROM mytable /* 2 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "auto_increment", "", ""},
@@ -1684,12 +1678,10 @@ func TestModifyColumn(t *testing.T) {
 					},
 				},
 				{
-					Skip:     true,
 					Query:    "ALTER TABLE mytable MODIFY COLUMN i BIGINT NOT NULL COMMENT 'ok' FIRST",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Skip:  true,
 					Query: "SHOW FULL COLUMNS FROM mytable /* 3 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "", "", "ok"},
@@ -1698,12 +1690,10 @@ func TestModifyColumn(t *testing.T) {
 					},
 				},
 				{
-					Skip:     true,
 					Query:    "ALTER TABLE mytable MODIFY COLUMN s VARCHAR(20) NULL COMMENT 'changed'",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Skip:  true,
 					Query: "SHOW FULL COLUMNS FROM mytable /* 4 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "", "", "ok"},
@@ -2214,12 +2204,8 @@ func TestAlterTable(t *testing.T) {
 		"create table t35 (i bigint primary key, s varchar(20), s2 varchar(20))",
 		// skip "drop column prevents foreign key violations" since foreign keys are not supported
 		"create table t36 (i bigint primary key, j varchar(20))",
-		// skip "ALTER TABLE remove AUTO_INCREMENT" since AUTO_INCREMENT is not supported yet
-		"CREATE TABLE t40 (pk int AUTO_INCREMENT PRIMARY KEY, val int)",
 		// skip "ALTER TABLE does not change column collations"
 		"CREATE TABLE test1 (v1 VARCHAR(200), v2 ENUM('a'), v3 SET('a'));",
-		// skip "ALTER TABLE AUTO INCREMENT no-ops on table with no original auto increment key"
-		"CREATE table test (pk int primary key)",
 		// skip "ALTER TABLE MODIFY column with UNIQUE KEY" since duckdb has more strict rules for modifying columns with constraints
 		"CREATE table test (pk int primary key, uk int unique)",
 		// skip "ALTER TABLE MODIFY column making UNIQUE" due to differences in error messages
@@ -2265,9 +2251,11 @@ func TestAddDropPks(t *testing.T) {
 }
 
 func TestAddAutoIncrementColumn(t *testing.T) {
-	t.Skip("wait for fix")
 	for _, script := range queries.AlterTableAddAutoIncrementScripts {
-		enginetest.TestScript(t, NewDefaultDuckHarness(), script)
+		// https://github.com/duckdb/duckdb/pull/14419
+		if strings.Contains(script.Name, "no primary key") || strings.Contains(script.Name, "no key") {
+			enginetest.TestScript(t, NewDefaultDuckHarness(), script)
+		}
 	}
 }
 

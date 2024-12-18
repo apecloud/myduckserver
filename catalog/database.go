@@ -76,7 +76,9 @@ func (d *Database) tablesInsensitive(ctx *sql.Context, pattern string) ([]*Table
 		return nil, err
 	}
 	for _, t := range tables {
-		t.withSchema(ctx)
+		if err := t.withSchema(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return tables, nil
 }

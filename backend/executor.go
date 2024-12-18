@@ -81,6 +81,14 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 		return b.base.Build(ctx, root, r)
 	case *plan.InsertInto:
 		insert := n.(*plan.InsertInto)
+
+		// For AUTO_INCREMENT column, we fallback to the framework if the column is specified.
+		if dst, err := plan.GetInsertable(insert.Destination); err == nil && dst.Schema().HasAutoIncrement() {
+			if len(insert.ColumnNames) == 0 || len(insert.ColumnNames) == len(dst.Schema()) {
+				return b.base.Build(ctx, root, r)
+			}
+		}
+
 		src := insert.Source
 		if proj, ok := src.(*plan.Project); ok {
 			src = proj.Child
@@ -189,6 +197,9 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 	// Execute the DuckDB query
 	result, err := conn.ExecContext(ctx.Context, duckSQL)
 	if err != nil {
+		if yes, column := catalog.IsDuckDBNotNullConstraintViolationError(err); yes {
+			return nil, sql.ErrInsertIntoNonNullableProvidedNull.New(column)
+		}
 		return nil, err
 	}
 
