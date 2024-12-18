@@ -177,6 +177,7 @@ var InternalTables = struct {
 	//             Once we add 'pg_catalog' and support views for PG, replace this by a view.
 	//             https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-REPLICATION-VIEW
 	PGStatReplication InternalTable
+	PGRange           InternalTable
 }{
 	PersistentVariable: InternalTable{
 		Schema:       "__sys__",
@@ -287,6 +288,21 @@ var InternalTables = struct {
 		},
 		DDL: "pid INTEGER PRIMARY KEY, usesysid TEXT, usename TEXT, application_name TEXT, client_addr TEXT, client_hostname TEXT, client_port INTEGER, backend_start TIMESTAMP, backend_xmin INTEGER, state TEXT, sent_lsn TEXT, write_lsn TEXT, flush_lsn TEXT, replay_lsn TEXT, write_lag INTERVAL, flush_lag INTERVAL, replay_lag INTERVAL, sync_priority INTEGER, sync_state TEXT, reply_time TIMESTAMP",
 	},
+	PGRange: InternalTable{
+		Schema:       "__sys__",
+		Name:         "pg_range",
+		KeyColumns:   []string{"rngtypid"},
+		ValueColumns: []string{"rngsubtype", "rngmultitypid", "rngcollation", "rngsubopc", "rngcanonical", "rngsubdiff"},
+		DDL:          "rngtypid TEXT PRIMARY KEY, rngsubtype TEXT, rngmultitypid TEXT, rngcollation TEXT, rngsubopc TEXT, rngcanonical TEXT, rngsubdiff TEXT",
+		InitialData: [][]any{
+			{"3904", "23", "4451", "0", "1978", "int4range_canonical", "int4range_subdiff"},
+			{"3906", "1700", "4532", "0", "3125", "-", "numrange_subdiff"},
+			{"3908", "1114", "4533", "0", "3128", "-", "tsrange_subdiff"},
+			{"3910", "1184", "4534", "0", "3127", "-", "tstzrange_subdiff"},
+			{"3912", "1082", "4535", "0", "3122", "daterange_canonical", "daterange_subdiff"},
+			{"3926", "20", "4536", "0", "3124", "int8range_canonical", "int8range_subdiff"},
+		},
+	},
 }
 
 var internalTables = []InternalTable{
@@ -295,4 +311,9 @@ var internalTables = []InternalTable{
 	InternalTables.PgSubscription,
 	InternalTables.GlobalStatus,
 	InternalTables.PGStatReplication,
+	InternalTables.PGRange,
+}
+
+func GetInternalTables() []InternalTable {
+	return internalTables
 }

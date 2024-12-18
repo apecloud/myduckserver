@@ -2,7 +2,10 @@ package pgserver
 
 import (
 	"bytes"
+	"github.com/apecloud/myduckserver/catalog"
+	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/dolthub/go-mysql-server/sql"
@@ -258,4 +261,28 @@ func RemoveComments(query string) string {
 	}
 
 	return buf.String()
+}
+
+var (
+	pgCatalogRegex     *regexp.Regexp
+	initPgCatalogRegex sync.Once
+)
+
+// get the regex to match any table in pg_catalog in the query.
+func getPgCatalogRegex() *regexp.Regexp {
+	initPgCatalogRegex.Do(func() {
+		var tableNames []string
+		for _, table := range catalog.GetInternalTables() {
+			if table.Schema != "__sys__" {
+				continue
+			}
+			tableNames = append(tableNames, table.Name)
+		}
+		pgCatalogRegex = regexp.MustCompile(`(?i)\b(?:FROM|JOIN)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
+	})
+	return pgCatalogRegex
+}
+
+func ConvertToSys(sql string) string {
+	return getPgCatalogRegex().ReplaceAllString(RemoveComments(sql), " __sys__.$1")
 }
