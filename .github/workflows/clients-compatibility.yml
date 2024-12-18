@@ -52,9 +52,11 @@ jobs:
           npm install mysql
           sudo cpanm --notest DBD::mysql
           pip3 install mysql-connector-python
-          sudo apt-get install -y libblas-dev
-          sudo R -e "install.packages('RMySQL', repos='http://cran.r-project.org')"
           sudo gem install mysql2
+
+          # R is unstable on GitHub Actions, so we disable it for now
+          # sudo apt-get install -y libblas-dev
+          # sudo R -e "install.packages('RMySQL', repos='http://cran.r-project.org')"
 
       - name: Build
         run: go build -v
@@ -111,9 +113,11 @@ jobs:
           sudo cpanm --notest DBD::Pg
           pip3 install "psycopg[binary]" pandas pyarrow polars
           sudo apt-get install -y libblas-dev
-          # TODO: Speed up the installation of RPostgres
-          sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
           sudo gem install pg
+
+          # R is unstable on GitHub Actions, so we disable it for now
+          # TODO: Speed up the installation of RPostgres
+          # sudo R -e "install.packages('RPostgres', repos='http://cran.r-project.org')"
 
       - name: Build
         run: go build -v

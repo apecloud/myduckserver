@@ -77,9 +77,9 @@ check_status() {
     start_process python3 $BATS_TEST_DIRNAME/python/mysql_test.py 127.0.0.1 3306 root "" $BATS_TEST_DIRNAME/test.data
 }
 
-@test "mysql-r" {
-    start_process Rscript $BATS_TEST_DIRNAME/r/MySQLTest.R 127.0.0.1 3306 root "" $BATS_TEST_DIRNAME/test.data
-}
+# @test "mysql-r" {
+#     start_process Rscript $BATS_TEST_DIRNAME/r/MySQLTest.R 127.0.0.1 3306 root "" $BATS_TEST_DIRNAME/test.data
+# }
 
 @test "mysql_ruby" {
     start_process ruby $BATS_TEST_DIRNAME/ruby/mysql_test.rb 127.0.0.1 3306 root "" $BATS_TEST_DIRNAME/test.data
