@@ -133,6 +133,11 @@ func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) (sql.P
 			defaultValue = sql.NewUnresolvedColumnDefaultValue(decodedComment.Meta.Default)
 		}
 
+		var extra string
+		if decodedComment.Meta.AutoIncrement {
+			extra = "auto_increment"
+		}
+
 		column := &sql.Column{
 			Name:           columnInfo.ColumnName,
 			Type:           columnInfo.DataType,
@@ -142,6 +147,7 @@ func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) (sql.P
 			Default:        defaultValue,
 			AutoIncrement:  decodedComment.Meta.AutoIncrement,
 			Comment:        decodedComment.Text,
+			Extra:          extra,
 		}
 
 		schema = append(schema, column)
@@ -259,19 +265,19 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	sqls = append(sqls, `COMMENT ON COLUMN `+FullColumnName(t.db.catalog, t.db.name, t.name, column.Name)+` IS '`+comment.Encode()+`'`)
 
 	// Add table comment if it is AUTO_INCREMENT or PRIMARY KEY
-	extraInfo := t.comment.Meta
-	changeComment := false
+	tableInfo := t.comment.Meta
+	tableInfoChanged := false
 	if column.AutoIncrement {
-		extraInfo.Sequence = fullSequenceName
-		changeComment = true
+		tableInfo.Sequence = fullSequenceName
+		tableInfoChanged = true
 	}
 	if column.PrimaryKey {
 		sqls = append(sqls, `ALTER TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` ADD PRIMARY KEY (`+QuoteIdentifierANSI(column.Name)+`)`)
-		extraInfo.PkOrdinals = []int{len(t.schema.Schema)}
-		changeComment = true
+		tableInfo.PkOrdinals = []int{len(t.schema.Schema)}
+		tableInfoChanged = true
 	}
-	if changeComment {
-		comment := NewCommentWithMeta(t.comment.Text, extraInfo)
+	if tableInfoChanged {
+		comment := NewCommentWithMeta(t.comment.Text, tableInfo)
 		sqls = append(sqls, `COMMENT ON TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` IS '`+comment.Encode()+`'`)
 	}
 
@@ -282,11 +288,11 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 
 	// Update the sequence name only after the column is successfully added.
 	if column.AutoIncrement {
-		t.comment.Meta.Sequence = extraInfo.Sequence
+		t.comment.Meta.Sequence = tableInfo.Sequence
 	}
 	// Update the PK ordinals only after the column is successfully added.
 	if column.PrimaryKey {
-		t.comment.Meta.PkOrdinals = extraInfo.PkOrdinals
+		t.comment.Meta.PkOrdinals = tableInfo.PkOrdinals
 	}
 	return t.withSchema(ctx)
 }
@@ -377,8 +383,8 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 		sqls = append(sqls, baseSQL+` SET DEFAULT `+defaultExpr)
 	}
 
-	extraInfo := t.comment.Meta
-	extraChanged := false
+	tableInfo := t.comment.Meta
+	tableInfoChanged := false
 
 	temporary := t.db.catalog == "temp"
 	var sequenceName, fullSequenceName string
@@ -386,6 +392,7 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 	// Handle AUTO_INCREMENT changes
 	if !oldColumn.AutoIncrement && column.AutoIncrement {
 		// Adding AUTO_INCREMENT
+		typ.mysql.AutoIncrement = true
 		uuid, err := uuid.NewRandom()
 		if err != nil {
 			return err
@@ -405,8 +412,8 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 		sqls = append(sqls, baseSQL+` SET DEFAULT nextval('`+fullSequenceName+`')`)
 
 		// Update table comment with sequence info
-		extraInfo.Sequence = fullSequenceName
-		extraChanged = true
+		tableInfo.Sequence = fullSequenceName
+		tableInfoChanged = true
 
 	} else if oldColumn.AutoIncrement && !column.AutoIncrement {
 		// Removing AUTO_INCREMENT
@@ -416,8 +423,8 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 		// sqls = append(sqls, `DROP SEQUENCE IF EXISTS `+t.comment.Meta.Sequence)
 
 		// Update table comment to remove sequence info
-		extraInfo.Sequence = ""
-		extraChanged = true
+		tableInfo.Sequence = ""
+		tableInfoChanged = true
 	}
 
 	// Handle column rename
@@ -437,15 +444,15 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 		sqls = append(sqls, `ALTER TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` ADD PRIMARY KEY (`+QuoteIdentifierANSI(column.Name)+`)`)
 
 		// Update table comment with PK ordinals
-		extraInfo.PkOrdinals = []int{oldColumnIndex}
-		extraChanged = true
+		tableInfo.PkOrdinals = []int{oldColumnIndex}
+		tableInfoChanged = true
 
 	} else if oldColumn.PrimaryKey && !column.PrimaryKey {
 		// Remove PRIMARY KEY?
 	}
 
-	if extraChanged {
-		comment := NewCommentWithMeta(t.comment.Text, extraInfo)
+	if tableInfoChanged {
+		comment := NewCommentWithMeta(t.comment.Text, tableInfo)
 		sqls = append(sqls, `COMMENT ON TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` IS '`+comment.Encode()+`'`)
 	}
 
@@ -575,9 +582,9 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 	}
 
 	// Construct the SQL statement for creating the index
-	var sqlsBuilder strings.Builder
-	sqlsBuilder.WriteString(fmt.Sprintf(`USE %s; `, FullSchemaName(t.db.catalog, "")))
-	sqlsBuilder.WriteString(fmt.Sprintf(`CREATE %s INDEX "%s" ON %s (%s)`,
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(`USE %s; `, FullSchemaName(t.db.catalog, "")))
+	b.WriteString(fmt.Sprintf(`CREATE %s INDEX "%s" ON %s (%s)`,
 		unique,
 		EncodeIndexName(t.name, indexDef.Name),
 		FullTableName("", t.db.name, t.name),
@@ -585,13 +592,13 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 
 	// Add the index comment if provided
 	if indexDef.Comment != "" {
-		sqlsBuilder.WriteString(fmt.Sprintf("; COMMENT ON INDEX %s IS '%s'",
+		b.WriteString(fmt.Sprintf("; COMMENT ON INDEX %s IS '%s'",
 			FullIndexName(t.db.catalog, t.db.name, EncodeIndexName(t.name, indexDef.Name)),
 			NewComment[any](indexDef.Comment).Encode()))
 	}
 
 	// Execute the SQL statement to create the index
-	_, err := adapter.Exec(ctx, sqlsBuilder.String())
+	_, err := adapter.Exec(ctx, b.String())
 	if err != nil {
 		if IsDuckDBIndexAlreadyExistsError(err) {
 			return sql.ErrDuplicateKey.New(indexDef.Name)
@@ -726,7 +733,7 @@ func queryColumns(ctx *sql.Context, catalogName, schemaName, tableName string) (
 	}
 	defer rows.Close()
 
-	var columnsInfo []*ColumnInfo
+	var columns []*ColumnInfo
 
 	for rows.Next() {
 		var columnName, dataTypes string
@@ -750,14 +757,14 @@ func queryColumns(ctx *sql.Context, catalogName, schemaName, tableName string) (
 			ColumnDefault: columnDefault,
 			Comment:       comment,
 		}
-		columnsInfo = append(columnsInfo, columnInfo)
+		columns = append(columns, columnInfo)
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 
-	return columnsInfo, nil
+	return columns, nil
 }
 
 func (t *IndexedTable) LookupPartitions(ctx *sql.Context, lookup sql.IndexLookup) (sql.PartitionIter, error) {

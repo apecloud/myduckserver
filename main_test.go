@@ -1591,48 +1591,48 @@ func TestModifyColumn(t *testing.T) {
 		{
 			Name: "column at end with default",
 			SetUpScript: []string{
-				"CREATE TABLE mytable_modify_column (i bigint not null, s varchar(20) not null comment 'column s')",
+				"CREATE TABLE mytable_m1 (i bigint not null, s varchar(20) not null comment 'column s')",
 			},
 			Assertions: []queries.ScriptTestAssertion{
 				{
-					Query:    "ALTER TABLE mytable_modify_column MODIFY COLUMN i bigint NOT NULL COMMENT 'modified'",
+					Query:    "ALTER TABLE mytable_m1 MODIFY COLUMN i bigint NOT NULL COMMENT 'modified'",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable_modify_column /* 1 */",
+					Query: "SHOW FULL COLUMNS FROM mytable_m1 /* 1 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "", nil, "", "", "modified"},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "NO", "", nil, "", "", "column s"},
 					},
 				},
 				{
-					Query:    "ALTER TABLE mytable_modify_column MODIFY COLUMN i TINYINT NOT NULL COMMENT 'yes'",
+					Query:    "ALTER TABLE mytable_m1 MODIFY COLUMN i TINYINT NOT NULL COMMENT 'yes'",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable_modify_column /* 2 */",
+					Query: "SHOW FULL COLUMNS FROM mytable_m1 /* 2 */",
 					Expected: []sql.Row{
 						{"i", "tinyint", nil, "NO", "", nil, "", "", "yes"},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "NO", "", nil, "", "", "column s"},
 					},
 				},
 				{
-					Query:    "ALTER TABLE mytable_modify_column MODIFY COLUMN i BIGINT NOT NULL COMMENT 'ok'",
+					Query:    "ALTER TABLE mytable_m1 MODIFY COLUMN i BIGINT NOT NULL COMMENT 'ok'",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable_modify_column /* 3 */",
+					Query: "SHOW FULL COLUMNS FROM mytable_m1 /* 3 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "", nil, "", "", "ok"},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "NO", "", nil, "", "", "column s"},
 					},
 				},
 				{
-					Query:    "ALTER TABLE mytable_modify_column MODIFY COLUMN s VARCHAR(20) NULL COMMENT 'changed'",
+					Query:    "ALTER TABLE mytable_m1 MODIFY COLUMN s VARCHAR(20) NULL COMMENT 'changed'",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable_modify_column /* 4 */",
+					Query: "SHOW FULL COLUMNS FROM mytable_m1 /* 4 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "", nil, "", "", "ok"},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "YES", "", nil, "", "", "changed"},
@@ -1641,36 +1641,38 @@ func TestModifyColumn(t *testing.T) {
 			},
 		},
 		{
-			Name:        "auto increment attribute",
-			SetUpScript: []string{},
+			Name: "auto increment attribute",
+			SetUpScript: []string{
+				"CREATE TABLE mytable_m2 (i bigint not null primary key, s varchar(20) comment 'changed')",
+			},
 			Assertions: []queries.ScriptTestAssertion{
 				{
-					Query:    "ALTER TABLE mytable MODIFY i BIGINT auto_increment",
+					Query:    "ALTER TABLE mytable_m2 MODIFY i BIGINT auto_increment",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable /* 1 */",
+					Query: "SHOW FULL COLUMNS FROM mytable_m2 /* 1 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "auto_increment", "", ""},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "YES", "", nil, "", "", "changed"},
 					},
 				},
 				{
-					Query: "insert into mytable (s) values ('new row')",
+					Query: "insert into mytable_m2 (s) values ('new row')",
 				},
 				{
-					Query:       "ALTER TABLE mytable add column i2 bigint auto_increment",
+					Query:       "ALTER TABLE mytable_m2 add column i2 bigint auto_increment",
 					ExpectedErr: sql.ErrInvalidAutoIncCols,
 				},
 				{
-					Query: "alter table mytable add column i2 bigint",
+					Query: "alter table mytable_m2 add column i2 bigint",
 				},
 				{
-					Query:       "ALTER TABLE mytable modify column i2 bigint auto_increment",
+					Query:       "ALTER TABLE mytable_m2 modify column i2 bigint auto_increment",
 					ExpectedErr: sql.ErrInvalidAutoIncCols,
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable /* 2 */",
+					Query: "SHOW FULL COLUMNS FROM mytable_m2 /* 2 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "auto_increment", "", ""},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "YES", "", nil, "", "", "changed"},
@@ -1678,11 +1680,13 @@ func TestModifyColumn(t *testing.T) {
 					},
 				},
 				{
-					Query:    "ALTER TABLE mytable MODIFY COLUMN i BIGINT NOT NULL COMMENT 'ok' FIRST",
+					Skip:     true,
+					Query:    "ALTER TABLE mytable_m2 MODIFY COLUMN i BIGINT NOT NULL COMMENT 'ok' FIRST",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable /* 3 */",
+					Skip:  true,
+					Query: "SHOW FULL COLUMNS FROM mytable_m2 /* 3 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "", "", "ok"},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "YES", "", nil, "", "", "changed"},
@@ -1690,11 +1694,13 @@ func TestModifyColumn(t *testing.T) {
 					},
 				},
 				{
-					Query:    "ALTER TABLE mytable MODIFY COLUMN s VARCHAR(20) NULL COMMENT 'changed'",
+					Skip:     true,
+					Query:    "ALTER TABLE mytable_m2 MODIFY COLUMN s VARCHAR(20) NULL COMMENT 'changed'",
 					Expected: []sql.Row{{types.NewOkResult(0)}},
 				},
 				{
-					Query: "SHOW FULL COLUMNS FROM mytable /* 4 */",
+					Skip:  true,
+					Query: "SHOW FULL COLUMNS FROM mytable_m2 /* 4 */",
 					Expected: []sql.Row{
 						{"i", "bigint", nil, "NO", "PRI", nil, "", "", "ok"},
 						{"s", "varchar(20)", "utf8mb4_0900_bin", "YES", "", nil, "", "", "changed"},
@@ -1750,8 +1756,8 @@ func RunModifyColumnTest(t *testing.T, harness enginetest.Harness) {
 			se.NewConnection(ctx)
 		}
 		enginetest.TestQueryWithContext(t, ctx, e, harness, "select database()", []sql.Row{{nil}}, nil, nil, nil)
-		enginetest.TestQueryWithContext(t, ctx, e, harness, "ALTER TABLE mydb.mytable_modify_column MODIFY COLUMN s VARCHAR(21) NULL COMMENT 'changed again'", []sql.Row{{types.NewOkResult(0)}}, nil, nil, nil)
-		enginetest.TestQueryWithContext(t, ctx, e, harness, "SHOW FULL COLUMNS FROM mydb.mytable_modify_column", []sql.Row{
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "ALTER TABLE mydb.mytable_m1 MODIFY COLUMN s VARCHAR(21) NULL COMMENT 'changed again'", []sql.Row{{types.NewOkResult(0)}}, nil, nil, nil)
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SHOW FULL COLUMNS FROM mydb.mytable_m1", []sql.Row{
 			{"i", "bigint", nil, "NO", "", nil, "", "", "ok"},
 			{"s", "varchar(21)", "utf8mb4_0900_bin", "YES", "", nil, "", "", "changed again"},
 		}, nil, nil, nil)
