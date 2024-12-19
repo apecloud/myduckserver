@@ -96,6 +96,7 @@ jobs:
               INSERT INTO test.items VALUES (1, 'test1'), (2, 'test2');"
           elif [ "${{ matrix.source }}" = "mariadb" ]; then
             docker exec source-db mariadb -uroot -proot test -e "
+              SET GLOBAL character_set_collations = 'utf8mb4=utf8mb4_general_ci';
               CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(50));
               INSERT INTO items VALUES (1, 'test1'), (2, 'test2');"
           else
