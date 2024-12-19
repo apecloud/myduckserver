@@ -53,9 +53,8 @@ jobs:
 
             docker run -d --name source-db -p 3306:3306 \
               -v "$(pwd)/doltcfg":/etc/dolt/doltcfg.d/ \
-              -e DOLT_ROOT_USER=root \
-              -e DOLT_ROOT_PASSWORD=root \
-              dolthub/dolt-sql-server:latest
+              dolthub/dolt-sql-server:latest \
+              -u root -p root
 
           elif [ "${{ matrix.source }}" = "postgres" ]; then
             docker run -d --name source-db -p 5432:5432 \
@@ -87,6 +86,7 @@ jobs:
               INSERT INTO items VALUES (1, 'test1'), (2, 'test2');"
           elif [ "${{ matrix.source }}" = "dolt" ]; then
             docker exec source-db dolt sql -q "
+              CREATE DATABASE test;
               CREATE TABLE test.items (id INT PRIMARY KEY, name VARCHAR(50));
               INSERT INTO test.items VALUES (1, 'test1'), (2, 'test2');"
           else
