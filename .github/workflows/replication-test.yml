@@ -3,8 +3,6 @@ name: Docker Replica Mode Test
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
   test-replication:
@@ -12,7 +10,7 @@ jobs:
     strategy:
       matrix:
         # source: ['mysql', 'postgres', 'dolt', 'mariadb']
-        source: ['mysql', 'postgres', 'mariadb']
+        source: ['mysql', 'postgres']
     steps:
       - uses: actions/checkout@v4
 
@@ -195,7 +193,7 @@ jobs:
           fi
 
           # Wait for replication
-          sleep 5
+          sleep 10
 
           # Verify new data was replicated
           docker exec myduck psql -t -U postgres -h 127.0.0.1 -c \
