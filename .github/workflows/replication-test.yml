@@ -36,7 +36,7 @@ jobs:
             docker run -d --name source-db -p 3306:3306 \
               -e MARIADB_ROOT_PASSWORD=root \
               -e MARIADB_DATABASE=test \
-              mariadb:latest \
+              mariadb:lts \
               --gtid-strict-mode=1 \
               --log-bin=mybinlog \
               --binlog-format=ROW
