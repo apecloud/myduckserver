@@ -111,8 +111,15 @@ jobs:
             --env=SOURCE_DSN="$SOURCE_DSN" \
             apecloud/myduckserver:latest
 
-          # Wait for MyDuck to be ready
-          sleep 10
+          # Wait and check container status
+          for i in {1..10}; do
+            if ! docker ps | grep -q myduck; then
+              echo "MyDuck container exited unexpectedly"
+              docker logs myduck
+              exit 1
+            fi
+            sleep 1
+          done
 
       - name: Verify initial replication
         run: |
