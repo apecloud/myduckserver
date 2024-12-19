@@ -36,10 +36,12 @@ jobs:
             docker run -d --name source-db -p 3306:3306 \
               -e MARIADB_ROOT_PASSWORD=root \
               -e MARIADB_DATABASE=test \
-              mariadb:lts \
+              mariadb:latest \
               --gtid-strict-mode=1 \
               --log-bin=mybinlog \
-              --binlog-format=ROW
+              --binlog-format=ROW \
+              --character-set-server=utf8mb4 \
+              --collation-server=utf8mb4_general_ci
 
           elif [ "${{ matrix.source }}" = "dolt" ]; then
             # Create Dolt config
@@ -96,7 +98,6 @@ jobs:
               INSERT INTO test.items VALUES (1, 'test1'), (2, 'test2');"
           elif [ "${{ matrix.source }}" = "mariadb" ]; then
             docker exec source-db mariadb -uroot -proot test -e "
-              SET GLOBAL character_set_collations = 'utf8mb4=utf8mb4_general_ci';
               CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(50));
               INSERT INTO items VALUES (1, 'test1'), (2, 'test2');"
           else
