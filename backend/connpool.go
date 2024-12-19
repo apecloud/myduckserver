@@ -117,7 +117,7 @@ func (p *ConnectionPool) CloseConn(id uint32) error {
 			// the pool and will be closed instead.
 			return driver.ErrBadConn
 		}); err != nil && !errors.Is(err, driver.ErrBadConn) {
-			logrus.WithError(err).Warn("Failed to close connection")
+			logrus.WithError(err).Warn("Failed to close connection during Raw function call")
 			return err
 		}
 		if err := conn.Close(); err != nil && !errors.Is(err, stdsql.ErrConnDone) {
