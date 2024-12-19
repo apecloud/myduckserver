@@ -143,7 +143,7 @@ docker run -d --name myduck \
   `--env=SOURCE_DSN=mysql://root:password@example.com:3306`
 
 - **PostgreSQL Primary:** Use the `postgres` URI scheme, e.g.,  
-  `--env=SOURCE_DSN=postgres://postgres:password@example.com:5432`
+  `--env=SOURCE_DSN=postgres://postgres:password@example.com:5432/db01`
 
 > [!NOTE]
 > To replicate from a server running on the host machine, use `host.docker.internal` as the hostname instead of `localhost` or `127.0.0.1`. On Linux, you must also add `--add-host=host.docker.internal:host-gateway` to the `docker run` command.
@@ -195,17 +195,16 @@ MyDuck Server can be seamlessly accessed from the Python data science ecosystem.
 
 We have big plans for MyDuck Server! Here are some of the features we’re working on:
 
+- [ ] Arrow Flight SQL.
 - [ ] Multiple DB.
 - [ ] Authentication.
 - [ ] ...and more! We’re always looking for ways to make MyDuck Server better. If you have a feature request, please let us know by [opening an issue](https://github.com/apecloud/myduckserver/issues/new).
 
 ## 🏡 Join the Community
 
-- [Discord](https://discord.gg/9MC5cgw5YK) Let's communicate on Discord about requirements, issues, and user experiences.
+Let's connect on [Discord](https://discord.gg/9MC5cgw5YK) to discuss requirements, address issues, and share user experiences.
 
 ## 💡 Contributing
-
-Let’s make MySQL & Postgres analytics fast and powerful — together!
 
 MyDuck Server is open-source, and we’d love your help to keep it growing! Check out our [CONTRIBUTING.md](CONTRIBUTING.md) for ways to get involved. From bug reports to feature requests, all contributions are welcome!
 
