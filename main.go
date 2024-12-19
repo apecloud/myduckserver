@@ -18,9 +18,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
+	"net"
+	"os"
+	"strconv"
 
+	"github.com/apache/arrow-go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/flightsqlserver"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
@@ -59,6 +66,9 @@ var (
 	restoreEndpoint        = ""
 	restoreAccessKeyId     = ""
 	restoreSecretAccessKey = ""
+
+	flightsqlHost = "localhost"
+	flightsqlPort = 47470
 )
 
 func init() {
@@ -83,6 +93,9 @@ func init() {
 	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint of object storage service to restore from.")
 	flag.StringVar(&restoreAccessKeyId, "restore-access-key-id", restoreAccessKeyId, "The access key ID to restore from.")
 	flag.StringVar(&restoreSecretAccessKey, "restore-secret-access-key", restoreSecretAccessKey, "The secret access key to restore from.")
+
+	flag.StringVar(&flightsqlHost, "flightsql-host", flightsqlHost, "hostname for the Flight SQL service")
+	flag.IntVar(&flightsqlPort, "flightsql-port", flightsqlPort, "port number for the Flight SQL service")
 }
 
 func ensureSQLTranslate() {
@@ -189,6 +202,29 @@ func main() {
 		// Load the configuration for the Postgres server.
 		pgconfig.Init()
 		go pgServer.Start()
+	}
+
+	if flightsqlPort > 0 {
+
+		db := provider.Storage()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer db.Close()
+
+		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		server := flight.NewServerWithMiddleware(nil)
+		server.RegisterFlightService(flightsql.NewFlightServer(srv))
+		server.Init(net.JoinHostPort(*&flightsqlHost, strconv.Itoa(*&flightsqlPort)))
+		server.SetShutdownOnSignals(os.Interrupt, os.Kill)
+
+		fmt.Println("Starting SQLite Flight SQL Server on", server.Addr(), "...")
+
+		go server.Serve()
 	}
 
 	if err = myServer.Start(); err != nil {
