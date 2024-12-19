@@ -15,7 +15,7 @@ type ConnectionHolder interface {
 	GetCatalogTxn(ctx context.Context, options *stdsql.TxOptions) (*stdsql.Tx, error)
 	TryGetTxn() *stdsql.Tx
 	CloseTxn()
-	CloseBackendConn()
+	CloseConn()
 }
 
 func GetConn(ctx *sql.Context) (*stdsql.Conn, error) {
@@ -26,8 +26,8 @@ func GetCatalogConn(ctx *sql.Context) (*stdsql.Conn, error) {
 	return ctx.Session.(ConnectionHolder).GetCatalogConn(ctx)
 }
 
-func CloseBackendConn(ctx *sql.Context) {
-	ctx.Session.(ConnectionHolder).CloseBackendConn()
+func CloseConn(ctx *sql.Context) {
+	ctx.Session.(ConnectionHolder).CloseConn()
 }
 
 func GetTxn(ctx *sql.Context, options *stdsql.TxOptions) (*stdsql.Tx, error) {
