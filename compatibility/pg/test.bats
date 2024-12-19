@@ -43,11 +43,11 @@ start_process() {
 
 # Failed because of the following error:
 # > Catalog Error: Table with name pg_range does not exist!
-# @test "pg-csharp" {
-#     set_custom_teardown "sudo pkill -f dotnet"
-#     start_process dotnet build $BATS_TEST_DIRNAME/csharp/PGTest.csproj -o $BATS_TEST_DIRNAME/csharp/bin
-#     start_process dotnet $BATS_TEST_DIRNAME/csharp/bin/PGTest.dll 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
-# }
+@test "pg-csharp" {
+    set_custom_teardown "sudo pkill -f dotnet"
+    start_process dotnet build $BATS_TEST_DIRNAME/csharp/PGTest.csproj -o $BATS_TEST_DIRNAME/csharp/bin
+    start_process dotnet $BATS_TEST_DIRNAME/csharp/bin/PGTest.dll 127.0.0.1 5432 postgres "" $BATS_TEST_DIRNAME/test.data
+}
 
 @test "pg-go" {
     start_process go build -o $BATS_TEST_DIRNAME/go/pg $BATS_TEST_DIRNAME/go/pg.go
