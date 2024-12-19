@@ -127,7 +127,7 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver $LOG_LEVEL $PROFILER_PORT $RESTORE_FILE $RESTORE_ENDPOINT $RESTORE_ACCESS_KEY_ID $RESTORE_SECRET_ACCESS_KEY|tee -a "${LOG_PATH}/server.log" 2>&1 &
+      nohup myduckserver $DEFAULT_DB $LOG_LEVEL $PROFILER_PORT $RESTORE_FILE $RESTORE_ENDPOINT $RESTORE_ACCESS_KEY_ID $RESTORE_SECRET_ACCESS_KEY|tee -a "${LOG_PATH}/server.log" 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
@@ -202,6 +202,10 @@ execute_init_sqls() {
 setup() {
     # Setup signal handlers
     trap cleanup SIGTERM SIGINT SIGQUIT
+
+    if [ -n "$DEFAULT_DB" ]; then
+        export DEFAULT_DB="--default-db=$DEFAULT_DB"
+    fi
 
     if [ -n "$LOG_LEVEL" ]; then
         export LOG_LEVEL="--loglevel=$LOG_LEVEL"
