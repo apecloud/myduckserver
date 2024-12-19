@@ -43,9 +43,9 @@ var (
 	address       = "0.0.0.0"
 	port          = 3306
 	socket        string
-	defaultDb     = "mysql"
+	defaultDb     = "myduck"
 	dataDirectory = "."
-	dbFileName    = defaultDb + ".db"
+	dbFileName    string
 	logLevel      = int(logrus.InfoLevel)
 
 	replicaOptions replica.ReplicaOptions
@@ -94,6 +94,7 @@ func ensureSQLTranslate() {
 
 func main() {
 	flag.Parse() // Parse all flags
+	dbFileName = defaultDb + ".db"
 
 	if replicaOptions.ReportPort == 0 {
 		replicaOptions.ReportPort = port

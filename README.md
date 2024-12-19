@@ -99,6 +99,12 @@ This setup exposes:
 - **Port 13306** for MySQL wire protocol connections.
 - **Port 15432** for PostgreSQL wire protocol connections, allowing direct DuckDB SQL.
 
+You can rename the default database by passing an environment variable:
+
+```bash
+docker run -p 13306:3306 -p 15432:5432 --env=DEFAULT_DB=mydbname apecloud/myduckserver:latest
+```
+
 ### Usage
 
 #### Connecting via MySQL client
