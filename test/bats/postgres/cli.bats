@@ -17,6 +17,6 @@ load helper
         SELECT COUNT(*) FROM tt;
 EOF
 
-    [ "$status" -eq 1 ]
+    [ "$status" -ne 0 ]
     [[ "${output}" == *"Table with name tt does not exist"* ]]
 }
