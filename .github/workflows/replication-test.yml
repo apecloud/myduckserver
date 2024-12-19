@@ -44,12 +44,12 @@ jobs:
             # Create Dolt config
             mkdir -p doltcfg
             cat <<EOF > doltcfg/config.json
-            {
-              "sqlserver.global.enforce_gtid_consistency": "ON",
-              "sqlserver.global.gtid_mode": "ON",
-              "sqlserver.global.log_bin": "1"
-            }
-            EOF
+          {
+            "sqlserver.global.enforce_gtid_consistency": "ON",
+            "sqlserver.global.gtid_mode": "ON",
+            "sqlserver.global.log_bin": "1"
+          }
+          EOF
 
             docker run -d --name source-db -p 3306:3306 \
               -v "$(pwd)/doltcfg":/etc/dolt/doltcfg.d/ \
