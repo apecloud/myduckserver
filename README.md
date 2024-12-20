@@ -160,6 +160,12 @@ With MyDuck's powerful analytics capabilities, you can create an hybrid transact
 
 ### Customizing the Docker Container
 
+To rename the default database, pass the `DEFAULT_DB` environment variable to the Docker container:
+
+```bash
+docker run -p 13306:3306 -p 15432:5432 --env=DEFAULT_DB=mydbname apecloud/myduckserver:latest
+```
+
 To initialize MyDuck Server with custom SQL statements, mount your `.sql` file to either `/docker-entrypoint-initdb.d/mysql/` or `/docker-entrypoint-initdb.d/postgres/` inside the Docker container, depending on the SQL dialect you're using.
 
 For example:

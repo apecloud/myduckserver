@@ -54,5 +54,5 @@ jobs:
       run: |
         # for each SQL script in the `pgtest/psql` directory (recursively)
         for f in pgtest/psql/**/*.sql; do
-          psql -h 127.0.0.1 -U mysql -f $f
+          psql -h 127.0.0.1 -U postgres -d postgres -f $f
         done
