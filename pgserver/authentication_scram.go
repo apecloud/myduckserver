@@ -19,7 +19,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 
 	"github.com/dolthub/doltgresql/server/auth"
@@ -38,27 +37,18 @@ const (
 	SASLMechanism_SCRAM_SHA_256_PLUS = "SCRAM-SHA-256-PLUS"
 )
 
-// EnableAuthentication handles whether authentication is enabled. If enabled, it verifies that the given user exists,
-// and checks that the encrypted password is derivable from the stored encrypted password. As the feature is still in
-// development, it is disabled by default. It may be enabled by supplying the environment variable
-// "DOLTGRES_ENABLE_AUTHENTICATION", or by simply setting this boolean to true.
-var EnableAuthentication = false
-
-func init() {
-	if _, ok := os.LookupEnv("DOLTGRES_ENABLE_AUTHENTICATION"); ok {
-		EnableAuthentication = true
-	}
-
+func InitSuperuser(password string) {
 	auth.DropRole("doltgres")
+	auth.DropRole("postgres")
 
 	var err error
-	mysql := auth.CreateDefaultRole("mysql")
-	mysql.CanLogin = true
-	mysql.Password, err = auth.NewScramSha256Password("")
+	postgres := auth.CreateDefaultRole("postgres")
+	postgres.CanLogin = true
+	postgres.Password, err = auth.NewScramSha256Password(password)
 	if err != nil {
 		panic(err)
 	}
-	auth.SetRole(mysql)
+	auth.SetRole(postgres)
 }
 
 // SASLBindingFlag are the flags for gs2-cbind-flag, used in SASL authentication.
@@ -111,7 +101,7 @@ func (h *ConnectionHandler) handleAuthentication(startupMessage *pgproto3.Startu
 			}
 		}
 	} else {
-		username = "doltgres" // TODO: should we use this, or the default "postgres" since programs may default to it?
+		username = "postgres"
 		host = "localhost"
 	}
 	h.mysqlConn.User = username
@@ -119,10 +109,7 @@ func (h *ConnectionHandler) handleAuthentication(startupMessage *pgproto3.Startu
 		User: username,
 		Host: host,
 	}
-	// Since this is all still in development, we'll check if authentication is enabled.
-	if !EnableAuthentication {
-		return h.send(&pgproto3.AuthenticationOk{})
-	}
+
 	// We only support one mechanism for now.
 	if err := h.send(&pgproto3.AuthenticationSASL{
 		AuthMechanisms: []string{

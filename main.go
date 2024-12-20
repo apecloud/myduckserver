@@ -59,6 +59,9 @@ var (
 
 	postgresPort = 5432
 
+	// Shared between the MySQL and Postgres servers.
+	superuserPassword = ""
+
 	defaultTimeZone = ""
 
 	// for Restore
@@ -68,7 +71,7 @@ var (
 	restoreSecretAccessKey = ""
 
 	flightsqlHost = "localhost"
-	flightsqlPort = 47470
+	flightsqlPort = -1 // Disabled by default
 )
 
 func init() {
@@ -80,6 +83,8 @@ func init() {
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
 	flag.StringVar(&defaultDb, "default-db", defaultDb, "The default database name to use.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
+
+	flag.StringVar(&superuserPassword, "superuser-password", superuserPassword, "The password for the superuser account.")
 
 	flag.StringVar(&replicaOptions.ReportHost, "report-host", replicaOptions.ReportHost, "The host name or IP address of the replica to be reported to the source during replica registration.")
 	flag.IntVar(&replicaOptions.ReportPort, "report-port", replicaOptions.ReportPort, "The TCP/IP port number for connecting to the replica, to be reported to the source during replica registration.")
@@ -154,7 +159,7 @@ func main() {
 	engine.Analyzer.Catalog.RegisterFunction(sql.NewContext(context.Background()), myfunc.ExtraBuiltIns...)
 	engine.Analyzer.Catalog.MySQLDb.SetPlugins(plugin.AuthPlugins)
 
-	if err := setPersister(provider, engine); err != nil {
+	if err := setPersister(provider, engine, "root", superuserPassword); err != nil {
 		logrus.Fatalln("Failed to set the persister:", err)
 	}
 
@@ -178,6 +183,8 @@ func main() {
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to create the `public` schema")
 		}
+
+		pgserver.InitSuperuser(superuserPassword)
 
 		pgServer, err := pgserver.NewServer(
 			provider, pool,

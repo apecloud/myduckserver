@@ -163,8 +163,8 @@ jobs:
 
       - name: Start MyDuck Server
         run: |
-          ./myduckserver &
-          sleep 5
+          ./myduckserver --flightsql-port 47470 &
+          sleep 10
 
       - name: Run the Compatibility Test for FlightSQL
         run: |
