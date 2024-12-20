@@ -184,11 +184,10 @@ func main() {
 			logrus.WithError(err).Fatalln("Failed to create the `public` schema")
 		}
 
-		pgserver.InitSuperuser(superuserPassword)
-
 		pgServer, err := pgserver.NewServer(
 			provider, pool,
 			address, postgresPort,
+			superuserPassword,
 			func() *sql.Context {
 				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
 				return sql.NewContext(context.Background(), sql.WithSession(session))
