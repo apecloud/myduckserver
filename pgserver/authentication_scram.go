@@ -37,6 +37,10 @@ const (
 	SASLMechanism_SCRAM_SHA_256_PLUS = "SCRAM-SHA-256-PLUS"
 )
 
+// EnableAuthentication handles whether authentication is enabled. If enabled, it verifies that the given user exists,
+// and checks that the encrypted password is derivable from the stored encrypted password.
+var EnableAuthentication = true
+
 func InitSuperuser(password string) {
 	auth.DropRole("doltgres")
 	auth.DropRole("postgres")
@@ -49,6 +53,12 @@ func InitSuperuser(password string) {
 		panic(err)
 	}
 	auth.SetRole(postgres)
+
+	// Postgres does not allow empty passwords,
+	// so we disable authentication if the superuser password is empty.
+	if password == "" {
+		EnableAuthentication = false
+	}
 }
 
 // SASLBindingFlag are the flags for gs2-cbind-flag, used in SASL authentication.
@@ -109,7 +119,10 @@ func (h *ConnectionHandler) handleAuthentication(startupMessage *pgproto3.Startu
 		User: username,
 		Host: host,
 	}
-
+	// Currently, regression tests disable authentication, since we can't just replay the messages due to nonces.
+	if !EnableAuthentication {
+		return h.send(&pgproto3.AuthenticationOk{})
+	}
 	// We only support one mechanism for now.
 	if err := h.send(&pgproto3.AuthenticationSASL{
 		AuthMechanisms: []string{
