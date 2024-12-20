@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"github.com/sirupsen/logrus"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,9 +22,11 @@ import (
 
 type DatabaseProvider struct {
 	mu                        *sync.RWMutex
+	defaultTimeZone           string
 	connector                 *duckdb.Connector
 	storage                   *stdsql.DB
-	catalogName               string
+	pool                      *ConnectionPool
+	catalogName               string // database name in postgres
 	dataDir                   string
 	dbFile                    string
 	dsn                       string
@@ -37,28 +41,70 @@ var _ configuration.DataDirProvider = (*DatabaseProvider)(nil)
 const readOnlySuffix = "?access_mode=read_only"
 
 func NewInMemoryDBProvider() *DatabaseProvider {
-	prov, err := NewDBProvider(".", "")
+	prov, err := NewDBProvider("", ".", "")
 	if err != nil {
 		panic(err)
 	}
 	return prov
 }
 
-func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
+func NewDBProvider(defaultTimeZone, dataDir, dbFile string) (*DatabaseProvider, error) {
+	prov := &DatabaseProvider{
+		mu:                        &sync.RWMutex{},
+		defaultTimeZone:           defaultTimeZone,
+		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
+	}
+	err := prov.CreateCatalog(dataDir, dbFile)
+	if err != nil {
+		return nil, err
+	}
+	err = prov.SwitchCatalog(dataDir, dbFile)
+	if err != nil {
+		return nil, err
+	}
+	return prov, nil
+}
+
+func (prov *DatabaseProvider) DropCatalog(dataDir, dbFile string) error {
 	dbFile = strings.TrimSpace(dbFile)
-	name := ""
 	dsn := ""
-	if dbFile == "" {
-		// in-memory mode, mainly for testing
-		name = "memory"
-	} else {
-		name = strings.Split(dbFile, ".")[0]
+	if dbFile != "" {
 		dsn = filepath.Join(dataDir, dbFile)
+		// if this is the current catalog, return error
+		if dsn == prov.dsn {
+			return fmt.Errorf("cannot drop the current catalog")
+		}
+		// if file does not exist, return error
+		_, err := os.Stat(dsn)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("database file %s does not exist", dsn)
+		}
+		// delete the file
+		err = os.Remove(dsn)
+		if err != nil {
+			return fmt.Errorf("failed to delete database file %s: %w", dsn, err)
+		}
+		return nil
+	} else {
+		return fmt.Errorf("cannot drop the in-memory catalog")
+	}
+}
+
+func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) error {
+	dbFile = strings.TrimSpace(dbFile)
+	dsn := ""
+	if dbFile != "" {
+		dsn = filepath.Join(dataDir, dbFile)
+		// if already exists, return error
+		_, err := os.Stat(dsn)
+		if err == nil {
+			return fmt.Errorf("database file %s already exists", dsn)
+		}
 	}
 
 	connector, err := duckdb.NewConnector(dsn, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	storage := stdsql.OpenDB(connector)
@@ -75,7 +121,7 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 		if _, err := storage.ExecContext(context.Background(), q); err != nil {
 			storage.Close()
 			connector.Close()
-			return nil, fmt.Errorf("failed to execute boot query %q: %w", q, err)
+			return fmt.Errorf("failed to execute boot query %q: %w", q, err)
 		}
 	}
 
@@ -84,7 +130,7 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 			context.Background(),
 			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
 		); err != nil {
-			return nil, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
+			return fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
 		}
 	}
 
@@ -93,13 +139,13 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 			context.Background(),
 			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
 		); err != nil {
-			return nil, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
+			return fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
 		}
 		if _, err := storage.ExecContext(
 			context.Background(),
 			"CREATE TABLE IF NOT EXISTS "+t.QualifiedName()+"("+t.DDL+")",
 		); err != nil {
-			return nil, fmt.Errorf("failed to create internal table %q: %w", t.Name, err)
+			return fmt.Errorf("failed to create internal table %q: %w", t.Name, err)
 		}
 		for _, row := range t.InitialData {
 			if _, err := storage.ExecContext(
@@ -107,21 +153,69 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 				t.UpsertStmt(),
 				row...,
 			); err != nil {
-				return nil, fmt.Errorf("failed to insert initial data into internal table %q: %w", t.Name, err)
+				return fmt.Errorf("failed to insert initial data into internal table %q: %w", t.Name, err)
 			}
 		}
 	}
+	return nil
+}
 
-	return &DatabaseProvider{
-		mu:                        &sync.RWMutex{},
-		connector:                 connector,
-		storage:                   storage,
-		catalogName:               name,
-		dataDir:                   dataDir,
-		dbFile:                    dbFile,
-		dsn:                       dsn,
-		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
-	}, nil
+func (prov *DatabaseProvider) SwitchCatalog(dataDir, dbFile string) error {
+	dbFile = strings.TrimSpace(dbFile)
+	name := ""
+	dsn := ""
+	if dbFile == "" {
+		// in-memory mode, mainly for testing
+		name = "memory"
+	} else {
+		name = strings.Split(dbFile, ".")[0]
+		dsn = filepath.Join(dataDir, dbFile)
+		// if file does not exist, return error
+		_, err := os.Stat(dsn)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("database file %s does not exist", dsn)
+		}
+	}
+	if dsn == prov.dsn {
+		return nil
+	}
+
+	connector, err := duckdb.NewConnector(dsn, nil)
+	if err != nil {
+		return err
+	}
+
+	storage := stdsql.OpenDB(connector)
+
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+
+	prov.connector = connector
+	prov.storage = storage
+	prov.catalogName = name
+	prov.dataDir = dataDir
+	prov.dbFile = dbFile
+	prov.dsn = dsn
+
+	prov.pool = NewConnectionPool(name, connector, storage)
+	if _, err := prov.pool.ExecContext(context.Background(), "PRAGMA enable_checkpoint_on_shutdown"); err != nil {
+		logrus.WithError(err).Fatalln("Failed to enable checkpoint on shutdown")
+	}
+
+	if prov.defaultTimeZone != "" {
+		_, err := prov.pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, prov.defaultTimeZone))
+		if err != nil {
+			logrus.WithError(err).Fatalln("Failed to set the default time zone")
+		}
+	}
+
+	// Postgres tables are created in the `public` schema by default.
+	// Create the `public` schema if it doesn't exist.
+	_, err = prov.pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
+	if err != nil {
+		logrus.WithError(err).Fatalln("Failed to create the `public` schema")
+	}
+	return nil
 }
 
 func (prov *DatabaseProvider) Close() error {
@@ -135,6 +229,10 @@ func (prov *DatabaseProvider) Connector() *duckdb.Connector {
 
 func (prov *DatabaseProvider) Storage() *stdsql.DB {
 	return prov.storage
+}
+
+func (prov *DatabaseProvider) Pool() *ConnectionPool {
+	return prov.pool
 }
 
 func (prov *DatabaseProvider) CatalogName() string {

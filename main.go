@@ -112,31 +112,18 @@ func main() {
 		return
 	}
 
-	provider, err := catalog.NewDBProvider(dataDirectory, dbFileName)
+	provider, err := catalog.NewDBProvider(defaultTimeZone, dataDirectory, dbFileName)
 	if err != nil {
 		logrus.Fatalln("Failed to open the database:", err)
 	}
 	defer provider.Close()
-
-	pool := backend.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
-
-	if _, err := pool.ExecContext(context.Background(), "PRAGMA enable_checkpoint_on_shutdown"); err != nil {
-		logrus.WithError(err).Fatalln("Failed to enable checkpoint on shutdown")
-	}
-
-	if defaultTimeZone != "" {
-		_, err := pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, defaultTimeZone))
-		if err != nil {
-			logrus.WithError(err).Fatalln("Failed to set the default time zone")
-		}
-	}
 
 	// Clear the pipes directory on startup.
 	backend.RemoveAllPipes(dataDirectory)
 
 	engine := sqle.NewDefault(provider)
 
-	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, pool, provider)
+	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, provider)
 	engine.Analyzer.ExecBuilder = builder
 	engine.Analyzer.Catalog.RegisterFunction(sql.NewContext(context.Background()), myfunc.ExtraBuiltIns...)
 	engine.Analyzer.Catalog.MySQLDb.SetPlugins(plugin.AuthPlugins)
@@ -146,31 +133,24 @@ func main() {
 	}
 
 	replica.RegisterReplicaOptions(&replicaOptions)
-	replica.RegisterReplicaController(provider, engine, pool, builder)
+	replica.RegisterReplicaController(provider, engine, builder)
 
 	serverConfig := server.Config{
 		Protocol: "tcp",
 		Address:  fmt.Sprintf("%s:%d", address, port),
 		Socket:   socket,
 	}
-	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, pool), nil, backend.WrapHandler(pool))
+	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider), nil, backend.WrapHandler(provider))
 	if err != nil {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
 
 	if postgresPort > 0 {
-		// Postgres tables are created in the `public` schema by default.
-		// Create the `public` schema if it doesn't exist.
-		_, err := pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
-		if err != nil {
-			logrus.WithError(err).Fatalln("Failed to create the `public` schema")
-		}
-
 		pgServer, err := pgserver.NewServer(
-			provider, pool,
+			provider,
 			address, postgresPort,
 			func() *sql.Context {
-				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
+				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider)
 				return sql.NewContext(context.Background(), sql.WithSession(session))
 			},
 			pgserver.WithEngine(myServer.Engine),

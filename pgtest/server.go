@@ -20,7 +20,7 @@ import (
 
 func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pgserver.Server, conn *pgx.Conn, close func() error, err error) {
 	provider := catalog.NewInMemoryDBProvider()
-	pool := backend.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
+	pool := catalog.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
 
 	// Postgres tables are created in the `public` schema by default.
 	// Create the `public` schema if it doesn't exist.
@@ -38,7 +38,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 		Address: fmt.Sprintf("127.0.0.1:%d", port-1), // Unused
 	}
 
-	sb := backend.NewSessionBuilder(provider, pool)
+	sb := backend.NewSessionBuilder(provider)
 	tracer := sql.NoopTracer
 
 	sm := server.NewSessionManager(
@@ -52,10 +52,10 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	var connID atomic.Uint32
 
 	pgServer, err = pgserver.NewServer(
-		provider, pool,
+		provider,
 		"127.0.0.1", port,
 		func() *sql.Context {
-			session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
+			session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider)
 			return sql.NewContext(context.Background(), sql.WithSession(session))
 		},
 		pgserver.WithEngine(engine),

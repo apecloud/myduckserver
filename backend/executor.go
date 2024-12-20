@@ -31,7 +31,6 @@ import (
 
 type DuckBuilder struct {
 	base sql.NodeExecBuilder
-	pool *ConnectionPool
 
 	provider *catalog.DatabaseProvider
 
@@ -40,10 +39,9 @@ type DuckBuilder struct {
 
 var _ sql.NodeExecBuilder = (*DuckBuilder)(nil)
 
-func NewDuckBuilder(base sql.NodeExecBuilder, pool *ConnectionPool, provider *catalog.DatabaseProvider) *DuckBuilder {
+func NewDuckBuilder(base sql.NodeExecBuilder, provider *catalog.DatabaseProvider) *DuckBuilder {
 	return &DuckBuilder{
 		base:     base,
-		pool:     pool,
 		provider: provider,
 	}
 }
@@ -106,14 +104,14 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 		return b.base.Build(ctx, root, r)
 	}
 
-	conn, err := b.pool.GetConnForSchema(ctx, ctx.ID(), ctx.GetCurrentDatabase())
+	conn, err := b.provider.Pool().GetConnForSchema(ctx, ctx.ID(), ctx.GetCurrentDatabase())
 	if err != nil {
 		return nil, err
 	}
 
 	switch node := n.(type) {
 	case *plan.Use:
-		useStmt := "USE " + catalog.FullSchemaName(b.pool.catalog, node.Database().Name())
+		useStmt := "USE " + catalog.FullSchemaName(b.provider.CatalogName(), node.Database().Name())
 		if _, err := conn.ExecContext(ctx.Context, useStmt); err != nil {
 			if catalog.IsDuckDBSetSchemaNotFoundError(err) {
 				return nil, sql.ErrDatabaseNotFound.New(node.Database().Name())

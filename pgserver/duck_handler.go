@@ -20,10 +20,12 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"fmt"
+	"github.com/apecloud/myduckserver/catalog"
 	"io"
 	"os"
 	"regexp"
 	"runtime/trace"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +88,14 @@ type DuckHandler struct {
 }
 
 var _ Handler = &DuckHandler{}
+
+func (h *DuckHandler) GetCatalogProvider() *catalog.DatabaseProvider {
+	provider, ok := h.e.Analyzer.Catalog.DbProvider.(*catalog.DatabaseProvider)
+	if !ok {
+		return nil
+	}
+	return provider
+}
 
 // ComBind implements the Handler interface.
 func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared PreparedStatementData, bindVars []any) ([]pgproto3.FieldDescription, error) {
@@ -405,15 +415,10 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		err    error
 	)
 
-	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
-	//   Consequently, the following classification is not perfect.
-	switch parsed.(type) {
-	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
-		*tree.SetVar, *tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
-		*tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo:
+	exec := func() {
 		result, err = adapter.Exec(ctx, query)
 		if err != nil {
-			break
+			return
 		}
 		affected, _ := result.RowsAffected()
 		insertId, _ := result.LastInsertId()
@@ -422,7 +427,57 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			RowsAffected: uint64(affected),
 			InsertID:     uint64(insertId),
 		}))
-
+	}
+	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
+	//   Consequently, the following classification is not perfect.
+	switch parsed.(type) {
+	case *tree.SetVar:
+		setVar := parsed.(*tree.SetVar)
+		if setVar.Name == "database" {
+			provider := h.GetCatalogProvider()
+			if provider == nil {
+				err = fmt.Errorf("database provider not found")
+				break
+			}
+			parts := strings.Split(setVar.Values.String(), ".")
+			err = provider.SwitchCatalog(".", parts[0]+".db")
+			if err != nil {
+				break
+			}
+			exec()
+		} else {
+			exec()
+		}
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
+		*tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
+		*tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo:
+		exec()
+	case *tree.CreateDatabase:
+		provider := h.GetCatalogProvider()
+		if provider == nil {
+			err = fmt.Errorf("database provider not found")
+			break
+		}
+		dbName := parsed.(*tree.CreateDatabase).Name.String()
+		err = provider.CreateCatalog(".", dbName+".db")
+		if err != nil {
+			break
+		}
+		schema = types.OkResultSchema
+		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
+	case *tree.DropDatabase:
+		provider := h.GetCatalogProvider()
+		if provider == nil {
+			err = fmt.Errorf("database provider not found")
+			break
+		}
+		dbName := parsed.(*tree.DropDatabase).Name.String()
+		err = provider.DropCatalog(".", dbName+".db")
+		if err != nil {
+			break
+		}
+		schema = types.OkResultSchema
+		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
 	default:
 		rows, err = adapter.QueryCatalog(ctx, ConvertToSys(query))
 		if err != nil {
