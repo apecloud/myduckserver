@@ -6,6 +6,7 @@ on:
       - main
       - compatibility
       - test
+      - support_flightsql
   pull_request:
     branches: [ "main" ]
 
@@ -134,3 +135,30 @@ jobs:
       - name: Run the Compatibility Test for Python Data Tools
         run: |
           bats ./compatibility/pg-pytools/test.bats
+
+  test-flightsql:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Install dependencies
+      run: |
+        go get .
+
+        pip3 install "sqlglot[rs]"
+        pip3 install "psycopg[binary]" pandas pyarrow polars adbc_driver_flightsql
+
+    - name: Run the Compatibility Test for FlightSQL
+      run: |
+        go test -v ./compatibility/flightsql/go/flightsql_test.go
+        python3 -m unittest discover ./compatibility/flightsql/python -p "flightsql_test.py"

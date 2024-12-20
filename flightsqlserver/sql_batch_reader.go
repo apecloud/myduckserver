@@ -29,6 +29,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
+
 	// "github.com/apache/arrow-go/v18/arrow/internal/debug"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"google.golang.org/grpc/codes"
@@ -51,7 +52,7 @@ func getArrowTypeFromString(dbtype string) arrow.DataType {
 		return arrow.PrimitiveTypes.Int8
 	case "mediumint":
 		return arrow.PrimitiveTypes.Int32
-	case "int", "integer":
+	case "int", "integer", "bigint":
 		return arrow.PrimitiveTypes.Int64
 	case "float":
 		return arrow.PrimitiveTypes.Float32
@@ -61,6 +62,8 @@ func getArrowTypeFromString(dbtype string) arrow.DataType {
 		return arrow.BinaryTypes.Binary
 	case "text", "date", "char", "clob":
 		return arrow.BinaryTypes.String
+	case "boolean":
+		return arrow.FixedWidthTypes.Boolean
 	default:
 		panic("invalid sqlite type: " + dbtype)
 	}
