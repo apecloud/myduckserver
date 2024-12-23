@@ -55,8 +55,8 @@ func NewDBProvider(defaultTimeZone, dataDir, dbFile string) (*DatabaseProvider, 
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
 		dsn:                       "N/A",
 	}
-	err := prov.CreateCatalog(dataDir, dbFile)
-	if err != nil {
+	prepared, err := prov.CreateCatalog(dataDir, dbFile)
+	if !prepared {
 		return nil, err
 	}
 	err = prov.SwitchCatalog(dataDir, dbFile)
@@ -91,7 +91,7 @@ func (prov *DatabaseProvider) DropCatalog(dataDir, dbFile string) error {
 	}
 }
 
-func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) error {
+func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) (bool, error) {
 	dbFile = strings.TrimSpace(dbFile)
 	dsn := ""
 	if dbFile != "" {
@@ -99,13 +99,13 @@ func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) error {
 		// if already exists, return error
 		_, err := os.Stat(dsn)
 		if err == nil {
-			return fmt.Errorf("database file %s already exists", dsn)
+			return true, fmt.Errorf("database file %s already exists", dsn)
 		}
 	}
 
 	connector, err := duckdb.NewConnector(dsn, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	storage := stdsql.OpenDB(connector)
@@ -122,7 +122,7 @@ func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) error {
 		if _, err := storage.ExecContext(context.Background(), q); err != nil {
 			storage.Close()
 			connector.Close()
-			return fmt.Errorf("failed to execute boot query %q: %w", q, err)
+			return false, fmt.Errorf("failed to execute boot query %q: %w", q, err)
 		}
 	}
 
@@ -131,7 +131,7 @@ func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) error {
 			context.Background(),
 			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
 		); err != nil {
-			return fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
+			return false, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
 		}
 	}
 
@@ -140,13 +140,13 @@ func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) error {
 			context.Background(),
 			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
 		); err != nil {
-			return fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
+			return false, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
 		}
 		if _, err := storage.ExecContext(
 			context.Background(),
 			"CREATE TABLE IF NOT EXISTS "+t.QualifiedName()+"("+t.DDL+")",
 		); err != nil {
-			return fmt.Errorf("failed to create internal table %q: %w", t.Name, err)
+			return false, fmt.Errorf("failed to create internal table %q: %w", t.Name, err)
 		}
 		for _, row := range t.InitialData {
 			if _, err := storage.ExecContext(
@@ -154,11 +154,11 @@ func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) error {
 				t.UpsertStmt(),
 				row...,
 			); err != nil {
-				return fmt.Errorf("failed to insert initial data into internal table %q: %w", t.Name, err)
+				return false, fmt.Errorf("failed to insert initial data into internal table %q: %w", t.Name, err)
 			}
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func (prov *DatabaseProvider) SwitchCatalog(dataDir, dbFile string) error {

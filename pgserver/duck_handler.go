@@ -459,7 +459,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 		dbName := parsed.(*tree.CreateDatabase).Name.String()
-		err = provider.CreateCatalog(".", dbName+".db")
+		_, err = provider.CreateCatalog(".", dbName+".db")
 		if err != nil {
 			break
 		}
@@ -479,7 +479,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		schema = types.OkResultSchema
 		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
 	default:
-		rows, err = adapter.QueryCatalog(ctx, ConvertToSys(query))
+		rows, err = adapter.QueryCatalog(ctx, query)
 		if err != nil {
 			break
 		}
