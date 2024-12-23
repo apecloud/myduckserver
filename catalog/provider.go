@@ -183,7 +183,10 @@ func (prov *DatabaseProvider) CreateCatalog(dbFile string) (bool, error) {
 	}
 
 	storage := stdsql.OpenDB(connector)
-	prov.initCatalog(connector, storage)
+	err = prov.initCatalog(connector, storage)
+	if err != nil {
+		return false, err
+	}
 	storage.Close()
 	connector.Close()
 	return true, nil
@@ -219,7 +222,10 @@ func (prov *DatabaseProvider) SwitchCatalog(dbFile string) error {
 
 	// in memory database needs to be initialized every time
 	if dsn == "" {
-		prov.initCatalog(connector, storage)
+		err = prov.initCatalog(connector, storage)
+		if err != nil {
+			return err
+		}
 	}
 
 	prov.mu.Lock()
