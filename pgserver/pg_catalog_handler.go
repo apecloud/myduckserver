@@ -237,9 +237,9 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 				return h.handleCurrentSetting(query)
 			}
 			//if pgCatalogRegex.MatchString(sql) {
-			if isSpecialPgCatalog(query) {
-				return h.handlePgCatalog(query)
-			}
+			//if isSpecialPgCatalog(query) {
+			//	return h.handlePgCatalog(query)
+			//}
 			return false, nil
 		},
 	},
