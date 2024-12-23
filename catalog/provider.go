@@ -165,7 +165,7 @@ func (prov *DatabaseProvider) SwitchCatalog(dataDir, dbFile string) error {
 	dbFile = strings.TrimSpace(dbFile)
 	name := ""
 	dsn := ""
-	if dbFile == "" {
+	if dbFile == "" || dbFile == "memory" {
 		// in-memory mode, mainly for testing
 		name = "memory"
 	} else {
