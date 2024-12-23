@@ -20,18 +20,17 @@ import (
 
 func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pgserver.Server, conn *pgx.Conn, close func() error, err error) {
 	provider := catalog.NewInMemoryDBProvider()
-	pool := catalog.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
 
 	// Postgres tables are created in the `public` schema by default.
 	// Create the `public` schema if it doesn't exist.
-	_, err = pool.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
+	_, err = provider.Pool().ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS public")
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
 	engine := sqle.NewDefault(provider)
 
-	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, pool, provider)
+	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, provider)
 	engine.Analyzer.ExecBuilder = builder
 
 	config := server.Config{
@@ -74,7 +73,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	close = func() error {
 		pgServer.Listener.Close()
 		return errors.Join(
-			pool.Close(),
+			provider.Pool().Close(),
 			provider.Close(),
 		)
 	}

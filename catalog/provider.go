@@ -25,8 +25,8 @@ type DatabaseProvider struct {
 	defaultTimeZone           string
 	connector                 *duckdb.Connector
 	storage                   *stdsql.DB
-	pool                      *ConnectionPool
-	catalogName               string // database name in postgres
+	pool                      *ConnectionPool // TODO(Noy): Merge into the provider
+	catalogName               string          // database name in postgres
 	dataDir                   string
 	dbFile                    string
 	dsn                       string
@@ -53,6 +53,7 @@ func NewDBProvider(defaultTimeZone, dataDir, dbFile string) (*DatabaseProvider, 
 		mu:                        &sync.RWMutex{},
 		defaultTimeZone:           defaultTimeZone,
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
+		dsn:                       "N/A",
 	}
 	err := prov.CreateCatalog(dataDir, dbFile)
 	if err != nil {
