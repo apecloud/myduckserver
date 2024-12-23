@@ -297,13 +297,12 @@ func (e *DuckTestEngine) Close() error {
 func NewEngine(t *testing.T, harness enginetest.Harness, dbProvider sql.DatabaseProvider, setupData []setup.SetupScript, statsProvider sql.StatsProvider, server bool) (enginetest.QueryEngine, error) {
 	// Create the connection pool first, as it is needed by `NewEngineWithProvider`
 	provider := dbProvider.(*catalog.DatabaseProvider)
-	pool := catalog.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
-	harness.(*DuckHarness).pool = pool
+	harness.(*DuckHarness).pool = provider.Pool()
 
 	e := enginetest.NewEngineWithProvider(t, harness, dbProvider)
 	e.Analyzer.Catalog.StatsProvider = statsProvider
 
-	builder := backend.NewDuckBuilder(e.Analyzer.ExecBuilder, pool, provider)
+	builder := backend.NewDuckBuilder(e.Analyzer.ExecBuilder, provider)
 	e.Analyzer.ExecBuilder = builder
 
 	ctx := enginetest.NewContext(harness)
@@ -329,7 +328,7 @@ func NewEngine(t *testing.T, harness enginetest.Harness, dbProvider sql.Database
 			return nil, err
 		}
 	}
-	return &DuckTestEngine{qe, pool}, nil
+	return &DuckTestEngine{qe, provider.Pool()}, nil
 }
 
 func (m *DuckHarness) SupportsNativeIndexCreation() bool {

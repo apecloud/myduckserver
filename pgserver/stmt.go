@@ -278,7 +278,7 @@ func getPgCatalogRegex() *regexp.Regexp {
 			}
 			tableNames = append(tableNames, table.Name)
 		}
-		pgCatalogRegex = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
+		pgCatalogRegex = regexp.MustCompile(`(?i)\b(FROM|JOIN|INTO)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
 	})
 	return pgCatalogRegex
 }

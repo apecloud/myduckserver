@@ -94,7 +94,9 @@ func (prov *DatabaseProvider) DropCatalog(dataDir, dbFile string) error {
 func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) (bool, error) {
 	dbFile = strings.TrimSpace(dbFile)
 	dsn := ""
-	if dbFile != "" {
+	if dbFile == "" || dbFile == "memory.db" {
+		dsn = "memory"
+	} else {
 		dsn = filepath.Join(dataDir, dbFile)
 		// if already exists, return error
 		_, err := os.Stat(dsn)
@@ -168,6 +170,7 @@ func (prov *DatabaseProvider) SwitchCatalog(dataDir, dbFile string) error {
 	if dbFile == "" || dbFile == "memory.db" {
 		// in-memory mode, mainly for testing
 		name = "memory"
+		dsn = "memory"
 	} else {
 		name = strings.Split(dbFile, ".")[0]
 		dsn = filepath.Join(dataDir, dbFile)
