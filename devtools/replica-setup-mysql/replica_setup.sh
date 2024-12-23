@@ -57,11 +57,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# if SOURCE_PASSWORD is empty, set SOURCE_NO_PASSWORD_OPTION to "--no-password"
+# if SOURCE_PASSWORD is empty, set SOURCE_PASSWORD_OPTION to "--no-password"
 if [[ -z "$SOURCE_PASSWORD" ]]; then
-    SOURCE_NO_PASSWORD_OPTION="--no-password"
+    SOURCE_PASSWORD_OPTION="--no-password"
 else
-    SOURCE_NO_PASSWORD_OPTION=""
+    SOURCE_PASSWORD_OPTION=""
+fi
+
+# if MYDUCK_PASSWORD is empty, set MYDUCK_PASSWORD_OPTION to "--no-password"
+if [[ -z "$MYDUCK_PASSWORD" ]]; then
+    MYDUCK_PASSWORD_OPTION="--no-password"
+else
+    MYDUCK_PASSWORD_OPTION="--password=$MYDUCK_PASSWORD"
 fi
 
 # Check if all parameters are set

@@ -13,7 +13,7 @@ OS=$(uname -s)
 
 # Use the EXECUTED_GTID_SET variable from the previous steps
 if [ $GTID_MODE == "ON" ] && [ ! -z "$EXECUTED_GTID_SET" ]; then
-  mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
+  mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=${MYDUCK_USER} ${MYDUCK_PASSWORD_OPTION} <<EOF
 SET GLOBAL gtid_purged = "${EXECUTED_GTID_SET}";
 EOF
 fi
@@ -31,7 +31,7 @@ if [ $GTID_MODE == "OFF" ]; then
   SOURCE_LOG_POS=${BINLOG_POS}"
 fi
 
-mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=root --no-password <<EOF
+mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT} --user=${MYDUCK_USER} ${MYDUCK_PASSWORD_OPTION} <<EOF
 ${REPLICATION_CMD};
 START REPLICA;
 EOF

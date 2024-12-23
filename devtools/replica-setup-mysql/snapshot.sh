@@ -36,7 +36,7 @@ echo "Thread count set to: $THREAD_COUNT"
 
 echo "Copying data from MySQL to MyDuck..."
 # Run mysqlsh command and capture the output
-output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" \
+output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_PASSWORD_OPTION -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" \
     --users false \
     --consistent false \
     --ignore-existing-objects true \
@@ -84,6 +84,6 @@ fi
 echo "Snapshot completed successfully."
 
 echo "Reset replica_is_loading_snapshot..."
-mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT}  --user=root --no-password <<EOF
+mysqlsh --sql --host=${MYDUCK_HOST} --port=${MYDUCK_PORT}  --user=${MYDUCK_USER} {MYDUCK_PASSWORD_OPTION} <<EOF
 SET GLOBAL replica_is_loading_snapshot = OFF;
 EOF

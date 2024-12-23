@@ -93,6 +93,13 @@ cleanup() {
     fi
 }
 
+# Define MYSQL_PASSWORD_OPTION based on SUPERUSER_PASSWORD
+if [ -z "$SUPERUSER_PASSWORD" ]; then
+    MYSQL_PASSWORD_OPTION="--no-password"
+else
+    MYSQL_PASSWORD_OPTION="--password=$SUPERUSER_PASSWORD"
+fi
+
 # Function to run replica setup
 run_replica_setup() {
     case "$SOURCE_TYPE" in
@@ -116,6 +123,8 @@ run_replica_setup() {
             ;;
     esac
 
+    export MYDUCK_PASSWORD="${SUPERUSER_PASSWORD}"
+
     # Run replica_setup.sh and check for errors
     if source replica_setup.sh; then
         echo "Replica setup completed."
@@ -127,7 +136,16 @@ run_replica_setup() {
 
 run_server_in_background() {
       cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; exit 1; }
-      nohup myduckserver $DEFAULT_DB $SUPERUSER_PASSWORD $LOG_LEVEL $PROFILER_PORT $RESTORE_FILE $RESTORE_ENDPOINT $RESTORE_ACCESS_KEY_ID $RESTORE_SECRET_ACCESS_KEY | tee -a "${LOG_PATH}/server.log" 2>&1 &
+      nohup myduckserver \
+        ${DEFAULT_DB_OPTION} \
+        ${SUPERUSER_PASSWORD_OPTION} \
+        ${LOG_LEVEL_OPTION} \
+        ${PROFILER_PORT_OPTION} \
+        ${RESTORE_FILE_OPTION} \
+        ${RESTORE_ENDPOINT_OPTION} \
+        ${RESTORE_ACCESS_KEY_ID_OPTION} \
+        ${RESTORE_SECRET_ACCESS_KEY_OPTION} \
+        | tee -a "${LOG_PATH}/server.log" 2>&1 &
       echo "$!" > "${PID_FILE}"
 }
 
@@ -141,10 +159,10 @@ wait_for_my_duck_server_ready() {
 
     echo "Waiting for MyDuck Server at $host:$port to be ready..."
 
-    until mysqlsh --sql --host "$host" --port "$port" --user "$user" --no-password --execute "SELECT VERSION();" &> /dev/null; do
+    until mysqlsh --sql --host "$host" --port "$port" --user "$user" ${MYSQL_PASSWORD_OPTION} --execute "SELECT VERSION();" &> /dev/null; do
         attempt=$((attempt+1))
         if [ "$attempt" -ge "$max_attempts" ]; then
-            echo "Error: MySQL connection timed out after $max_attempts attempts."
+            echo "Error: MySQL connection timeout after $max_attempts attempts."
             exit 1
         fi
         echo "Attempt $attempt/$max_attempts: MyDuck Server is unavailable - retrying in $wait_time seconds..."
@@ -186,14 +204,14 @@ execute_init_sqls() {
         echo "Executing init SQL scripts from $INIT_SQLS_DIR/mysql..."
         for file in "$INIT_SQLS_DIR/mysql"/*.sql; do
             echo "Executing $file..."
-            mysqlsh --sql --host "$host" --port "$mysql_port" --user "$mysql_user" --no-password --file="$file"
+            mysqlsh --sql --host "$host" --port "$mysql_port" --user "$mysql_user" $MYSQL_PASSWORD_OPTION --file="$file"
         done
     fi
     if [ -d "$INIT_SQLS_DIR/postgres" ] && [ "$(find "$INIT_SQLS_DIR/postgres" -maxdepth 1 -name '*.sql' -type f | head -n 1)" ]; then
         echo "Executing init SQL scripts from $INIT_SQLS_DIR/postgres..."
         for file in "$INIT_SQLS_DIR/postgres"/*.sql; do
             echo "Executing $file..."
-            psql -h "$host" -p "$postgres_port" -U "$postgres_user" -f "$file"
+            PGPASSWORD="$SUPERUSER_PASSWORD" psql -h "$host" -p "$postgres_port" -U "$postgres_user" -f "$file"
         done
     fi
 }
@@ -204,35 +222,35 @@ setup() {
     trap cleanup SIGTERM SIGINT SIGQUIT
 
     if [ -n "$DEFAULT_DB" ]; then
-        export DEFAULT_DB="--default-db=$DEFAULT_DB"
+        export DEFAULT_DB_OPTION="--default-db=$DEFAULT_DB"
     fi
 
     if [ -n "$SUPERUSER_PASSWORD" ]; then
-        export SUPERUSER_PASSWORD="--superuser-password=$SUPERUSER_PASSWORD"
+        export SUPERUSER_PASSWORD_OPTION="--superuser-password=$SUPERUSER_PASSWORD"
     fi
 
     if [ -n "$LOG_LEVEL" ]; then
-        export LOG_LEVEL="--loglevel=$LOG_LEVEL"
+        export LOG_LEVEL_OPTION="--loglevel=$LOG_LEVEL"
     fi
     
     if [ -n "$PROFILER_PORT" ]; then
-        export PROFILER_PORT="--profiler-port=$PROFILER_PORT"
+        export PROFILER_PORT_OPTION="--profiler-port=$PROFILER_PORT"
     fi
 
     if [ -n "$RESTORE_FILE" ]; then
-        export RESTORE_FILE="--restore-file=$RESTORE_FILE"
+        export RESTORE_FILE_OPTION="--restore-file=$RESTORE_FILE"
     fi
 
     if [ -n "$RESTORE_ENDPOINT" ]; then
-        export RESTORE_ENDPOINT="--restore-endpoint=$RESTORE_ENDPOINT"
+        export RESTORE_ENDPOINT_OPTION="--restore-endpoint=$RESTORE_ENDPOINT"
     fi
 
     if [ -n "$RESTORE_ACCESS_KEY_ID" ]; then
-        export RESTORE_ACCESS_KEY_ID="--restore-access-key-id=$RESTORE_ACCESS_KEY_ID"
+        export RESTORE_ACCESS_KEY_ID_OPTION="--restore-access-key-id=$RESTORE_ACCESS_KEY_ID"
     fi
 
     if [ -n "$RESTORE_SECRET_ACCESS_KEY" ]; then
-        export RESTORE_SECRET_ACCESS_KEY="--restore-secret-access-key=$RESTORE_SECRET_ACCESS_KEY"
+        export RESTORE_SECRET_ACCESS_KEY_OPTION="--restore-secret-access-key=$RESTORE_SECRET_ACCESS_KEY"
     fi
 
     # Ensure required directories exist
