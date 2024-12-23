@@ -109,11 +109,65 @@ func (prov *DatabaseProvider) ExistCatalog(dbFile string) bool {
 	}
 }
 
+func (prov *DatabaseProvider) initCatalog(connector *duckdb.Connector, storage *stdsql.DB) error {
+	bootQueries := []string{
+		"INSTALL arrow",
+		"LOAD arrow",
+		"INSTALL icu",
+		"LOAD icu",
+		"INSTALL postgres_scanner",
+		"LOAD postgres_scanner",
+	}
+	for _, q := range bootQueries {
+		if _, err := storage.ExecContext(context.Background(), q); err != nil {
+			storage.Close()
+			connector.Close()
+			return fmt.Errorf("failed to execute boot query %q: %w", q, err)
+		}
+	}
+
+	for _, t := range internalSchemas {
+		if _, err := storage.ExecContext(
+			context.Background(),
+			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
+		); err != nil {
+			return fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
+		}
+	}
+
+	for _, t := range internalTables {
+		if _, err := storage.ExecContext(
+			context.Background(),
+			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
+		); err != nil {
+			return fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
+		}
+		if _, err := storage.ExecContext(
+			context.Background(),
+			"CREATE TABLE IF NOT EXISTS "+t.QualifiedName()+"("+t.DDL+")",
+		); err != nil {
+			return fmt.Errorf("failed to create internal table %q: %w", t.Name, err)
+		}
+		for _, row := range t.InitialData {
+			if _, err := storage.ExecContext(
+				context.Background(),
+				t.UpsertStmt(),
+				row...,
+			); err != nil {
+				return fmt.Errorf("failed to insert initial data into internal table %q: %w", t.Name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 func (prov *DatabaseProvider) CreateCatalog(dbFile string) (bool, error) {
 	dbFile = strings.TrimSpace(dbFile)
 	dsn := ""
+	// in memory database does not need to be created
 	if dbFile == "" || dbFile == "memory.db" {
-		dsn = "memory"
+		return true, nil
 	} else {
 		dsn = filepath.Join(prov.dataDir, dbFile)
 		// if already exists, return error
@@ -129,55 +183,9 @@ func (prov *DatabaseProvider) CreateCatalog(dbFile string) (bool, error) {
 	}
 
 	storage := stdsql.OpenDB(connector)
-
-	bootQueries := []string{
-		"INSTALL arrow",
-		"LOAD arrow",
-		"INSTALL icu",
-		"LOAD icu",
-		"INSTALL postgres_scanner",
-		"LOAD postgres_scanner",
-	}
-	for _, q := range bootQueries {
-		if _, err := storage.ExecContext(context.Background(), q); err != nil {
-			storage.Close()
-			connector.Close()
-			return false, fmt.Errorf("failed to execute boot query %q: %w", q, err)
-		}
-	}
-
-	for _, t := range internalSchemas {
-		if _, err := storage.ExecContext(
-			context.Background(),
-			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
-		); err != nil {
-			return false, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
-		}
-	}
-
-	for _, t := range internalTables {
-		if _, err := storage.ExecContext(
-			context.Background(),
-			"CREATE SCHEMA IF NOT EXISTS "+t.Schema,
-		); err != nil {
-			return false, fmt.Errorf("failed to create internal schema %q: %w", t.Schema, err)
-		}
-		if _, err := storage.ExecContext(
-			context.Background(),
-			"CREATE TABLE IF NOT EXISTS "+t.QualifiedName()+"("+t.DDL+")",
-		); err != nil {
-			return false, fmt.Errorf("failed to create internal table %q: %w", t.Name, err)
-		}
-		for _, row := range t.InitialData {
-			if _, err := storage.ExecContext(
-				context.Background(),
-				t.UpsertStmt(),
-				row...,
-			); err != nil {
-				return false, fmt.Errorf("failed to insert initial data into internal table %q: %w", t.Name, err)
-			}
-		}
-	}
+	prov.initCatalog(connector, storage)
+	storage.Close()
+	connector.Close()
 	return true, nil
 }
 
@@ -188,7 +196,7 @@ func (prov *DatabaseProvider) SwitchCatalog(dbFile string) error {
 	if dbFile == "" || dbFile == "memory.db" {
 		// in-memory mode, mainly for testing
 		name = "memory"
-		dsn = "memory"
+		dsn = ""
 	} else {
 		name = strings.Split(dbFile, ".")[0]
 		dsn = filepath.Join(prov.dataDir, dbFile)
@@ -208,6 +216,11 @@ func (prov *DatabaseProvider) SwitchCatalog(dbFile string) error {
 	}
 
 	storage := stdsql.OpenDB(connector)
+
+	// in memory database needs to be initialized every time
+	if dsn == "" {
+		prov.initCatalog(connector, storage)
+	}
 
 	prov.mu.Lock()
 	prov.ready = false
