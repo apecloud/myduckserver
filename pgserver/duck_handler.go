@@ -440,7 +440,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 				break
 			}
 			parts := strings.Split(setVar.Values.String(), ".")
-			err = provider.SwitchCatalog(".", parts[0]+".db")
+			err = provider.SwitchCatalog(parts[0] + ".db")
 			if err != nil {
 				break
 			}
@@ -459,7 +459,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 		dbName := parsed.(*tree.CreateDatabase).Name.String()
-		_, err = provider.CreateCatalog(".", dbName+".db")
+		_, err = provider.CreateCatalog(dbName + ".db")
 		if err != nil {
 			break
 		}
@@ -472,7 +472,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 		dbName := parsed.(*tree.DropDatabase).Name.String()
-		err = provider.DropCatalog(".", dbName+".db")
+		err = provider.DropCatalog(dbName + ".db")
 		if err != nil {
 			break
 		}

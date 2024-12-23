@@ -31,6 +31,7 @@ type DatabaseProvider struct {
 	dbFile                    string
 	dsn                       string
 	externalProcedureRegistry sql.ExternalStoredProcedureRegistry
+	ready                     bool
 }
 
 var _ sql.DatabaseProvider = (*DatabaseProvider)(nil)
@@ -48,29 +49,35 @@ func NewInMemoryDBProvider() *DatabaseProvider {
 	return prov
 }
 
-func NewDBProvider(defaultTimeZone, dataDir, dbFile string) (*DatabaseProvider, error) {
+func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (*DatabaseProvider, error) {
 	prov := &DatabaseProvider{
 		mu:                        &sync.RWMutex{},
 		defaultTimeZone:           defaultTimeZone,
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
+		dataDir:                   dataDir,
 		dsn:                       "N/A",
 	}
-	prepared, err := prov.CreateCatalog(dataDir, dbFile)
+	prepared, err := prov.CreateCatalog(defaultDB)
 	if !prepared {
 		return nil, err
 	}
-	err = prov.SwitchCatalog(dataDir, dbFile)
+	err = prov.SwitchCatalog(defaultDB)
 	if err != nil {
 		return nil, err
 	}
+	prov.ready = true
 	return prov, nil
 }
 
-func (prov *DatabaseProvider) DropCatalog(dataDir, dbFile string) error {
+func (prov *DatabaseProvider) IsReady() bool {
+	return prov.ready
+}
+
+func (prov *DatabaseProvider) DropCatalog(dbFile string) error {
 	dbFile = strings.TrimSpace(dbFile)
 	dsn := ""
 	if dbFile != "" {
-		dsn = filepath.Join(dataDir, dbFile)
+		dsn = filepath.Join(prov.dataDir, dbFile)
 		// if this is the current catalog, return error
 		if dsn == prov.dsn {
 			return fmt.Errorf("cannot drop the current catalog")
@@ -91,13 +98,24 @@ func (prov *DatabaseProvider) DropCatalog(dataDir, dbFile string) error {
 	}
 }
 
-func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) (bool, error) {
+func (prov *DatabaseProvider) ExistCatalog(dbFile string) bool {
+	if dbFile == "" || dbFile == "memory.db" {
+		return true
+	} else {
+		dsn := filepath.Join(prov.dataDir, dbFile)
+		// if already exists, return error
+		_, err := os.Stat(dsn)
+		return os.IsExist(err)
+	}
+}
+
+func (prov *DatabaseProvider) CreateCatalog(dbFile string) (bool, error) {
 	dbFile = strings.TrimSpace(dbFile)
 	dsn := ""
 	if dbFile == "" || dbFile == "memory.db" {
 		dsn = "memory"
 	} else {
-		dsn = filepath.Join(dataDir, dbFile)
+		dsn = filepath.Join(prov.dataDir, dbFile)
 		// if already exists, return error
 		_, err := os.Stat(dsn)
 		if err == nil {
@@ -163,7 +181,7 @@ func (prov *DatabaseProvider) CreateCatalog(dataDir, dbFile string) (bool, error
 	return true, nil
 }
 
-func (prov *DatabaseProvider) SwitchCatalog(dataDir, dbFile string) error {
+func (prov *DatabaseProvider) SwitchCatalog(dbFile string) error {
 	dbFile = strings.TrimSpace(dbFile)
 	name := ""
 	dsn := ""
@@ -173,7 +191,7 @@ func (prov *DatabaseProvider) SwitchCatalog(dataDir, dbFile string) error {
 		dsn = "memory"
 	} else {
 		name = strings.Split(dbFile, ".")[0]
-		dsn = filepath.Join(dataDir, dbFile)
+		dsn = filepath.Join(prov.dataDir, dbFile)
 		// if file does not exist, return error
 		_, err := os.Stat(dsn)
 		if os.IsNotExist(err) {
@@ -192,12 +210,15 @@ func (prov *DatabaseProvider) SwitchCatalog(dataDir, dbFile string) error {
 	storage := stdsql.OpenDB(connector)
 
 	prov.mu.Lock()
-	defer prov.mu.Unlock()
+	prov.ready = false
+	defer func() {
+		prov.ready = true
+		prov.mu.Unlock()
+	}()
 
 	prov.connector = connector
 	prov.storage = storage
 	prov.catalogName = name
-	prov.dataDir = dataDir
 	prov.dbFile = dbFile
 	prov.dsn = dsn
 

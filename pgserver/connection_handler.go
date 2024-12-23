@@ -332,7 +332,7 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 		_ = h.send(&pgproto3.ErrorResponse{
 			Severity: string(ErrorResponseSeverity_Fatal),
 			Code:     "3D000",
-			Message:  fmt.Sprintf(`"database "%s" does not exist"`, db),
+			Message:  fmt.Sprintf(`"database "%s" does not exist, err: %v"`, db, err),
 			Routine:  "InitPostgres",
 		})
 		return err
