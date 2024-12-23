@@ -29,6 +29,11 @@ var wellKnownStatementTags = map[string]struct{}{
 	"DETACH":  {},
 }
 
+const (
+	pgCatalogPrefix = "pg_catalog"
+	sysPrefix       = "__sys__"
+)
+
 func IsWellKnownStatementTag(tag string) bool {
 	_, ok := wellKnownStatementTags[tag]
 	return ok
@@ -284,5 +289,27 @@ func getPgCatalogRegex() *regexp.Regexp {
 }
 
 func ConvertToSys(sql string) string {
-	return getPgCatalogRegex().ReplaceAllString(RemoveComments(sql), " __sys__.$1")
+	return getPgCatalogRegex().ReplaceAllStringFunc(RemoveComments(sql), func(match string) string {
+		// match is expected to be in the format: "[FROM|JOIN] [pg_catalog|__sys__][.][tableName]"
+		matchArr := strings.Fields(match)
+		if len(matchArr) < 2 {
+			return match
+		}
+
+		// Split the second part (schema.table) by '.' to separate schema and table name
+		tableSchema := strings.Split(matchArr[1], ".")
+
+		// If no schema is provided, we add the sysPrefix to the table name
+		if len(tableSchema) < 2 {
+			return matchArr[0] + " " + sysPrefix + "." + tableSchema[0]
+		}
+
+		// If the schema is "pg_catalog", replace it with __sys__
+		if tableSchema[0] == pgCatalogPrefix {
+			return matchArr[0] + " " + sysPrefix + "." + tableSchema[1]
+		}
+
+		// Return the match unchanged if no conditions were met
+		return match
+	})
 }

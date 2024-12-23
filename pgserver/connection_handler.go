@@ -1212,15 +1212,6 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 		query = modifier(query)
 	}
 
-	// Check if the query is a full match query, and if so, handle it as a full match query.
-	fullMatchQuery := handleFullMatchQuery(query)
-	if fullMatchQuery != "" {
-		return []ConvertedStatement{{
-			String:     fullMatchQuery,
-			PgParsable: true,
-		}}, nil
-	}
-
 	// Check if the query is a subscription query, and if so, parse it as a subscription query.
 	subscriptionConfig, err := parseSubscriptionSQL(query)
 	if subscriptionConfig != nil && err == nil {
@@ -1259,7 +1250,13 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 
 	convertedStmts := make([]ConvertedStatement, len(stmts))
 	for i, stmt := range stmts {
-		convertedStmts[i].String = stmt.SQL
+		// Check if the query is a full match query, and if so, handle it as a full match query.
+		fullMatchQuery := handleFullMatchQuery(stmt.SQL)
+		if fullMatchQuery != "" {
+			convertedStmts[i].String = fullMatchQuery
+		} else {
+			convertedStmts[i].String = stmt.SQL
+		}
 		convertedStmts[i].AST = stmt.AST
 		convertedStmts[i].Tag = stmt.AST.StatementTag()
 		convertedStmts[i].PgParsable = true
