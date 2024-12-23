@@ -39,7 +39,7 @@ func (m *MySQLPersister) Persist(ctx *sql.Context, data []byte) error {
 }
 
 // https://github.com/dolthub/go-mysql-server/blob/main/_example/users_example.go
-func setPersister(provider sql.DatabaseProvider, engine *sqle.Engine) error {
+func setPersister(provider sql.DatabaseProvider, engine *sqle.Engine, superuser, password string) error {
 	session := memory.NewSession(sql.NewBaseSession(), provider)
 	ctx := sql.NewContext(context.Background(), sql.WithSession(session))
 	ctx.SetCurrentDatabase("mysql")
@@ -67,16 +67,16 @@ func setPersister(provider sql.DatabaseProvider, engine *sqle.Engine) error {
 		}
 	}
 
-	addAccount := func(account string, address string) {
+	addAccount := func(account, password, address string) {
 		ed := mysqlDb.Editor()
 		defer ed.Close()
-		mysqlDb.AddSuperUser(ed, account, address, "")
+		mysqlDb.AddSuperUser(ed, account, address, password)
 	}
 
 	// Modify it to "%" to allow accepting connections outside when myduckserver runs in Docker
 	// TODO should add a config to decide this or some better way to support this
 	// addAccount("root", "localhost")
-	addAccount("root", "%")
+	addAccount(superuser, password, "%")
 
 	return nil
 }

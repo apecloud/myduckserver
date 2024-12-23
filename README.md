@@ -163,18 +163,34 @@ With MyDuck's powerful analytics capabilities, you can create an hybrid transact
 To rename the default database, pass the `DEFAULT_DB` environment variable to the Docker container:
 
 ```bash
-docker run -p 13306:3306 -p 15432:5432 --env=DEFAULT_DB=mydbname apecloud/myduckserver:latest
+docker run -d -p 13306:3306 -p 15432:5432 \
+    --env=DEFAULT_DB=mydbname \
+    apecloud/myduckserver:latest
 ```
+
+
+To set the superuser password, pass the `SUPERUSER_PASSWORD` environment variable to the Docker container:
+
+```bash
+docker run -d -p 13306:3306 -p 15432:5432 \
+    --env=SUPERUSER_PASSWORD=mysecretpassword \
+    apecloud/myduckserver:latest
+```
+
 
 To initialize MyDuck Server with custom SQL statements, mount your `.sql` file to either `/docker-entrypoint-initdb.d/mysql/` or `/docker-entrypoint-initdb.d/postgres/` inside the Docker container, depending on the SQL dialect you're using.
 
 For example:
 ```bash
 # Execute `init.sql` via MySQL protocol
-docker run -d -p 13306:3306 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/mysql/init.sql apecloud/myduckserver:latest
+docker run -d -p 13306:3306 --name=myduck \
+    -v ./init.sql:/docker-entrypoint-initdb.d/mysql/init.sql \
+    apecloud/myduckserver:latest
 
 # Execute `init.sql` via PostgreSQL protocol
-docker run -d -p 15432:5432 --name=myduck -v ./init.sql:/docker-entrypoint-initdb.d/postgres/init.sql apecloud/myduckserver:latest
+docker run -d -p 15432:5432 --name=myduck \
+    -v ./init.sql:/docker-entrypoint-initdb.d/postgres/init.sql \
+    apecloud/myduckserver:latest
 ```
 
 ### Query Parquet Files
