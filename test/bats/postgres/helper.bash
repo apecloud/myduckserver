@@ -8,9 +8,9 @@ PG_USER=${PG_USER:-"postgres"}
 psql_exec() {
     local query="$1"
     shift
-    psql -h "$PG_HOST" -U "$PG_USER" -F ',' --no-align --field-separator ',' --pset footer=off "$@" -c "$query"
+    psql -h "$PG_HOST" -U "$PG_USER" -F ',' --no-align --field-separator ',' -t --pset footer=off -v "ON_ERROR_STOP=1" "$@" -c "$query"
 }
 
 psql_exec_stdin() {
-    psql -h "$PG_HOST" -U "$PG_USER" -F ',' --no-align --field-separator ',' --pset footer=off "$@"
+    psql -h "$PG_HOST" -U "$PG_USER" -F ',' --no-align --field-separator ',' -t --pset footer=off -v "ON_ERROR_STOP=1" "$@"
 }

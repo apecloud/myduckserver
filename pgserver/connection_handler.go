@@ -117,9 +117,10 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 func (h *ConnectionHandler) closeBackendConn() {
 	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
 	if err != nil {
-		fmt.Println(err.Error())
+		h.logger.WithError(err).Error("Failed to create context for closing backend connection")
+		return
 	}
-	adapter.CloseBackendConn(ctx)
+	adapter.CloseConn(ctx)
 }
 
 // HandleConnection handles a connection's session, reading messages, executing queries, and sending responses.

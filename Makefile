@@ -46,7 +46,7 @@ run: build
 # Build image locally using Docker Buildx (for testing)
 .PHONY: build-image-local
 build-image-local:
-	docker buildx build -t $(IMAGE_NAME):$(IMAGE_TAG) --load .
+	docker buildx build -f docker/Dockerfile -t $(IMAGE_NAME):$(IMAGE_TAG) --load .
 
 .PHONY: run-image
 run-image:

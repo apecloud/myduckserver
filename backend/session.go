@@ -231,8 +231,8 @@ func (sess *Session) CloseTxn() {
 	sess.pool.CloseTxn(sess.ID())
 }
 
-// CloseBackendConn implements adapter.ConnectionHolder.
-func (sess *Session) CloseBackendConn() {
+// CloseConn implements adapter.ConnectionHolder.
+func (sess *Session) CloseConn() {
 	sess.pool.CloseConn(sess.ID())
 }
 

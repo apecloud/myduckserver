@@ -16,6 +16,7 @@ package backend
 import (
 	"context"
 	stdsql "database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -110,7 +111,16 @@ func (p *ConnectionPool) CloseConn(id uint32) error {
 	entry, ok := p.conns.Load(id)
 	if ok {
 		conn := entry.(*stdsql.Conn)
-		if err := conn.Close(); err != nil {
+		if err := conn.Raw(func(driverConn any) error {
+			// When driver.ErrBadConn is returned here,
+			// the connection will not be put back into
+			// the pool and will be closed instead.
+			return driver.ErrBadConn
+		}); err != nil && !errors.Is(err, driver.ErrBadConn) {
+			logrus.WithError(err).Warn("Failed to close connection during Raw function call")
+			return err
+		}
+		if err := conn.Close(); err != nil && !errors.Is(err, stdsql.ErrConnDone) {
 			logrus.WithError(err).Warn("Failed to close connection")
 			return err
 		}

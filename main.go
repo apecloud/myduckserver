@@ -18,9 +18,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
+	"net"
+	"os"
+	"strconv"
 
+	"github.com/apache/arrow-go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/flightsqlserver"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
@@ -43,14 +50,17 @@ var (
 	address       = "0.0.0.0"
 	port          = 3306
 	socket        string
-	defaultDb     = "mysql"
+	defaultDb     = "myduck"
 	dataDirectory = "."
-	dbFileName    = defaultDb + ".db"
+	dbFileName    string
 	logLevel      = int(logrus.InfoLevel)
 
 	replicaOptions replica.ReplicaOptions
 
 	postgresPort = 5432
+
+	// Shared between the MySQL and Postgres servers.
+	superuserPassword = ""
 
 	defaultTimeZone = ""
 
@@ -59,6 +69,9 @@ var (
 	restoreEndpoint        = ""
 	restoreAccessKeyId     = ""
 	restoreSecretAccessKey = ""
+
+	flightsqlHost = "localhost"
+	flightsqlPort = -1 // Disabled by default
 )
 
 func init() {
@@ -70,6 +83,8 @@ func init() {
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
 	flag.StringVar(&defaultDb, "default-db", defaultDb, "The default database name to use.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
+
+	flag.StringVar(&superuserPassword, "superuser-password", superuserPassword, "The password for the superuser account.")
 
 	flag.StringVar(&replicaOptions.ReportHost, "report-host", replicaOptions.ReportHost, "The host name or IP address of the replica to be reported to the source during replica registration.")
 	flag.IntVar(&replicaOptions.ReportPort, "report-port", replicaOptions.ReportPort, "The TCP/IP port number for connecting to the replica, to be reported to the source during replica registration.")
@@ -83,6 +98,9 @@ func init() {
 	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint of object storage service to restore from.")
 	flag.StringVar(&restoreAccessKeyId, "restore-access-key-id", restoreAccessKeyId, "The access key ID to restore from.")
 	flag.StringVar(&restoreSecretAccessKey, "restore-secret-access-key", restoreSecretAccessKey, "The secret access key to restore from.")
+
+	flag.StringVar(&flightsqlHost, "flightsql-host", flightsqlHost, "hostname for the Flight SQL service")
+	flag.IntVar(&flightsqlPort, "flightsql-port", flightsqlPort, "port number for the Flight SQL service")
 }
 
 func ensureSQLTranslate() {
@@ -94,6 +112,7 @@ func ensureSQLTranslate() {
 
 func main() {
 	flag.Parse() // Parse all flags
+	dbFileName = defaultDb + ".db"
 
 	if replicaOptions.ReportPort == 0 {
 		replicaOptions.ReportPort = port
@@ -140,7 +159,7 @@ func main() {
 	engine.Analyzer.Catalog.RegisterFunction(sql.NewContext(context.Background()), myfunc.ExtraBuiltIns...)
 	engine.Analyzer.Catalog.MySQLDb.SetPlugins(plugin.AuthPlugins)
 
-	if err := setPersister(provider, engine); err != nil {
+	if err := setPersister(provider, engine, "root", superuserPassword); err != nil {
 		logrus.Fatalln("Failed to set the persister:", err)
 	}
 
@@ -168,6 +187,7 @@ func main() {
 		pgServer, err := pgserver.NewServer(
 			provider, pool,
 			address, postgresPort,
+			superuserPassword,
 			func() *sql.Context {
 				session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
 				return sql.NewContext(context.Background(), sql.WithSession(session))
@@ -189,6 +209,29 @@ func main() {
 		// Load the configuration for the Postgres server.
 		pgconfig.Init()
 		go pgServer.Start()
+	}
+
+	if flightsqlPort > 0 {
+
+		db := provider.Storage()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer db.Close()
+
+		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		server := flight.NewServerWithMiddleware(nil)
+		server.RegisterFlightService(flightsql.NewFlightServer(srv))
+		server.Init(net.JoinHostPort(*&flightsqlHost, strconv.Itoa(*&flightsqlPort)))
+		server.SetShutdownOnSignals(os.Interrupt, os.Kill)
+
+		fmt.Println("Starting SQLite Flight SQL Server on", server.Addr(), "...")
+
+		go server.Serve()
 	}
 
 	if err = myServer.Start(); err != nil {

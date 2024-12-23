@@ -54,6 +54,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	pgServer, err = pgserver.NewServer(
 		provider, pool,
 		"127.0.0.1", port,
+		"",
 		func() *sql.Context {
 			session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
 			return sql.NewContext(context.Background(), sql.WithSession(session))
@@ -79,7 +80,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	}
 
 	// Since we use the in-memory DuckDB storage, we need to connect to the `memory` database
-	dsn := fmt.Sprintf("postgres://mysql:@127.0.0.1:%d/memory", port)
+	dsn := fmt.Sprintf("postgres://postgres:@127.0.0.1:%d/memory", port)
 	conn, err = pgx.Connect(ctx, dsn)
 	if err != nil {
 		close()

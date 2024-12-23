@@ -132,7 +132,7 @@ jobs:
       - name: Backup MyDuck and Insert more data into source PG
         run: |
           psql "postgres://postgres:@127.0.0.1:5432" <<-EOSQL
-            BACKUP DATABASE mysql TO 's3c://myduck-backup/myduck/myduck.bak' 
+            BACKUP DATABASE myduck TO 's3c://myduck-backup/myduck/myduck.bak' 
               ENDPOINT = '127.0.0.1:9001' 
               ACCESS_KEY_ID = 'minioadmin' 
               SECRET_ACCESS_KEY = 'minioadmin';
@@ -141,7 +141,7 @@ jobs:
           
           mc stat myminio/myduck-backup/myduck/myduck.bak
           pkill myduckserver
-          rm -f ./mysql.db
+          rm -f ./myduck.db
           
           # Insert more data in primary while MyDuck is down
           psql "postgres://postgres:password@localhost:15432/testdb" \

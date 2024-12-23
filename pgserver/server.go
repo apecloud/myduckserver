@@ -2,6 +2,7 @@ package pgserver
 
 import (
 	"fmt"
+
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/server"
@@ -16,7 +17,8 @@ type Server struct {
 	NewInternalCtx func() *sql.Context
 }
 
-func NewServer(provider *catalog.DatabaseProvider, connPool *backend.ConnectionPool, host string, port int, newCtx func() *sql.Context, options ...ListenerOpt) (*Server, error) {
+func NewServer(provider *catalog.DatabaseProvider, connPool *backend.ConnectionPool, host string, port int, password string, newCtx func() *sql.Context, options ...ListenerOpt) (*Server, error) {
+	InitSuperuser(password)
 	addr := fmt.Sprintf("%s:%d", host, port)
 	l, err := server.NewListener("tcp", addr, "")
 	if err != nil {
