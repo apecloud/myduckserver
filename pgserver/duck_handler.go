@@ -444,13 +444,10 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			if err != nil {
 				break
 			}
-			// If the query contains a schema name, we need to execute the query to set the schema as default.
-			if len(parts) > 1 {
-				exec()
-			} else {
-				schema = types.OkResultSchema
-				iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
-			}
+			// exec() will get the current schema from the underlying connection. If we don't set the schema to public here,
+			// exec() may fail because of the absence of the old schema in the newly switched catalog.
+			ctx.Session.SetCurrentDatabase("public")
+			exec()
 		} else {
 			exec()
 		}
