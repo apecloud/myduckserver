@@ -178,6 +178,10 @@ var InternalTables = struct {
 	//             https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-REPLICATION-VIEW
 	PGStatReplication InternalTable
 	PGRange           InternalTable
+	PGType            InternalTable
+	PGProc            InternalTable
+	PGClass           InternalTable
+	PGNamespace       InternalTable
 }{
 	PersistentVariable: InternalTable{
 		Schema:       "__sys__",
@@ -293,15 +297,333 @@ var InternalTables = struct {
 		Name:         "pg_range",
 		KeyColumns:   []string{"rngtypid"},
 		ValueColumns: []string{"rngsubtype", "rngmultitypid", "rngcollation", "rngsubopc", "rngcanonical", "rngsubdiff"},
-		DDL:          "rngtypid TEXT PRIMARY KEY, rngsubtype TEXT, rngmultitypid TEXT, rngcollation TEXT, rngsubopc TEXT, rngcanonical TEXT, rngsubdiff TEXT",
-		InitialData: [][]any{
-			{"3904", "23", "4451", "0", "1978", "int4range_canonical", "int4range_subdiff"},
-			{"3906", "1700", "4532", "0", "3125", "-", "numrange_subdiff"},
-			{"3908", "1114", "4533", "0", "3128", "-", "tsrange_subdiff"},
-			{"3910", "1184", "4534", "0", "3127", "-", "tstzrange_subdiff"},
-			{"3912", "1082", "4535", "0", "3122", "daterange_canonical", "daterange_subdiff"},
-			{"3926", "20", "4536", "0", "3124", "int8range_canonical", "int8range_subdiff"},
+		DDL:          "rngtypid BIGINT PRIMARY KEY, rngsubtype BIGINT, rngmultitypid BIGINT, rngcollation BIGINT, rngsubopc BIGINT, rngcanonical VARCHAR, rngsubdiff VARCHAR",
+		InitialData:  InitialDatas.PGRange,
+	},
+	// postgres=# \d+ pg_type
+	//                                             Table "pg_catalog.pg_type"
+	//       Column      |     Type      | Collation | Nullable | Default |  Storage  | Compression | Stats target | Description
+	//-------------------+---------------+-----------+----------+---------+-----------+-------------+--------------+-------------
+	// oid               | BIGINT        |           | not null |         | plain     |             |              |
+	// typname           | VARCHAR       |           | not null |         | plain     |             |              |
+	// typnamespace      | BIGINT        |           | not null |         | plain     |             |              |
+	// typowner          | BIGINT        |           | not null |         | plain     |             |              |
+	// typlen            | SMALLINT      |           | not null |         | plain     |             |              |
+	// typbyval          | BOOLEAN       |           | not null |         | plain     |             |              |
+	// typtype           | CHAR          |           | not null |         | plain     |             |              |
+	// typcategory       | CHAR          |           | not null |         | plain     |             |              |
+	// typispreferred    | BOOLEAN       |           | not null |         | plain     |             |              |
+	// typisdefined      | BOOLEAN       |           | not null |         | plain     |             |              |
+	// typdelim          | CHAR          |           | not null |         | plain     |             |              |
+	// typrelid          | BIGINT        |           | not null |         | plain     |             |              |
+	// typsubscript      | BIGINT        |           | not null |         | plain     |             |              |
+	// typelem           | BIGINT        |           | not null |         | plain     |             |              |
+	// typarray          | BIGINT        |           | not null |         | plain     |             |              |
+	// typinput          | BIGINT        |           | not null |         | plain     |             |              |
+	// typoutput         | BIGINT        |           | not null |         | plain     |             |              |
+	// typreceive        | BIGINT        |           | not null |         | plain     |             |              |
+	// typsend           | BIGINT        |           | not null |         | plain     |             |              |
+	// typmodin          | BIGINT        |           | not null |         | plain     |             |              |
+	// typmodout         | BIGINT        |           | not null |         | plain     |             |              |
+	// typanalyze        | BIGINT        |           | not null |         | plain     |             |              |
+	// typalign          | CHAR          |           | not null |         | plain     |             |              |
+	// typstorage        | CHAR          |           | not null |         | plain     |             |              |
+	// typnotnull        | BOOLEAN       |           | not null |         | plain     |             |              |
+	// typbasetype       | BIGINT        |           | not null |         | plain     |             |              |
+	// typtypmod         | INTEGER       |           | not null |         | plain     |             |              |
+	// typndims          | INTEGER       |           | not null |         | plain     |             |              |
+	// typcollation      | BIGINT        |           | not null |         | plain     |             |              |
+	// typdefaultbin     | VARCHAR       | C         |          |         | extended  |             |              |
+	// typdefault        | TEXT          | C         |          |         | extended  |             |              |
+	// typacl            | TEXT[]        |           |          |         | extended  |             |              |
+	PGType: InternalTable{
+		Schema: "__sys__",
+		Name:   "pg_type",
+		KeyColumns: []string{
+			"oid",
 		},
+		ValueColumns: []string{
+			"typname", "typnamespace", "typowner", "typlen", "typbyval",
+			"typtype", "typcategory", "typispreferred", "typisdefined", "typdelim",
+			"typrelid", "typsubscript", "typelem", "typarray", "typinput",
+			"typoutput", "typreceive", "typsend", "typmodin", "typmodout",
+			"typanalyze", "typalign", "typstorage", "typnotnull", "typbasetype",
+			"typtypmod", "typndims", "typcollation", "typdefaultbin", "typdefault",
+			"typacl",
+		},
+		DDL: "oid BIGINT NOT NULL PRIMARY KEY, " + // Replace oid with BIGINT
+			"typname VARCHAR NOT NULL, " + // Replace name with VARCHAR
+			"typnamespace BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typowner BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typlen SMALLINT NOT NULL, " + // Supported as-is
+			"typbyval BOOLEAN NOT NULL, " + // Supported as-is
+			"typtype CHAR NOT NULL, " + // Replace \"char\" with CHAR
+			"typcategory CHAR NOT NULL, " + // Replace \"char\" with CHAR
+			"typispreferred BOOLEAN NOT NULL, " + // Supported as-is
+			"typisdefined BOOLEAN NOT NULL, " + // Supported as-is
+			"typdelim CHAR NOT NULL, " + // Replace \"char\" with CHAR
+			"typrelid BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typsubscript BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typelem BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typarray BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typinput BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typoutput BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typreceive BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typsend BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typmodin BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typmodout BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typanalyze BIGINT NOT NULL, " + // Replace regproc with VARCHAR
+			"typalign CHAR NOT NULL, " + // Replace \"char\" with CHAR
+			"typstorage CHAR NOT NULL, " + // Replace \"char\" with CHAR
+			"typnotnull BOOLEAN NOT NULL, " + // Supported as-is
+			"typbasetype BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typtypmod INTEGER NOT NULL, " + // Supported as-is
+			"typndims INTEGER NOT NULL, " + // Supported as-is
+			"typcollation BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typdefaultbin VARCHAR, " + // Replace pg_node_tree with VARCHAR
+			"typdefault TEXT, " + // Supported as-is
+			"typacl TEXT",
+		InitialData: InitialDatas.PGType,
+	},
+	//postgres=# \d+ pg_proc;
+	//                                              Table "pg_catalog.pg_proc"
+	//     Column      |     Type     | Collation | Nullable | Default | Storage  | Compression | Stats target | Description
+	//-----------------+--------------+-----------+----------+---------+----------+-------------+--------------+-------------
+	// oid             | oid          |           | not null |         | plain    |             |              |
+	// proname         | name         |           | not null |         | plain    |             |              |
+	// pronamespace    | oid          |           | not null |         | plain    |             |              |
+	// proowner        | oid          |           | not null |         | plain    |             |              |
+	// prolang         | oid          |           | not null |         | plain    |             |              |
+	// procost         | real         |           | not null |         | plain    |             |              |
+	// prorows         | real         |           | not null |         | plain    |             |              |
+	// provariadic     | oid          |           | not null |         | plain    |             |              |
+	// prosupport      | regproc      |           | not null |         | plain    |             |              |
+	// prokind         | "char"       |           | not null |         | plain    |             |              |
+	// prosecdef       | boolean      |           | not null |         | plain    |             |              |
+	// proleakproof    | boolean      |           | not null |         | plain    |             |              |
+	// proisstrict     | boolean      |           | not null |         | plain    |             |              |
+	// proretset       | boolean      |           | not null |         | plain    |             |              |
+	// provolatile     | "char"       |           | not null |         | plain    |             |              |
+	// proparallel     | "char"       |           | not null |         | plain    |             |              |
+	// pronargs        | smallint     |           | not null |         | plain    |             |              |
+	// pronargdefaults | smallint     |           | not null |         | plain    |             |              |
+	// prorettype      | oid          |           | not null |         | plain    |             |              |
+	// proargtypes     | oidvector    |           | not null |         | plain    |             |              |
+	// proallargtypes  | oid[]        |           |          |         | extended |             |              |
+	// proargmodes     | "char"[]     |           |          |         | extended |             |              |
+	// proargnames     | text[]       | C         |          |         | extended |             |              |
+	// proargdefaults  | pg_node_tree | C         |          |         | extended |             |              |
+	// protrftypes     | oid[]        |           |          |         | extended |             |              |
+	// prosrc          | text         | C         | not null |         | extended |             |              |
+	// probin          | text         | C         |          |         | extended |             |              |
+	// prosqlbody      | pg_node_tree | C         |          |         | extended |             |              |
+	// proconfig       | text[]       | C         |          |         | extended |             |              |
+	// proacl          | aclitem[]    |           |          |         | extended |             |              |
+	PGProc: InternalTable{
+		Schema: "__sys__",
+		Name:   "pg_proc",
+		KeyColumns: []string{
+			"oid",
+		},
+		ValueColumns: []string{
+			"proname",
+			"pronamespace",
+			"proowner",
+			"prolang",
+			"procost",
+			"prorows",
+			"provariadic",
+			"prosupport",
+			"prokind",
+			"prosecdef",
+			"proleakproof",
+			"proisstrict",
+			"proretset",
+			"provolatile",
+			"proparallel",
+			"pronargs",
+			"pronargdefaults",
+			"prorettype",
+			"proargtypes",
+			"proallargtypes",
+			"proargmodes",
+			"proargnames",
+			"proargdefaults",
+			"protrftypes",
+			"prosrc",
+			"probin",
+			"prosqlbody",
+			"proconfig",
+			"proacl",
+		},
+		DDL: "oid BIGINT NOT NULL PRIMARY KEY," +
+			"proname VARCHAR NOT NULL," +
+			"pronamespace BIGINT NOT NULL," +
+			"proowner BIGINT NOT NULL," +
+			"prolang BIGINT NOT NULL," +
+			"procost FLOAT NOT NULL," +
+			"prorows FLOAT NOT NULL," +
+			"provariadic BIGINT NOT NULL," +
+			"prosupport BIGINT NOT NULL," + // Replaced regproc with BIGINT
+			"prokind CHAR NOT NULL," +
+			"prosecdef BOOLEAN NOT NULL," +
+			"proleakproof BOOLEAN NOT NULL," +
+			"proisstrict BOOLEAN NOT NULL," +
+			"proretset BOOLEAN NOT NULL," +
+			"provolatile CHAR NOT NULL," +
+			"proparallel CHAR NOT NULL," +
+			"pronargs SMALLINT NOT NULL," +
+			"pronargdefaults SMALLINT NOT NULL," +
+			"prorettype BIGINT NOT NULL," +
+			"proargtypes VARCHAR NOT NULL," + // Replaced oidvector with VARCHAR
+			"proallargtypes VARCHAR," + // Replaced oid[] with VARCHAR
+			"proargmodes VARCHAR," + // Replaced 'char'[] with VARCHAR
+			"proargnames VARCHAR," + // Replaced text[] with VARCHAR
+			"proargdefaults TEXT," + // Replaced pg_node_tree with TEXT
+			"protrftypes VARCHAR," + // Replaced oid[] with VARCHAR
+			"prosrc TEXT NOT NULL," +
+			"probin TEXT," +
+			"prosqlbody TEXT," + // Replaced pg_node_tree with TEXT
+			"proconfig VARCHAR," + // Replaced text[] with VARCHAR
+			"proacl VARCHAR", // Replaced aclitem[] with VARCHAR
+		InitialData: InitialDatas.PGProc,
+	},
+
+	// postgres=# \d+ pg_class;
+	//                                                Table "pg_catalog.pg_class"
+	//       Column        |     Type     | Collation | Nullable | Default | Storage  | Compression | Stats target | Description
+	//---------------------+--------------+-----------+----------+---------+----------+-------------+--------------+-------------
+	// oid                 | oid          |           | not null |         | plain    |             |              |
+	// relname             | name         |           | not null |         | plain    |             |              |
+	// relnamespace        | oid          |           | not null |         | plain    |             |              |
+	// reltype             | oid          |           | not null |         | plain    |             |              |
+	// reloftype           | oid          |           | not null |         | plain    |             |              |
+	// relowner            | oid          |           | not null |         | plain    |             |              |
+	// relam               | oid          |           | not null |         | plain    |             |              |
+	// relfilenode         | oid          |           | not null |         | plain    |             |              |
+	// reltablespace       | oid          |           | not null |         | plain    |             |              |
+	// relpages            | integer      |           | not null |         | plain    |             |              |
+	// reltuples           | real         |           | not null |         | plain    |             |              |
+	// relallvisible       | integer      |           | not null |         | plain    |             |              |
+	// reltoastrelid       | oid          |           | not null |         | plain    |             |              |
+	// relhasindex         | boolean      |           | not null |         | plain    |             |              |
+	// relisshared         | boolean      |           | not null |         | plain    |             |              |
+	// relpersistence      | "char"       |           | not null |         | plain    |             |              |
+	// relkind             | "char"       |           | not null |         | plain    |             |              |
+	// relnatts            | smallint     |           | not null |         | plain    |             |              |
+	// relchecks           | smallint     |           | not null |         | plain    |             |              |
+	// relhasrules         | boolean      |           | not null |         | plain    |             |              |
+	// relhastriggers      | boolean      |           | not null |         | plain    |             |              |
+	// relhassubclass      | boolean      |           | not null |         | plain    |             |              |
+	// relrowsecurity      | boolean      |           | not null |         | plain    |             |              |
+	// relforcerowsecurity | boolean      |           | not null |         | plain    |             |              |
+	// relispopulated      | boolean      |           | not null |         | plain    |             |              |
+	// relreplident        | "char"       |           | not null |         | plain    |             |              |
+	// relispartition      | boolean      |           | not null |         | plain    |             |              |
+	// relrewrite          | oid          |           | not null |         | plain    |             |              |
+	// relfrozenxid        | xid          |           | not null |         | plain    |             |              |
+	// relminmxid          | xid          |           | not null |         | plain    |             |              |
+	// relacl              | aclitem[]    |           |          |         | extended |             |              |
+	// reloptions          | text[]       | C         |          |         | extended |             |              |
+	// relpartbound        | pg_node_tree | C         |          |         | extended |             |              |
+	PGClass: InternalTable{
+		Schema: "__sys__",
+		Name:   "pg_class",
+		KeyColumns: []string{
+			"oid",
+		},
+		ValueColumns: []string{
+			"relname",
+			"relnamespace",
+			"reltype",
+			"reloftype",
+			"relowner",
+			"relam",
+			"relfilenode",
+			"reltablespace",
+			"relpages",
+			"reltuples",
+			"relallvisible",
+			"reltoastrelid",
+			"relhasindex",
+			"relisshared",
+			"relpersistence",
+			"relkind",
+			"relnatts",
+			"relchecks",
+			"relhasrules",
+			"relhastriggers",
+			"relhassubclass",
+			"relrowsecurity",
+			"relforcerowsecurity",
+			"relispopulated",
+			"relreplident",
+			"relispartition",
+			"relrewrite",
+			"relfrozenxid",
+			"relminmxid",
+			"relacl",
+			"reloptions",
+			"relpartbound",
+		},
+		DDL: "oid BIGINT NOT NULL PRIMARY KEY," +
+			"relname VARCHAR NOT NULL," +
+			"relnamespace BIGINT NOT NULL," +
+			"reltype BIGINT NOT NULL," +
+			"reloftype BIGINT NOT NULL," +
+			"relowner BIGINT NOT NULL," +
+			"relam BIGINT NOT NULL," +
+			"relfilenode BIGINT NOT NULL," +
+			"reltablespace BIGINT NOT NULL," +
+			"relpages INTEGER NOT NULL," +
+			"reltuples FLOAT NOT NULL," +
+			"relallvisible INTEGER NOT NULL," +
+			"reltoastrelid BIGINT NOT NULL," +
+			"relhasindex BOOLEAN NOT NULL," +
+			"relisshared BOOLEAN NOT NULL," +
+			"relpersistence CHAR NOT NULL," +
+			"relkind CHAR NOT NULL," +
+			"relnatts SMALLINT NOT NULL," +
+			"relchecks SMALLINT NOT NULL," +
+			"relhasrules BOOLEAN NOT NULL," +
+			"relhastriggers BOOLEAN NOT NULL," +
+			"relhassubclass BOOLEAN NOT NULL," +
+			"relrowsecurity BOOLEAN NOT NULL," +
+			"relforcerowsecurity BOOLEAN NOT NULL," +
+			"relispopulated BOOLEAN NOT NULL," +
+			"relreplident CHAR NOT NULL," +
+			"relispartition BOOLEAN NOT NULL," +
+			"relrewrite BIGINT NOT NULL," +
+			"relfrozenxid BIGINT NOT NULL," +
+			"relminmxid BIGINT NOT NULL," +
+			"relacl TEXT," +
+			"reloptions TEXT," +
+			"relpartbound TEXT",
+		InitialData: InitialDatas.PGClass,
+	},
+	//  Table "pg_catalog.pg_namespace"
+	//  Column  |   Type    | Collation | Nullable | Default | Storage  | Compression | Stats target | Description
+	//----------+-----------+-----------+----------+---------+----------+-------------+--------------+-------------
+	// oid      | oid       |           | not null |         | plain    |             |              |
+	// nspname  | name      |           | not null |         | plain    |             |              |
+	// nspowner | oid       |           | not null |         | plain    |             |              |
+	// nspacl   | aclitem[] |           |          |         | extended |             |              |
+	PGNamespace: InternalTable{
+		Schema: "__sys__",
+		Name:   "pg_namespace",
+		KeyColumns: []string{
+			"oid",
+		},
+		ValueColumns: []string{
+			"nspname",
+			"nspowner",
+			"nspacl",
+		},
+		DDL: "oid BIGINT NOT NULL PRIMARY KEY," +
+			"nspname VARCHAR NOT NULL," +
+			"nspowner BIGINT NOT NULL," +
+			"nspacl TEXT",
+		InitialData: InitialDatas.PGNamespace,
 	},
 }
 
@@ -312,6 +634,10 @@ var internalTables = []InternalTable{
 	InternalTables.GlobalStatus,
 	InternalTables.PGStatReplication,
 	InternalTables.PGRange,
+	InternalTables.PGType,
+	InternalTables.PGProc,
+	InternalTables.PGClass,
+	InternalTables.PGNamespace,
 }
 
 func GetInternalTables() []InternalTable {

@@ -424,7 +424,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		}))
 
 	default:
-		rows, err = adapter.QueryCatalog(ctx, ConvertToSys(query))
+		rows, err = adapter.QueryCatalog(ctx, query)
 		if err != nil {
 			break
 		}
