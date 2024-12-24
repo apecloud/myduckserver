@@ -440,11 +440,17 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 				break
 			}
 			parts := strings.Split(setVar.Values.String(), ".")
-			err = provider.SwitchCatalog(parts[0] + ".db")
+			err = provider.SwitchCatalog(parts[0])
 			if err != nil {
 				break
 			}
-			exec()
+			// If the query contains a schema name, we need to execute the query to set the schema as default.
+			if len(parts) > 1 {
+				exec()
+			} else {
+				schema = types.OkResultSchema
+				iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
+			}
 		} else {
 			exec()
 		}
@@ -459,7 +465,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 		dbName := parsed.(*tree.CreateDatabase).Name.String()
-		_, err = provider.CreateCatalog(dbName + ".db")
+		_, err = provider.CreateCatalog(dbName)
 		if err != nil {
 			break
 		}
@@ -472,7 +478,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 		dbName := parsed.(*tree.DropDatabase).Name.String()
-		err = provider.DropCatalog(dbName + ".db")
+		err = provider.DropCatalog(dbName)
 		if err != nil {
 			break
 		}

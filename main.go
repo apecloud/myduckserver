@@ -52,7 +52,6 @@ var (
 	socket        string
 	defaultDb     = "myduck"
 	dataDirectory = "."
-	dbFileName    string
 	logLevel      = int(logrus.InfoLevel)
 
 	replicaOptions replica.ReplicaOptions
@@ -112,7 +111,6 @@ func ensureSQLTranslate() {
 
 func main() {
 	flag.Parse() // Parse all flags
-	dbFileName = defaultDb + ".db"
 
 	if replicaOptions.ReportPort == 0 {
 		replicaOptions.ReportPort = port
@@ -130,7 +128,7 @@ func main() {
 		return
 	}
 
-	provider, err := catalog.NewDBProvider(defaultTimeZone, dataDirectory, dbFileName)
+	provider, err := catalog.NewDBProvider(defaultTimeZone, dataDirectory, defaultDb)
 	if err != nil {
 		logrus.Fatalln("Failed to open the database:", err)
 	}
@@ -243,7 +241,7 @@ func executeRestoreIfNeeded() {
 	msg, err := pgserver.ExecuteRestore(
 		defaultDb,
 		dataDirectory,
-		dbFileName,
+		defaultDb+".db",
 		restoreFile,
 		restoreEndpoint,
 		restoreAccessKeyId,

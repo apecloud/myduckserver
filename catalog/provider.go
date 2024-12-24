@@ -69,46 +69,6 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (*DatabaseProvide
 	return prov, nil
 }
 
-func (prov *DatabaseProvider) IsReady() bool {
-	return prov.ready
-}
-
-func (prov *DatabaseProvider) DropCatalog(dbFile string) error {
-	dbFile = strings.TrimSpace(dbFile)
-	dsn := ""
-	if dbFile != "" {
-		dsn = filepath.Join(prov.dataDir, dbFile)
-		// if this is the current catalog, return error
-		if dsn == prov.dsn {
-			return fmt.Errorf("cannot drop the current catalog")
-		}
-		// if file does not exist, return error
-		_, err := os.Stat(dsn)
-		if os.IsNotExist(err) {
-			return fmt.Errorf("database file %s does not exist", dsn)
-		}
-		// delete the file
-		err = os.Remove(dsn)
-		if err != nil {
-			return fmt.Errorf("failed to delete database file %s: %w", dsn, err)
-		}
-		return nil
-	} else {
-		return fmt.Errorf("cannot drop the in-memory catalog")
-	}
-}
-
-func (prov *DatabaseProvider) ExistCatalog(dbFile string) bool {
-	if dbFile == "" || dbFile == "memory.db" {
-		return true
-	} else {
-		dsn := filepath.Join(prov.dataDir, dbFile)
-		// if already exists, return error
-		_, err := os.Stat(dsn)
-		return os.IsExist(err)
-	}
-}
-
 func (prov *DatabaseProvider) initCatalog(connector *duckdb.Connector, storage *stdsql.DB) error {
 	bootQueries := []string{
 		"INSTALL arrow",
@@ -162,8 +122,49 @@ func (prov *DatabaseProvider) initCatalog(connector *duckdb.Connector, storage *
 	return nil
 }
 
-func (prov *DatabaseProvider) CreateCatalog(dbFile string) (bool, error) {
-	dbFile = strings.TrimSpace(dbFile)
+func (prov *DatabaseProvider) IsReady() bool {
+	return prov.ready
+}
+
+func (prov *DatabaseProvider) DropCatalog(dbName string) error {
+	dbFile := strings.TrimSpace(dbName) + ".db"
+	dsn := ""
+	if dbFile != "" {
+		dsn = filepath.Join(prov.dataDir, dbFile)
+		// if this is the current catalog, return error
+		if dsn == prov.dsn {
+			return fmt.Errorf("cannot drop the current catalog")
+		}
+		// if file does not exist, return error
+		_, err := os.Stat(dsn)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("database file %s does not exist", dsn)
+		}
+		// delete the file
+		err = os.Remove(dsn)
+		if err != nil {
+			return fmt.Errorf("failed to delete database file %s: %w", dsn, err)
+		}
+		return nil
+	} else {
+		return fmt.Errorf("cannot drop the in-memory catalog")
+	}
+}
+
+func (prov *DatabaseProvider) ExistCatalog(dbName string) bool {
+	dbFile := strings.TrimSpace(dbName) + ".db"
+	if dbFile == "" || dbFile == "memory.db" {
+		return true
+	} else {
+		dsn := filepath.Join(prov.dataDir, dbFile)
+		// if already exists, return error
+		_, err := os.Stat(dsn)
+		return os.IsExist(err)
+	}
+}
+
+func (prov *DatabaseProvider) CreateCatalog(dbName string) (ready bool, err error) {
+	dbFile := strings.TrimSpace(dbName) + ".db"
 	dsn := ""
 	// in memory database does not need to be created
 	if dbFile == "" || dbFile == "memory.db" {
@@ -192,8 +193,8 @@ func (prov *DatabaseProvider) CreateCatalog(dbFile string) (bool, error) {
 	return true, nil
 }
 
-func (prov *DatabaseProvider) SwitchCatalog(dbFile string) error {
-	dbFile = strings.TrimSpace(dbFile)
+func (prov *DatabaseProvider) SwitchCatalog(dbName string) error {
+	dbFile := strings.TrimSpace(dbName) + ".db"
 	name := ""
 	dsn := ""
 	if dbFile == "" || dbFile == "memory.db" {
