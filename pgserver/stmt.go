@@ -278,11 +278,11 @@ func getPgCatalogRegex() *regexp.Regexp {
 			}
 			tableNames = append(tableNames, table.Name)
 		}
-		pgCatalogRegex = regexp.MustCompile(`(?i)\b(?:FROM|JOIN)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
+		pgCatalogRegex = regexp.MustCompile(`(?i)\b(FROM|JOIN|INTO)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
 	})
 	return pgCatalogRegex
 }
 
 func ConvertToSys(sql string) string {
-	return getPgCatalogRegex().ReplaceAllString(RemoveComments(sql), " __sys__.$1")
+	return getPgCatalogRegex().ReplaceAllString(RemoveComments(sql), "$1 __sys__.$2")
 }

@@ -138,7 +138,7 @@ func (h *ConnectionHandler) restartServer(readOnly bool) error {
 		return err
 	}
 
-	return h.server.ConnPool.Reset(provider.CatalogName(), provider.Connector(), provider.Storage())
+	return h.server.Provider.Pool().Reset(provider.CatalogName(), provider.Connector(), provider.Storage())
 }
 
 func doCheckpoint(sqlCtx *sql.Context) error {

@@ -49,7 +49,7 @@ type DuckHarness struct {
 	numTablePartitions int
 	//	readonly                  bool
 	provider                  sql.DatabaseProvider
-	pool                      *backend.ConnectionPool
+	pool                      *catalog.ConnectionPool
 	indexDriverInitializer    IndexDriverInitializer
 	driver                    sql.IndexDriver
 	nativeIndexSupport        bool
@@ -122,7 +122,7 @@ func (m *DuckHarness) SessionBuilder() server.SessionBuilder {
 		client := sql.Client{Address: host, User: user, Capabilities: c.Capabilities}
 		baseSession := sql.NewBaseSessionWithClientServer(addr, client, c.ConnectionID)
 		memSession := memory.NewSession(baseSession, m.getProvider())
-		return backend.NewSession(memSession, m.getProvider().(*catalog.DatabaseProvider), m.pool), nil
+		return backend.NewSession(memSession, m.getProvider().(*catalog.DatabaseProvider)), nil
 	}
 }
 
@@ -285,7 +285,7 @@ func (m *DuckHarness) NewEngine(t *testing.T) (enginetest.QueryEngine, error) {
 
 type DuckTestEngine struct {
 	enginetest.QueryEngine
-	pool *backend.ConnectionPool
+	pool *catalog.ConnectionPool
 }
 
 func (e *DuckTestEngine) Close() error {
@@ -297,13 +297,12 @@ func (e *DuckTestEngine) Close() error {
 func NewEngine(t *testing.T, harness enginetest.Harness, dbProvider sql.DatabaseProvider, setupData []setup.SetupScript, statsProvider sql.StatsProvider, server bool) (enginetest.QueryEngine, error) {
 	// Create the connection pool first, as it is needed by `NewEngineWithProvider`
 	provider := dbProvider.(*catalog.DatabaseProvider)
-	pool := backend.NewConnectionPool(provider.CatalogName(), provider.Connector(), provider.Storage())
-	harness.(*DuckHarness).pool = pool
+	harness.(*DuckHarness).pool = provider.Pool()
 
 	e := enginetest.NewEngineWithProvider(t, harness, dbProvider)
 	e.Analyzer.Catalog.StatsProvider = statsProvider
 
-	builder := backend.NewDuckBuilder(e.Analyzer.ExecBuilder, pool, provider)
+	builder := backend.NewDuckBuilder(e.Analyzer.ExecBuilder, provider)
 	e.Analyzer.ExecBuilder = builder
 
 	ctx := enginetest.NewContext(harness)
@@ -329,7 +328,7 @@ func NewEngine(t *testing.T, harness enginetest.Harness, dbProvider sql.Database
 			return nil, err
 		}
 	}
-	return &DuckTestEngine{qe, pool}, nil
+	return &DuckTestEngine{qe, provider.Pool()}, nil
 }
 
 func (m *DuckHarness) SupportsNativeIndexCreation() bool {
@@ -365,7 +364,7 @@ func (m *DuckHarness) newSession() sql.Session {
 	if m.driver != nil {
 		session.GetIndexRegistry().RegisterIndexDriver(m.driver)
 	}
-	return backend.NewSession(session, m.getProvider().(*catalog.DatabaseProvider), m.pool)
+	return backend.NewSession(session, m.getProvider().(*catalog.DatabaseProvider))
 }
 
 func (m *DuckHarness) NewContextWithClient(client sql.Client) *sql.Context {

@@ -33,19 +33,19 @@ import (
 
 // registerReplicaController registers the replica controller into the engine
 // to handle the replication commands, such as START REPLICA, STOP REPLICA, etc.
-func RegisterReplicaController(provider *catalog.DatabaseProvider, engine *sqle.Engine, pool *backend.ConnectionPool, builder *backend.DuckBuilder) {
+func RegisterReplicaController(provider *catalog.DatabaseProvider, engine *sqle.Engine, builder *backend.DuckBuilder) {
 	replica := binlogreplication.MyBinlogReplicaController
 	replica.SetEngine(engine)
 
 	stdctx := context.Background()
 	stdctx = mycontext.WithQueryOrigin(stdctx, mycontext.MySQLReplicationQueryOrigin)
 
-	session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider, pool)
+	session := backend.NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider)
 	ctx := sql.NewContext(stdctx, sql.WithSession(session))
 	ctx.SetCurrentDatabase("mysql")
 	replica.SetExecutionContext(ctx)
 
-	twp := &tableWriterProvider{pool: pool}
+	twp := &tableWriterProvider{provider: provider}
 	twp.controller = delta.NewController()
 
 	replica.SetTableWriterProvider(twp)
@@ -60,7 +60,7 @@ func RegisterReplicaController(provider *catalog.DatabaseProvider, engine *sqle.
 }
 
 type tableWriterProvider struct {
-	pool       *backend.ConnectionPool
+	provider   *catalog.DatabaseProvider
 	controller *delta.DeltaController
 }
 

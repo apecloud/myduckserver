@@ -17,6 +17,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"github.com/apecloud/myduckserver/catalog"
 
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/vitess/go/mysql"
@@ -25,16 +26,16 @@ import (
 
 type MyHandler struct {
 	*server.Handler
-	pool *ConnectionPool
+	provider *catalog.DatabaseProvider
 }
 
 func (h *MyHandler) ConnectionClosed(c *mysql.Conn) {
-	h.pool.CloseConn(c.ConnectionID)
+	h.provider.Pool().CloseConn(c.ConnectionID)
 	h.Handler.ConnectionClosed(c)
 }
 
 func (h *MyHandler) ComInitDB(c *mysql.Conn, schemaName string) error {
-	_, err := h.pool.GetConnForSchema(context.Background(), c.ConnectionID, schemaName)
+	_, err := h.provider.Pool().GetConnForSchema(context.Background(), c.ConnectionID, schemaName)
 	if err != nil {
 		return err
 	}
@@ -78,7 +79,7 @@ func (h *MyHandler) ComQuery(
 	return h.Handler.ComQuery(ctx, c, query, wrapResultCallback(callback, modifiers...))
 }
 
-func WrapHandler(pool *ConnectionPool) server.HandlerWrapper {
+func WrapHandler(provider *catalog.DatabaseProvider) server.HandlerWrapper {
 	return func(h mysql.Handler) (mysql.Handler, error) {
 		handler, ok := h.(*server.Handler)
 		if !ok {
@@ -86,8 +87,8 @@ func WrapHandler(pool *ConnectionPool) server.HandlerWrapper {
 		}
 
 		return &MyHandler{
-			Handler: handler,
-			pool:    pool,
+			Handler:  handler,
+			provider: provider,
 		}, nil
 	}
 }

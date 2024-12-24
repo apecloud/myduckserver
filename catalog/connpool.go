@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package backend
+package catalog
 
 import (
 	"context"
@@ -22,7 +22,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/marcboeker/go-duckdb"
 	"github.com/sirupsen/logrus"
@@ -93,8 +92,8 @@ func (p *ConnectionPool) GetConnForSchema(ctx context.Context, id uint32, schema
 			logrus.WithError(err).Error("Failed to get current schema")
 			return nil, err
 		} else if currentSchema != schemaName {
-			if _, err := conn.ExecContext(context.Background(), "USE "+catalog.FullSchemaName(p.catalog, schemaName)); err != nil {
-				if catalog.IsDuckDBSetSchemaNotFoundError(err) {
+			if _, err := conn.ExecContext(context.Background(), "USE "+FullSchemaName(p.catalog, schemaName)); err != nil {
+				if IsDuckDBSetSchemaNotFoundError(err) {
 					return nil, sql.ErrDatabaseNotFound.New(schemaName)
 				}
 				logrus.WithField("schema", schemaName).WithError(err).Error("Failed to switch schema")

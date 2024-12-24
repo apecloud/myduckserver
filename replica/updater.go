@@ -3,9 +3,9 @@ package replica
 import (
 	stdsql "database/sql"
 	"errors"
+	"github.com/apecloud/myduckserver/catalog"
 	"strings"
 
-	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/binlogreplication"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -121,7 +121,7 @@ func (twp *tableWriterProvider) newTableUpdater(
 	}
 
 	return &tableUpdater{
-		pool:       twp.pool,
+		provider:   twp.provider,
 		stmt:       stmt,
 		replace:    replace,
 		cleanup:    cleanup,
@@ -230,7 +230,7 @@ func buildUpdateTemplate(tableName string, columnCount int, schema sql.Schema, p
 }
 
 type tableUpdater struct {
-	pool       *backend.ConnectionPool
+	provider   *catalog.DatabaseProvider
 	tx         *stdsql.Tx
 	stmt       *stdsql.Stmt
 	replace    bool

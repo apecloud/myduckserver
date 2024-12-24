@@ -31,12 +31,11 @@ import (
 
 type Session struct {
 	*memory.Session
-	db   *catalog.DatabaseProvider
-	pool *ConnectionPool
+	db *catalog.DatabaseProvider
 }
 
-func NewSession(base *memory.Session, provider *catalog.DatabaseProvider, pool *ConnectionPool) *Session {
-	return &Session{base, provider, pool}
+func NewSession(base *memory.Session, provider *catalog.DatabaseProvider) *Session {
+	return &Session{base, provider}
 }
 
 // Provider returns the database provider for the session.
@@ -45,11 +44,11 @@ func (sess *Session) Provider() *catalog.DatabaseProvider {
 }
 
 func (sess *Session) CurrentSchemaOfUnderlyingConn() string {
-	return sess.pool.CurrentSchema(sess.ID())
+	return sess.db.Pool().CurrentSchema(sess.ID())
 }
 
 // NewSessionBuilder returns a session builder for the given database provider.
-func NewSessionBuilder(provider *catalog.DatabaseProvider, pool *ConnectionPool) func(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
+func NewSessionBuilder(provider *catalog.DatabaseProvider) func(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
 	return func(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
 		host := ""
 		user := ""
@@ -63,13 +62,13 @@ func NewSessionBuilder(provider *catalog.DatabaseProvider, pool *ConnectionPool)
 		baseSession := sql.NewBaseSessionWithClientServer(addr, client, conn.ConnectionID)
 		memSession := memory.NewSession(baseSession, provider)
 
-		schema := pool.CurrentSchema(conn.ConnectionID)
+		schema := provider.Pool().CurrentSchema(conn.ConnectionID)
 		if schema != "" {
 			logrus.Traceln("SessionBuilder: new session: current schema:", schema)
 			memSession.SetCurrentDatabase(schema)
 		}
 
-		return &Session{memSession, provider, pool}, nil
+		return &Session{memSession, provider}, nil
 	}
 }
 
@@ -203,37 +202,37 @@ func (sess *Session) GetPersistedValue(k string) (interface{}, error) {
 
 // GetConn implements adapter.ConnectionHolder.
 func (sess *Session) GetConn(ctx context.Context) (*stdsql.Conn, error) {
-	return sess.pool.GetConnForSchema(ctx, sess.ID(), sess.GetCurrentDatabase())
+	return sess.db.Pool().GetConnForSchema(ctx, sess.ID(), sess.GetCurrentDatabase())
 }
 
 // GetCatalogConn implements adapter.ConnectionHolder.
 func (sess *Session) GetCatalogConn(ctx context.Context) (*stdsql.Conn, error) {
-	return sess.pool.GetConn(ctx, sess.ID())
+	return sess.db.Pool().GetConn(ctx, sess.ID())
 }
 
 // GetTxn implements adapter.ConnectionHolder.
 func (sess *Session) GetTxn(ctx context.Context, options *stdsql.TxOptions) (*stdsql.Tx, error) {
-	return sess.pool.GetTxn(ctx, sess.ID(), sess.GetCurrentDatabase(), options)
+	return sess.db.Pool().GetTxn(ctx, sess.ID(), sess.GetCurrentDatabase(), options)
 }
 
 // GetCatalogTxn implements adapter.ConnectionHolder.
 func (sess *Session) GetCatalogTxn(ctx context.Context, options *stdsql.TxOptions) (*stdsql.Tx, error) {
-	return sess.pool.GetTxn(ctx, sess.ID(), "", options)
+	return sess.db.Pool().GetTxn(ctx, sess.ID(), "", options)
 }
 
 // TryGetTxn implements adapter.ConnectionHolder.
 func (sess *Session) TryGetTxn() *stdsql.Tx {
-	return sess.pool.TryGetTxn(sess.ID())
+	return sess.db.Pool().TryGetTxn(sess.ID())
 }
 
 // CloseTxn implements adapter.ConnectionHolder.
 func (sess *Session) CloseTxn() {
-	sess.pool.CloseTxn(sess.ID())
+	sess.db.Pool().CloseTxn(sess.ID())
 }
 
 // CloseConn implements adapter.ConnectionHolder.
 func (sess *Session) CloseConn() {
-	sess.pool.CloseConn(sess.ID())
+	sess.db.Pool().CloseConn(sess.ID())
 }
 
 func (sess *Session) ExecContext(ctx context.Context, query string, args ...any) (stdsql.Result, error) {
