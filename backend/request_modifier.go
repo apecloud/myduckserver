@@ -14,7 +14,7 @@ var defaultRequestModifiers = []RequestModifier{
 // which is not supported by go-mysql-server.
 // This function replaces the collation with the MySQL default utf8mb4_0900_ai_ci.
 func replaceMariaDBCollation(query string, _ *[]ResultModifier) string {
-	return strings.ReplaceAll(query, " utf8mb4_uca1400_ai_ci", " utf8mb4_0900_ai_ci")
+	return strings.ReplaceAll(query, "utf8mb4_uca1400_ai_ci", "utf8mb4_0900_ai_ci")
 }
 
 // applyRequestModifiers applies request modifiers to a query
