@@ -25,7 +25,6 @@ import (
 	"os"
 	"regexp"
 	"runtime/trace"
-	"strings"
 	"sync"
 	"time"
 
@@ -415,10 +414,15 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		err    error
 	)
 
-	exec := func() {
+	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
+	//   Consequently, the following classification is not perfect.
+	switch parsed.(type) {
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
+		*tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
+		*tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo, *tree.SetVar:
 		result, err = adapter.Exec(ctx, query)
 		if err != nil {
-			return
+			break
 		}
 		affected, _ := result.RowsAffected()
 		insertId, _ := result.LastInsertId()
@@ -427,42 +431,15 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			RowsAffected: uint64(affected),
 			InsertID:     uint64(insertId),
 		}))
-	}
-	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
-	//   Consequently, the following classification is not perfect.
-	switch parsed.(type) {
-	case *tree.SetVar:
-		setVar := parsed.(*tree.SetVar)
-		if setVar.Name == "database" {
-			provider := h.GetCatalogProvider()
-			if provider == nil {
-				err = fmt.Errorf("database provider not found")
-				break
-			}
-			parts := strings.Split(setVar.Values.String(), ".")
-			err = provider.SwitchCatalog(parts[0])
-			if err != nil {
-				break
-			}
-			// exec() will get the current schema from the underlying connection. If we don't set the schema to public here,
-			// exec() may fail because of the absence of the old schema in the newly switched catalog.
-			ctx.Session.SetCurrentDatabase("public")
-			exec()
-		} else {
-			exec()
-		}
-	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
-		*tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
-		*tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo:
-		exec()
 	case *tree.CreateDatabase:
 		provider := h.GetCatalogProvider()
 		if provider == nil {
 			err = fmt.Errorf("database provider not found")
 			break
 		}
-		dbName := parsed.(*tree.CreateDatabase).Name.String()
-		_, err = provider.CreateCatalog(dbName)
+		p := parsed.(*tree.CreateDatabase)
+		dbName := p.Name.String()
+		err = provider.CreateCatalog(dbName, p.IfNotExists)
 		if err != nil {
 			break
 		}
@@ -474,8 +451,9 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			err = fmt.Errorf("database provider not found")
 			break
 		}
+		p := parsed.(*tree.DropDatabase)
 		dbName := parsed.(*tree.DropDatabase).Name.String()
-		err = provider.DropCatalog(dbName)
+		err = provider.DropCatalog(dbName, p.IfExists)
 		if err != nil {
 			break
 		}

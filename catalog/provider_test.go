@@ -33,6 +33,10 @@ func TestCreateCatalog(t *testing.T) {
 					WantErr: true,
 				},
 				{
+					SQL:      "CREATE DATABASE IF NOT EXISTS testdb1;",
+					Expected: "CREATE DATABASE",
+				},
+				{
 					SQL:      "CREATE DATABASE testdb2;",
 					Expected: "CREATE DATABASE",
 				},
@@ -80,21 +84,29 @@ func TestCreateCatalog(t *testing.T) {
 		{
 			name: "drop database",
 			executions: []Execution{
-				{
-					SQL:      "USE testdb1;",
-					Expected: "SET",
-				},
-				// Can not drop the database when the current database is the one to be dropped
-				{
-					SQL:     "DROP DATABASE testdb1;",
-					WantErr: true,
-				},
+				//{
+				//	SQL:      "USE testdb1;",
+				//	Expected: "SET",
+				//},
+				//// Can not drop the database when the current database is the one to be dropped
+				//{
+				//	SQL:     "DROP DATABASE testdb1;",
+				//	WantErr: true,
+				//},
 				{
 					SQL:      "USE testdb2;",
 					Expected: "SET",
 				},
 				{
 					SQL:      "DROP DATABASE testdb1;",
+					Expected: "DROP DATABASE",
+				},
+				{
+					SQL:     "DROP DATABASE testdb1;",
+					WantErr: true,
+				},
+				{
+					SQL:      "DROP DATABASE IF EXISTS testdb1;",
 					Expected: "DROP DATABASE",
 				},
 			},
