@@ -146,15 +146,15 @@ func (prov *DatabaseProvider) initCatalog() error {
 
 		if t.InitialDataFile != "" {
 			var count int
-			if err := storage.QueryRow(t.CountAllStmt()).Scan(&count); err != nil {
-				return nil, fmt.Errorf("failed to count rows in internal table %q: %w", t.Name, err)
+			if err := prov.storage.QueryRow(t.CountAllStmt()).Scan(&count); err != nil {
+				return fmt.Errorf("failed to count rows in internal table %q: %w", t.Name, err)
 			}
 			if count == 0 {
-				if _, err := storage.ExecContext(
+				if _, err := prov.storage.ExecContext(
 					context.Background(),
 					fmt.Sprintf("COPY %s FROM '%s' (FORMAT CSV, HEADER)", t.QualifiedName(), t.InitialDataFile),
 				); err != nil {
-					return nil, fmt.Errorf("failed to insert initial data from file into internal table %q: %w", t.Name, err)
+					return fmt.Errorf("failed to insert initial data from file into internal table %q: %w", t.Name, err)
 				}
 			}
 		}
