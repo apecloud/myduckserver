@@ -48,7 +48,7 @@ import (
 
 const defaultTableName = "drivertest"
 const dataDirectory = "."
-const dbFileName = "mysql.db"
+const defaultDb = "mysql"
 
 var defaultStatements = map[string]string{
 	"create table": `
@@ -92,7 +92,7 @@ func (s *SqlTestSuite) SetupSuite() {
 	}
 
 	s.createServer = func() (flight.Server, string, error) {
-		provider, err := catalog.NewDBProvider(dataDirectory, dbFileName)
+		provider, err := catalog.NewDBProvider("", dataDirectory, defaultDb)
 		if err != nil {
 			return nil, "", err
 		}
@@ -216,6 +216,11 @@ func (s *SqlTestSuite) TestInsert() {
 	// Create the table
 	_, err = db.Exec(fmt.Sprintf(s.Statements["create table"], s.TableName))
 	require.NoError(t, err)
+
+	tbls := `SELECT name FROM sqlite_schema WHERE type ='table' AND name NOT LIKE 'sqlite_%';`
+	rows, err := db.Query(tbls)
+	require.NoError(t, err)
+	defer rows.Close()
 
 	// Insert data
 	values := map[string]int{
@@ -429,7 +434,7 @@ func (s *SqlTestSuite) TestPreparedQuery() {
 // Is expected that rows' internal engine update its status, preventing errors and inconsistent further operations.
 func (s *SqlTestSuite) TestRowsManualPrematureClose() {
 	t := s.T()
-	t.Skip()
+	// t.Skip()
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -457,7 +462,7 @@ func (s *SqlTestSuite) TestRowsManualPrematureClose() {
 
 	// Create the table
 	const tableName = `TestRowsManualPrematureClose`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY , name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY , name VARCHAR(300), value BIGINT);`
 
 	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	require.NoError(t, err)
@@ -468,7 +473,7 @@ func (s *SqlTestSuite) TestRowsManualPrematureClose() {
 	// generate data enough for chunked concurrent test:
 	const rowCount int = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -476,7 +481,7 @@ func (s *SqlTestSuite) TestRowsManualPrematureClose() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d, '%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -517,7 +522,6 @@ func (s *SqlTestSuite) TestRowsManualPrematureClose() {
 // TestRowsNormalExhaustion tests concurrent rows implementation for normal query/netx/close operation
 func (s *SqlTestSuite) TestRowsNormalExhaustion() {
 	t := s.T()
-	t.Skip()
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -545,7 +549,7 @@ func (s *SqlTestSuite) TestRowsNormalExhaustion() {
 
 	// Create the table
 	const tableName = `TestRowsNormalExhaustion`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY , name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY , name VARCHAR(300), value BIGINT);`
 
 	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	require.NoError(t, err)
@@ -556,7 +560,7 @@ func (s *SqlTestSuite) TestRowsNormalExhaustion() {
 	// generate data enough for chunked concurrent test:
 	const rowCount int = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -564,7 +568,7 @@ func (s *SqlTestSuite) TestRowsNormalExhaustion() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d, '%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -612,8 +616,6 @@ func (s *SqlTestSuite) TestRowsNormalExhaustion() {
 // - the interation is properly/promptly interrupted.
 func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoop() {
 	t := s.T()
-	t.Skip()
-
 	// Create and start the server.
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -641,7 +643,10 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoop() {
 
 	// Create the table.
 	const tableName = `TestRowsPrematureCloseDuringNextLoop`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY, name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY, name VARCHAR(300), value BIGINT);`
+
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	require.NoError(t, err)
 
 	_, err = db.Exec(ddlCreateTable)
 	require.NoError(t, err)
@@ -649,7 +654,7 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoop() {
 	// generate data enough for chunked concurrent test:
 	const rowCount = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -657,7 +662,7 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoop() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d, '%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -707,7 +712,6 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoop() {
 // it gives time for cancellation propagation, and ensures that no further data was retrieved.
 func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellation() {
 	t := s.T()
-	t.Skip()
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -734,7 +738,7 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellation() {
 	defer db.Close()
 	// Create the table
 	const tableName = `TestRowsInterruptionByContextManualCancellation`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY , name VARCHAR(300), value BigINT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY , name VARCHAR(300), value BIGINT);`
 
 	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	require.NoError(t, err)
@@ -797,8 +801,6 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellation() {
 // TestRowsInterruptionByContextTimeout forces a timeout, and ensures no further data is retrieved after that.
 func (s *SqlTestSuite) TestRowsInterruptionByContextTimeout() {
 	t := s.T()
-	t.Skip()
-
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -894,8 +896,6 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextTimeout() {
 // Is expected that rows' internal engine update its status, preventing errors and inconsistent further operations.
 func (s *SqlTestSuite) TestRowsManualPrematureCloseStmt() {
 	t := s.T()
-	t.Skip()
-
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -923,7 +923,10 @@ func (s *SqlTestSuite) TestRowsManualPrematureCloseStmt() {
 
 	// Create the table
 	const tableName = `TestRowsManualPrematureCloseStmt`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY, name VARCHAR(300), value BIGINT);`
+
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	require.NoError(t, err)
 
 	_, err = db.Exec(ddlCreateTable)
 	require.NoError(t, err)
@@ -931,7 +934,7 @@ func (s *SqlTestSuite) TestRowsManualPrematureCloseStmt() {
 	// generate data enough for chunked concurrent test:
 	const rowCount int = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -939,7 +942,7 @@ func (s *SqlTestSuite) TestRowsManualPrematureCloseStmt() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d, '%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -986,8 +989,6 @@ func (s *SqlTestSuite) TestRowsManualPrematureCloseStmt() {
 // TestRowsNormalExhaustionStmt tests concurrent rows implementation for normal query/netx/close operation
 func (s *SqlTestSuite) TestRowsNormalExhaustionStmt() {
 	t := s.T()
-	t.Skip()
-
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -1015,7 +1016,10 @@ func (s *SqlTestSuite) TestRowsNormalExhaustionStmt() {
 
 	// Create the table
 	const tableName = `TestRowsNormalExhaustionStmt`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY, name VARCHAR(300), value BIGINT);`
+
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	require.NoError(t, err)
 
 	_, err = db.Exec(ddlCreateTable)
 	require.NoError(t, err)
@@ -1023,7 +1027,7 @@ func (s *SqlTestSuite) TestRowsNormalExhaustionStmt() {
 	// generate data enough for chunked concurrent test:
 	const rowCount int = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -1031,7 +1035,7 @@ func (s *SqlTestSuite) TestRowsNormalExhaustionStmt() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d, '%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -1082,7 +1086,6 @@ func (s *SqlTestSuite) TestRowsNormalExhaustionStmt() {
 // - the interation is properly/promptly interrupted.
 func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoopStmt() {
 	t := s.T()
-	t.Skip()
 	// Create and start the server.
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -1110,7 +1113,10 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoopStmt() {
 
 	// Create the table.
 	const tableName = `TestRowsPrematureCloseDuringNextLoopStmt`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY, name VARCHAR(300), value BIGINT);`
+
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	require.NoError(t, err)
 
 	_, err = db.Exec(ddlCreateTable)
 	require.NoError(t, err)
@@ -1118,7 +1124,7 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoopStmt() {
 	// generate data enough for chunked concurrent test:
 	const rowCount = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -1126,7 +1132,7 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoopStmt() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d,'%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -1182,7 +1188,6 @@ func (s *SqlTestSuite) TestRowsPrematureCloseDuringNextLoopStmt() {
 // it gives time for cancellation propagation, and ensures that no further data was retrieved.
 func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellationStmt() {
 	t := s.T()
-	t.Skip()
 
 	// Create and start the server
 	server, addr, err := s.createServer()
@@ -1211,7 +1216,10 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellationStmt() {
 
 	// Create the table
 	const tableName = `TestRowsInterruptionByContextManualCancellationStmt`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY, name VARCHAR(300), value BIGINT);`
+
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	require.NoError(t, err)
 
 	_, err = db.Exec(ddlCreateTable)
 	require.NoError(t, err)
@@ -1219,7 +1227,7 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellationStmt() {
 	// generate data enough for chunked concurrent test:
 	const rowCount = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -1227,7 +1235,7 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellationStmt() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d, '%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -1274,8 +1282,6 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextManualCancellationStmt() {
 // TestRowsInterruptionByContextTimeoutStmt forces a timeout, and ensures no further data is retrieved after that.
 func (s *SqlTestSuite) TestRowsInterruptionByContextTimeoutStmt() {
 	t := s.T()
-	t.Skip()
-
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -1303,7 +1309,10 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextTimeoutStmt() {
 
 	// Create the table
 	const tableName = `TestRowsInterruptionByContextTimeoutStmt`
-	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(300), value INT);`
+	const ddlCreateTable = `CREATE TABLE ` + tableName + ` (id INTEGER PRIMARY KEY, name VARCHAR(300), value BIGINT);`
+
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	require.NoError(t, err)
 
 	_, err = db.Exec(ddlCreateTable)
 	require.NoError(t, err)
@@ -1311,7 +1320,7 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextTimeoutStmt() {
 	// generate data enough for chunked concurrent test:
 	const rowCount = 6000
 	const randStringLen = 250
-	const sqlInsert = `INSERT INTO ` + tableName + ` (name,value) VALUES `
+	const sqlInsert = `INSERT INTO ` + tableName + ` (id,name,value) VALUES `
 
 	gen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -1319,7 +1328,7 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextTimeoutStmt() {
 	sb.WriteString(sqlInsert)
 
 	for i := 0; i < rowCount; i++ {
-		sb.WriteString(fmt.Sprintf(`('%s', %d),`, getRandomString(gen, randStringLen), gen.Int()))
+		sb.WriteString(fmt.Sprintf(`(%d, '%s', %d),`, i, getRandomString(gen, randStringLen), gen.Int()))
 	}
 
 	insertQuery := strings.TrimSuffix(sb.String(), ",")
@@ -1368,8 +1377,6 @@ func (s *SqlTestSuite) TestRowsInterruptionByContextTimeoutStmt() {
 
 func (s *SqlTestSuite) TestPreparedQueryWithConstraint() {
 	t := s.T()
-	t.Skip()
-
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -1390,6 +1397,9 @@ func (s *SqlTestSuite) TestPreparedQueryWithConstraint() {
 	require.NoError(t, err)
 	defer db.Close()
 
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", s.TableName))
+	require.NoError(t, err)
+
 	// Create the table
 	_, err = db.Exec(fmt.Sprintf(s.Statements["create table"], s.TableName))
 	require.NoError(t, err)
@@ -1402,8 +1412,10 @@ func (s *SqlTestSuite) TestPreparedQueryWithConstraint() {
 		"twelve":    12,
 	}
 	var stmts []string
+	id := 0
 	for k, v := range data {
-		stmts = append(stmts, fmt.Sprintf(s.Statements["insert"], s.TableName, k, v))
+		stmts = append(stmts, fmt.Sprintf(s.Statements["insert"], s.TableName, id, k, v))
+		id++
 	}
 	_, err = db.Exec(strings.Join(stmts, "\n"))
 	require.NoError(t, err)
@@ -1437,8 +1449,6 @@ func (s *SqlTestSuite) TestPreparedQueryWithConstraint() {
 
 func (s *SqlTestSuite) TestPreparedQueryWithPlaceholder() {
 	t := s.T()
-	t.Skip()
-
 	// Create and start the server
 	server, addr, err := s.createServer()
 	require.NoError(t, err)
@@ -1459,6 +1469,9 @@ func (s *SqlTestSuite) TestPreparedQueryWithPlaceholder() {
 	require.NoError(t, err)
 	defer db.Close()
 
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", s.TableName))
+	require.NoError(t, err)
+
 	// Create the table
 	_, err = db.Exec(fmt.Sprintf(s.Statements["create table"], s.TableName))
 	require.NoError(t, err)
@@ -1471,8 +1484,10 @@ func (s *SqlTestSuite) TestPreparedQueryWithPlaceholder() {
 		"twelve":    12,
 	}
 	var stmts []string
+	id := 0
 	for k, v := range data {
-		stmts = append(stmts, fmt.Sprintf(s.Statements["insert"], s.TableName, k, v))
+		stmts = append(stmts, fmt.Sprintf(s.Statements["insert"], s.TableName, id, k, v))
+		id++
 	}
 	_, err = db.Exec(strings.Join(stmts, "\n"))
 	require.NoError(t, err)
@@ -1508,7 +1523,72 @@ func (s *SqlTestSuite) TestPreparedQueryWithPlaceholder() {
 
 func (s *SqlTestSuite) TestTxRollback() {
 	t := s.T()
-	t.Skip()
+	// Create and start the server
+	server, addr, err := s.createServer()
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		require.NoError(s.T(), s.startServer(server))
+	}()
+	defer s.stopServer(server)
+	time.Sleep(100 * time.Millisecond)
+
+	// Configure client
+	cfg := s.Config
+	cfg.Address = addr
+	db, err := sql.Open("flightsql", cfg.DSN())
+	require.NoError(t, err)
+	defer db.Close()
+
+	tx, err := db.Begin()
+	require.NoError(t, err)
+
+	_, err = db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", s.TableName))
+	require.NoError(t, err)
+
+	// Create the table
+	_, err = tx.Exec(fmt.Sprintf(s.Statements["create table"], s.TableName))
+	require.NoError(t, err)
+
+	// Insert data
+	data := map[string]int{
+		"zero":      0,
+		"one":       1,
+		"minus one": -1,
+		"twelve":    12,
+	}
+	id := 0
+	for k, v := range data {
+		stmt := fmt.Sprintf(s.Statements["insert"], s.TableName, id, k, v)
+		id++
+		_, err = tx.Exec(stmt)
+		require.NoError(t, err)
+	}
+
+	// Rollback the transaction
+	require.NoError(t, tx.Rollback())
+
+	// Check result
+	tbls := `SELECT name FROM sqlite_schema WHERE type ='table' AND name NOT LIKE 'sqlite_%' AND name = 'drivertest';`
+	rows, err := db.Query(tbls)
+	require.NoError(t, err)
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	require.Equal(t, 0, count)
+	require.NoError(t, db.Close())
+
+	// Tear-down server
+	s.stopServer(server)
+	wg.Wait()
+}
+
+func (s *SqlTestSuite) TestTxCommit() {
+	t := s.T()
 
 	// Create and start the server
 	server, addr, err := s.createServer()
@@ -1547,71 +1627,10 @@ func (s *SqlTestSuite) TestTxRollback() {
 		"minus one": -1,
 		"twelve":    12,
 	}
+	id := 0
 	for k, v := range data {
-		stmt := fmt.Sprintf(s.Statements["insert"], s.TableName, k, v)
-		_, err = tx.Exec(stmt)
-		require.NoError(t, err)
-	}
-
-	// Rollback the transaction
-	require.NoError(t, tx.Rollback())
-
-	// Check result
-	tbls := `SELECT name FROM sqlite_schema WHERE type ='table' AND name NOT LIKE 'sqlite_%';`
-	rows, err := db.Query(tbls)
-	require.NoError(t, err)
-	count := 0
-	for rows.Next() {
-		count++
-	}
-	require.Equal(t, 0, count)
-	require.NoError(t, db.Close())
-
-	// Tear-down server
-	s.stopServer(server)
-	wg.Wait()
-}
-
-func (s *SqlTestSuite) TestTxCommit() {
-	t := s.T()
-	t.Skip()
-
-	// Create and start the server
-	server, addr, err := s.createServer()
-	require.NoError(t, err)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		require.NoError(s.T(), s.startServer(server))
-	}()
-	defer s.stopServer(server)
-	time.Sleep(100 * time.Millisecond)
-
-	// Configure client
-	cfg := s.Config
-	cfg.Address = addr
-	db, err := sql.Open("flightsql", cfg.DSN())
-	require.NoError(t, err)
-	defer db.Close()
-
-	tx, err := db.Begin()
-	require.NoError(t, err)
-
-	// Create the table
-	_, err = tx.Exec(fmt.Sprintf(s.Statements["create table"], s.TableName))
-	require.NoError(t, err)
-
-	// Insert data
-	data := map[string]int{
-		"zero":      0,
-		"one":       1,
-		"minus one": -1,
-		"twelve":    12,
-	}
-	for k, v := range data {
-		stmt := fmt.Sprintf(s.Statements["insert"], s.TableName, k, v)
+		stmt := fmt.Sprintf(s.Statements["insert"], s.TableName, id, k, v)
+		id++
 		_, err = tx.Exec(stmt)
 		require.NoError(t, err)
 	}
