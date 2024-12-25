@@ -105,21 +105,20 @@ check_mysql_config() {
     return 0
 }
 
-# Function to check if source MySQL server is empty
-check_if_source_mysql_is_empty() {
-    # Run the query using mysqlsh and capture the output
-    OUTPUT=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql -e "SHOW DATABASES;" 2>/dev/null)
+# Function to check if the source server could be copied using MySQL Shell
+check_if_source_supports_copying_instance() {
+    # Retrieve the MySQL version using mysqlsh
+    result=$(mysqlsh --uri="$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql -e "SELECT @@global.version_comment")
+    check_command "retrieving MySQL version comment"
 
-    check_command "retrieving database list"
-
-    # Check if the output contains only the default databases
-    NON_DEFAULT_DBs=$(echo "$OUTPUT" | grep -cv -E "^(Database|information_schema|mysql|performance_schema|sys)$")
-
-    if [[ "$NON_DEFAULT_DBs" -gt 0 ]]; then
+    # Currently, Dolt does not support MySQL Shell's copy-instance utility.
+    # Check if the MySQL version string contains "Dolt"
+    if echo "$result" | grep -q "Dolt"; then
+        echo "MySQL Shell's copy-instance utility is not supported by Dolt yet."
         return 1
-    else
-        return 0
     fi
+
+    return 0
 }
 
 # Function to check if there is ongoing replication on MyDuck Server

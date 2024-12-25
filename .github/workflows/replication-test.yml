@@ -9,8 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # source: ['mysql', 'postgres', 'dolt', 'mariadb']
-        source: ['mysql', 'postgres', 'mariadb']
+        source: ['postgres', 'mysql', 'mariadb', 'dolt']
     steps:
       - uses: actions/checkout@v4
 

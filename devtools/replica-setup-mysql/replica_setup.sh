@@ -108,21 +108,17 @@ echo "Preparing MyDuck Server for replication..."
 source prepare.sh
 check_command "preparing MyDuck Server for replication"
 
-# Step 4: Check if the MySQL server is empty
-echo "Checking if source MySQL server is empty..."
-check_if_source_mysql_is_empty
-SOURCE_IS_EMPTY=$?
-
-# Step 5: Copy the existing data if the MySQL instance is not empty
-if [[ $SOURCE_IS_EMPTY -ne 0 ]]; then
+# Step 4: Copy the existing data from the source MySQL instance to MyDuck Server
+echo "Checking if source server supports MySQL Shell..."
+if check_if_source_supports_copying_instance; then
     echo "Copying a snapshot of the MySQL instance to MyDuck Server..."
     source snapshot.sh
     check_command "copying a snapshot of the MySQL instance"
 else
-    echo "This MySQL instance is empty. Skipping snapshot."
+    echo "The source server cannot be copied using MySQL Shell. The snapshot step has been skipped."
 fi
 
-# Step 6: Establish replication
+# Step 5: Establish replication
 echo "Starting replication..."
 source start_replication.sh
 check_command "starting replication"
