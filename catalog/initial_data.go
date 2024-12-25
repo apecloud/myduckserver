@@ -1,6 +1,6 @@
 package catalog
 
-var InitialDatas = struct {
+var InitialDataTables = struct {
 	PGNamespace [][]any
 	PGRange     [][]any
 }{

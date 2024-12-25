@@ -285,7 +285,7 @@ var InternalTables = struct {
 		KeyColumns:   []string{"rngtypid"},
 		ValueColumns: []string{"rngsubtype", "rngmultitypid", "rngcollation", "rngsubopc", "rngcanonical", "rngsubdiff"},
 		DDL:          "rngtypid BIGINT PRIMARY KEY, rngsubtype BIGINT, rngmultitypid BIGINT, rngcollation BIGINT, rngsubopc BIGINT, rngcanonical VARCHAR, rngsubdiff VARCHAR",
-		InitialData:  InitialDatas.PGRange,
+		InitialData:  InitialDataTables.PGRange,
 	},
 	// postgres=# \d+ pg_type
 	//                                             Table "pg_catalog.pg_type"
@@ -610,7 +610,7 @@ var InternalTables = struct {
 			"nspname VARCHAR NOT NULL," +
 			"nspowner BIGINT NOT NULL," +
 			"nspacl TEXT",
-		InitialData: InitialDatas.PGNamespace,
+		InitialData: InitialDataTables.PGNamespace,
 	},
 }
 
