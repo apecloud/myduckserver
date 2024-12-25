@@ -46,9 +46,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
+const defaultDbName = "mysql"
 const defaultTableName = "drivertest"
 const dataDirectory = "."
-const dbFileName = "mysql.db"
 
 var defaultStatements = map[string]string{
 	"create table": `
@@ -92,7 +92,7 @@ func (s *SqlTestSuite) SetupSuite() {
 	}
 
 	s.createServer = func() (flight.Server, string, error) {
-		provider, err := catalog.NewDBProvider(dataDirectory, dbFileName)
+		provider, err := catalog.NewDBProvider("", dataDirectory, defaultDbName, "../initialdata/")
 		if err != nil {
 			return nil, "", err
 		}

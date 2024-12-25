@@ -401,7 +401,7 @@ func (m *DuckHarness) getProvider() sql.DatabaseProvider {
 }
 
 func (m *DuckHarness) NewDatabaseProvider() sql.MutableDatabaseProvider {
-	return catalog.NewInMemoryDBProvider()
+	return catalog.NewInMemoryDBProvider("../initialdata/")
 }
 
 func (m *DuckHarness) Provider() *catalog.DatabaseProvider {

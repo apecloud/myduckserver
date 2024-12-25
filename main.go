@@ -69,8 +69,9 @@ var (
 	restoreAccessKeyId     = ""
 	restoreSecretAccessKey = ""
 
-	flightsqlHost = "localhost"
-	flightsqlPort = -1 // Disabled by default
+	flightsqlHost  = "localhost"
+	flightsqlPort  = -1 // Disabled by default
+	initialDataDir = "./initialdata/"
 )
 
 func init() {
@@ -100,6 +101,7 @@ func init() {
 
 	flag.StringVar(&flightsqlHost, "flightsql-host", flightsqlHost, "hostname for the Flight SQL service")
 	flag.IntVar(&flightsqlPort, "flightsql-port", flightsqlPort, "port number for the Flight SQL service")
+	flag.StringVar(&initialDataDir, "initial-data-dir", initialDataDir, "directory containing initial data files")
 }
 
 func ensureSQLTranslate() {
@@ -123,12 +125,12 @@ func main() {
 	executeRestoreIfNeeded()
 
 	if initMode {
-		provider := catalog.NewInMemoryDBProvider()
+		provider := catalog.NewInMemoryDBProvider(initialDataDir)
 		provider.Close()
 		return
 	}
 
-	provider, err := catalog.NewDBProvider(defaultTimeZone, dataDirectory, defaultDb)
+	provider, err := catalog.NewDBProvider(defaultTimeZone, dataDirectory, defaultDb, initialDataDir)
 	if err != nil {
 		logrus.Fatalln("Failed to open the database:", err)
 	}

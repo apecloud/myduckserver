@@ -21,14 +21,12 @@ var InitialDatas = struct {
 	},
 }
 
-const INITIAL_DATA_DIR = "initialdata/"
-
 var InitialDataFiles = struct {
 	PGClass string
 	PGProc  string
 	PGType  string
 }{
-	PGClass: INITIAL_DATA_DIR + "pg_class.csv",
-	PGProc:  INITIAL_DATA_DIR + "pg_proc.csv",
-	PGType:  INITIAL_DATA_DIR + "pg_type.csv",
+	PGClass: "pg_class.csv",
+	PGProc:  "pg_proc.csv",
+	PGType:  "pg_type.csv",
 }

@@ -32,6 +32,7 @@ type DatabaseProvider struct {
 	dsn                       string
 	externalProcedureRegistry sql.ExternalStoredProcedureRegistry
 	ready                     bool
+	initialDataDir            string
 }
 
 var _ sql.DatabaseProvider = (*DatabaseProvider)(nil)
@@ -41,20 +42,21 @@ var _ configuration.DataDirProvider = (*DatabaseProvider)(nil)
 
 const readOnlySuffix = "?access_mode=read_only"
 
-func NewInMemoryDBProvider() *DatabaseProvider {
-	prov, err := NewDBProvider("", ".", "")
+func NewInMemoryDBProvider(initialDataDir string) *DatabaseProvider {
+	prov, err := NewDBProvider("", ".", "", initialDataDir)
 	if err != nil {
 		panic(err)
 	}
 	return prov
 }
 
-func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabaseProvider, err error) {
+func NewDBProvider(defaultTimeZone, dataDir, defaultDB, initialDataDir string) (prov *DatabaseProvider, err error) {
 	prov = &DatabaseProvider{
 		mu:                        &sync.RWMutex{},
 		defaultTimeZone:           defaultTimeZone,
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
 		dataDir:                   dataDir,
+		initialDataDir:            initialDataDir,
 	}
 
 	shouldInit := true
@@ -152,7 +154,7 @@ func (prov *DatabaseProvider) initCatalog() error {
 			if count == 0 {
 				if _, err := prov.storage.ExecContext(
 					context.Background(),
-					fmt.Sprintf("COPY %s FROM '%s' (FORMAT CSV, HEADER)", t.QualifiedName(), t.InitialDataFile),
+					fmt.Sprintf("COPY %s FROM '%s' (FORMAT CSV, HEADER)", t.QualifiedName(), prov.initialDataDir+t.InitialDataFile),
 				); err != nil {
 					return fmt.Errorf("failed to insert initial data from file into internal table %q: %w", t.Name, err)
 				}
