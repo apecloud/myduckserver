@@ -3,12 +3,13 @@ package catalog
 import "strings"
 
 type InternalTable struct {
-	Schema       string
-	Name         string
-	KeyColumns   []string
-	ValueColumns []string
-	DDL          string
-	InitialData  [][]any
+	Schema          string
+	Name            string
+	KeyColumns      []string
+	ValueColumns    []string
+	DDL             string
+	InitialData     [][]any
+	InitialDataFile string
 }
 
 func (it *InternalTable) QualifiedName() string {
@@ -352,38 +353,38 @@ var InternalTables = struct {
 			"typacl",
 		},
 		DDL: "oid BIGINT NOT NULL PRIMARY KEY, " + // Replace oid with BIGINT
-			"typname VARCHAR NOT NULL, " + // Replace name with VARCHAR
-			"typnamespace BIGINT NOT NULL, " + // Replace oid with BIGINT
-			"typowner BIGINT NOT NULL, " + // Replace oid with BIGINT
-			"typlen SMALLINT NOT NULL, " + // Supported as-is
-			"typbyval BOOLEAN NOT NULL, " + // Supported as-is
-			"typtype CHAR NOT NULL, " + // Replace \"char\" with CHAR
-			"typcategory CHAR NOT NULL, " + // Replace \"char\" with CHAR
-			"typispreferred BOOLEAN NOT NULL, " + // Supported as-is
-			"typisdefined BOOLEAN NOT NULL, " + // Supported as-is
-			"typdelim CHAR NOT NULL, " + // Replace \"char\" with CHAR
-			"typrelid BIGINT NOT NULL, " + // Replace oid with BIGINT
-			"typsubscript BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typelem BIGINT NOT NULL, " + // Replace oid with BIGINT
-			"typarray BIGINT NOT NULL, " + // Replace oid with BIGINT
-			"typinput BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typoutput BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typreceive BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typsend BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typmodin BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typmodout BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typanalyze BIGINT NOT NULL, " + // Replace regproc with VARCHAR
-			"typalign CHAR NOT NULL, " + // Replace \"char\" with CHAR
-			"typstorage CHAR NOT NULL, " + // Replace \"char\" with CHAR
-			"typnotnull BOOLEAN NOT NULL, " + // Supported as-is
-			"typbasetype BIGINT NOT NULL, " + // Replace oid with BIGINT
-			"typtypmod INTEGER NOT NULL, " + // Supported as-is
-			"typndims INTEGER NOT NULL, " + // Supported as-is
-			"typcollation BIGINT NOT NULL, " + // Replace oid with BIGINT
+			"typname VARCHAR , " + // Replace name with VARCHAR
+			"typnamespace BIGINT , " + // Replace oid with BIGINT
+			"typowner BIGINT , " + // Replace oid with BIGINT
+			"typlen SMALLINT , " + // Supported as-is
+			"typbyval BOOLEAN , " + // Supported as-is
+			"typtype CHAR , " + // Replace \"char\" with CHAR
+			"typcategory CHAR , " + // Replace \"char\" with CHAR
+			"typispreferred BOOLEAN , " + // Supported as-is
+			"typisdefined BOOLEAN , " + // Supported as-is
+			"typdelim CHAR , " + // Replace \"char\" with CHAR
+			"typrelid BIGINT , " + // Replace oid with BIGINT
+			"typsubscript BIGINT , " + // Replace regproc with VARCHAR
+			"typelem BIGINT , " + // Replace oid with BIGINT
+			"typarray BIGINT , " + // Replace oid with BIGINT
+			"typinput BIGINT , " + // Replace regproc with VARCHAR
+			"typoutput BIGINT , " + // Replace regproc with VARCHAR
+			"typreceive BIGINT , " + // Replace regproc with VARCHAR
+			"typsend BIGINT , " + // Replace regproc with VARCHAR
+			"typmodin BIGINT , " + // Replace regproc with VARCHAR
+			"typmodout BIGINT , " + // Replace regproc with VARCHAR
+			"typanalyze BIGINT , " + // Replace regproc with VARCHAR
+			"typalign CHAR , " + // Replace \"char\" with CHAR
+			"typstorage CHAR , " + // Replace \"char\" with CHAR
+			"typnotnull BOOLEAN , " + // Supported as-is
+			"typbasetype BIGINT , " + // Replace oid with BIGINT
+			"typtypmod INTEGER , " + // Supported as-is
+			"typndims INTEGER , " + // Supported as-is
+			"typcollation BIGINT , " + // Replace oid with BIGINT
 			"typdefaultbin VARCHAR, " + // Replace pg_node_tree with VARCHAR
 			"typdefault TEXT, " + // Supported as-is
 			"typacl TEXT",
-		InitialData: InitialDatas.PGType,
+		InitialDataFile: InitialDataFiles.PGType,
 	},
 	//postgres=# \d+ pg_proc;
 	//                                              Table "pg_catalog.pg_proc"
@@ -457,36 +458,36 @@ var InternalTables = struct {
 			"proacl",
 		},
 		DDL: "oid BIGINT NOT NULL PRIMARY KEY," +
-			"proname VARCHAR NOT NULL," +
-			"pronamespace BIGINT NOT NULL," +
-			"proowner BIGINT NOT NULL," +
-			"prolang BIGINT NOT NULL," +
-			"procost FLOAT NOT NULL," +
-			"prorows FLOAT NOT NULL," +
-			"provariadic BIGINT NOT NULL," +
-			"prosupport BIGINT NOT NULL," + // Replaced regproc with BIGINT
-			"prokind CHAR NOT NULL," +
-			"prosecdef BOOLEAN NOT NULL," +
-			"proleakproof BOOLEAN NOT NULL," +
-			"proisstrict BOOLEAN NOT NULL," +
-			"proretset BOOLEAN NOT NULL," +
-			"provolatile CHAR NOT NULL," +
-			"proparallel CHAR NOT NULL," +
-			"pronargs SMALLINT NOT NULL," +
-			"pronargdefaults SMALLINT NOT NULL," +
-			"prorettype BIGINT NOT NULL," +
-			"proargtypes VARCHAR NOT NULL," + // Replaced oidvector with VARCHAR
+			"proname VARCHAR ," +
+			"pronamespace BIGINT ," +
+			"proowner BIGINT ," +
+			"prolang BIGINT ," +
+			"procost FLOAT ," +
+			"prorows FLOAT ," +
+			"provariadic BIGINT ," +
+			"prosupport BIGINT ," + // Replaced regproc with BIGINT
+			"prokind CHAR ," +
+			"prosecdef BOOLEAN ," +
+			"proleakproof BOOLEAN ," +
+			"proisstrict BOOLEAN ," +
+			"proretset BOOLEAN ," +
+			"provolatile CHAR ," +
+			"proparallel CHAR ," +
+			"pronargs SMALLINT ," +
+			"pronargdefaults SMALLINT ," +
+			"prorettype BIGINT ," +
+			"proargtypes VARCHAR ," + // Replaced oidvector with VARCHAR
 			"proallargtypes VARCHAR," + // Replaced oid[] with VARCHAR
 			"proargmodes VARCHAR," + // Replaced 'char'[] with VARCHAR
 			"proargnames VARCHAR," + // Replaced text[] with VARCHAR
 			"proargdefaults TEXT," + // Replaced pg_node_tree with TEXT
 			"protrftypes VARCHAR," + // Replaced oid[] with VARCHAR
-			"prosrc TEXT NOT NULL," +
+			"prosrc TEXT ," +
 			"probin TEXT," +
 			"prosqlbody TEXT," + // Replaced pg_node_tree with TEXT
 			"proconfig VARCHAR," + // Replaced text[] with VARCHAR
 			"proacl VARCHAR", // Replaced aclitem[] with VARCHAR
-		InitialData: InitialDatas.PGProc,
+		InitialDataFile: InitialDataFiles.PGProc,
 	},
 
 	// postgres=# \d+ pg_class;
@@ -567,39 +568,39 @@ var InternalTables = struct {
 			"relpartbound",
 		},
 		DDL: "oid BIGINT NOT NULL PRIMARY KEY," +
-			"relname VARCHAR NOT NULL," +
-			"relnamespace BIGINT NOT NULL," +
-			"reltype BIGINT NOT NULL," +
-			"reloftype BIGINT NOT NULL," +
-			"relowner BIGINT NOT NULL," +
-			"relam BIGINT NOT NULL," +
-			"relfilenode BIGINT NOT NULL," +
-			"reltablespace BIGINT NOT NULL," +
-			"relpages INTEGER NOT NULL," +
-			"reltuples FLOAT NOT NULL," +
-			"relallvisible INTEGER NOT NULL," +
-			"reltoastrelid BIGINT NOT NULL," +
-			"relhasindex BOOLEAN NOT NULL," +
-			"relisshared BOOLEAN NOT NULL," +
-			"relpersistence CHAR NOT NULL," +
-			"relkind CHAR NOT NULL," +
-			"relnatts SMALLINT NOT NULL," +
-			"relchecks SMALLINT NOT NULL," +
-			"relhasrules BOOLEAN NOT NULL," +
-			"relhastriggers BOOLEAN NOT NULL," +
-			"relhassubclass BOOLEAN NOT NULL," +
-			"relrowsecurity BOOLEAN NOT NULL," +
-			"relforcerowsecurity BOOLEAN NOT NULL," +
-			"relispopulated BOOLEAN NOT NULL," +
-			"relreplident CHAR NOT NULL," +
-			"relispartition BOOLEAN NOT NULL," +
-			"relrewrite BIGINT NOT NULL," +
-			"relfrozenxid BIGINT NOT NULL," +
-			"relminmxid BIGINT NOT NULL," +
+			"relname VARCHAR ," +
+			"relnamespace BIGINT ," +
+			"reltype BIGINT ," +
+			"reloftype BIGINT ," +
+			"relowner BIGINT ," +
+			"relam BIGINT ," +
+			"relfilenode BIGINT ," +
+			"reltablespace BIGINT ," +
+			"relpages INTEGER ," +
+			"reltuples FLOAT ," +
+			"relallvisible INTEGER ," +
+			"reltoastrelid BIGINT ," +
+			"relhasindex BOOLEAN ," +
+			"relisshared BOOLEAN ," +
+			"relpersistence CHAR ," +
+			"relkind CHAR ," +
+			"relnatts SMALLINT ," +
+			"relchecks SMALLINT ," +
+			"relhasrules BOOLEAN ," +
+			"relhastriggers BOOLEAN ," +
+			"relhassubclass BOOLEAN ," +
+			"relrowsecurity BOOLEAN ," +
+			"relforcerowsecurity BOOLEAN ," +
+			"relispopulated BOOLEAN ," +
+			"relreplident CHAR ," +
+			"relispartition BOOLEAN ," +
+			"relrewrite BIGINT ," +
+			"relfrozenxid BIGINT ," +
+			"relminmxid BIGINT ," +
 			"relacl TEXT," +
 			"reloptions TEXT," +
 			"relpartbound TEXT",
-		InitialData: InitialDatas.PGClass,
+		InitialDataFile: InitialDataFiles.PGClass,
 	},
 	//  Table "pg_catalog.pg_namespace"
 	//  Column  |   Type    | Collation | Nullable | Default | Storage  | Compression | Stats target | Description

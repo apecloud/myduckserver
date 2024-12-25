@@ -110,6 +110,21 @@ func NewDBProvider(dataDir, dbFile string) (*DatabaseProvider, error) {
 				return nil, fmt.Errorf("failed to insert initial data into internal table %q: %w", t.Name, err)
 			}
 		}
+
+		if t.InitialDataFile != "" {
+			var count int
+			if err := storage.QueryRow(t.CountAllStmt()).Scan(&count); err != nil {
+				return nil, fmt.Errorf("failed to count rows in internal table %q: %w", t.Name, err)
+			}
+			if count == 0 {
+				if _, err := storage.ExecContext(
+					context.Background(),
+					fmt.Sprintf("COPY %s FROM '%s' (FORMAT CSV, HEADER)", t.QualifiedName(), t.InitialDataFile),
+				); err != nil {
+					return nil, fmt.Errorf("failed to insert initial data from file into internal table %q: %w", t.Name, err)
+				}
+			}
+		}
 	}
 
 	return &DatabaseProvider{
