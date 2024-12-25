@@ -12,9 +12,6 @@ type InternalTable struct {
 }
 
 func (it *InternalTable) QualifiedName() string {
-	//if it.Schema == "__sys__" {
-	//	return it.Name
-	//}
 	return it.Schema + "." + it.Name
 }
 

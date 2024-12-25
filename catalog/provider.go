@@ -25,8 +25,8 @@ type DatabaseProvider struct {
 	defaultTimeZone           string
 	connector                 *duckdb.Connector
 	storage                   *stdsql.DB
-	pool                      *ConnectionPool // TODO(Noy): Merge into the provider
-	catalogName               string          // database name in postgres
+	pool                      *ConnectionPool
+	catalogName               string // database name in postgres
 	dataDir                   string
 	dbFile                    string
 	dsn                       string
@@ -57,6 +57,7 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		dataDir:                   dataDir,
 	}
 
+	shouldInit := true
 	if defaultDB == "" || defaultDB == "memory" {
 		prov.catalogName = "memory"
 		prov.dbFile = ""
@@ -65,6 +66,8 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		prov.catalogName = defaultDB
 		prov.dbFile = defaultDB + ".db"
 		prov.dsn = filepath.Join(prov.dataDir, prov.dbFile)
+		_, err = os.Stat(prov.dsn)
+		shouldInit = os.IsNotExist(err)
 	}
 
 	prov.connector, err = duckdb.NewConnector(prov.dsn, nil)
@@ -91,7 +94,14 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		}
 	}
 
-	err = prov.initCatalog()
+	if shouldInit {
+		err = prov.initCatalog()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	err = prov.attachCatalogs()
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +169,7 @@ func (prov *DatabaseProvider) IsReady() bool {
 	return prov.ready
 }
 
-func (prov *DatabaseProvider) ExistsCatalog(name string) bool {
+func (prov *DatabaseProvider) HasCatalog(name string) bool {
 	name = strings.TrimSpace(name)
 	// in memory database does not need to be created
 	if name == "" || name == "memory" {
@@ -170,6 +180,27 @@ func (prov *DatabaseProvider) ExistsCatalog(name string) bool {
 	// if already exists, return error
 	_, err := os.Stat(dsn)
 	return os.IsExist(err)
+}
+
+// attachCatalogs attaches all the databases in the data directory
+func (prov *DatabaseProvider) attachCatalogs() error {
+	files, err := os.ReadDir(prov.dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to read data directory: %w", err)
+	}
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(file.Name(), ".db") {
+			continue
+		}
+		name := strings.TrimSuffix(file.Name(), ".db")
+		if _, err := prov.storage.ExecContext(context.Background(), "ATTACH IF NOT EXISTS '"+filepath.Join(prov.dataDir, file.Name())+"' AS "+name); err != nil {
+			logrus.WithError(err).Errorf("Failed to attach database %s", name)
+		}
+	}
+	return nil
 }
 
 func (prov *DatabaseProvider) CreateCatalog(name string, ifNotExists bool) error {
