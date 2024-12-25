@@ -1,33 +1,20 @@
 package backend
 
-import "regexp"
+import "strings"
 
 // RequestModifier is a function type that transforms a query string
 type RequestModifier func(string, *[]ResultModifier) string
 
-// Precompile regex for performance
-var autoIncrementRegex = regexp.MustCompile(`(?i)AUTO_INCREMENT=\d+`)
-var showSlaveStatusRegex = regexp.MustCompile(`(?i)^show\s+slave\s+status\s*;?$`)
-
 // default request modifier list
 var defaultRequestModifiers = []RequestModifier{
-	replaceAutoIncrement,
-	replaceShowSlaveStatus,
+	replaceMariaDBCollation,
 }
 
-func replaceAutoIncrement(query string, modifiers *[]ResultModifier) string {
-	if autoIncrementRegex.MatchString(query) {
-		query = autoIncrementRegex.ReplaceAllString(query, "")
-	}
-	return query
-}
-
-func replaceShowSlaveStatus(query string, modifiers *[]ResultModifier) string {
-	if showSlaveStatusRegex.MatchString(query) {
-		*modifiers = append(*modifiers, replaceShowSlaveStatusFieldNames)
-		query = showSlaveStatusRegex.ReplaceAllString(query, "SHOW REPLICA STATUS;")
-	}
-	return query
+// Newer MariaDB versions use utf8mb4_uca1400_ai_ci as the default collation,
+// which is not supported by go-mysql-server.
+// This function replaces the collation with the MySQL default utf8mb4_0900_ai_ci.
+func replaceMariaDBCollation(query string, _ *[]ResultModifier) string {
+	return strings.ReplaceAll(query, "utf8mb4_uca1400_ai_ci", "utf8mb4_0900_ai_ci")
 }
 
 // applyRequestModifiers applies request modifiers to a query

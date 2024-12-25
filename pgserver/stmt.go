@@ -283,12 +283,17 @@ func getPgCatalogRegex() *regexp.Regexp {
 			}
 			tableNames = append(tableNames, table.Name)
 		}
-		pgCatalogRegex = regexp.MustCompile(`(?i)\b(?:FROM|JOIN)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
+		pgCatalogRegex = regexp.MustCompile(`(?i)\b(FROM|JOIN|INTO)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
+		// pgCatalogRegex = regexp.MustCompile(`(?i)\b(?:FROM|JOIN)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
 	})
 	return pgCatalogRegex
 }
 
 func ConvertToSys(sql string) string {
+	return getPgCatalogRegex().ReplaceAllString(RemoveComments(sql), "$1 __sys__.$2")
+}
+
+func ConvertToSysBak(sql string) string {
 	return getPgCatalogRegex().ReplaceAllStringFunc(RemoveComments(sql), func(match string) string {
 		// match is expected to be in the format: "[FROM|JOIN] [pg_catalog|__sys__][.][tableName]"
 		matchArr := strings.Fields(match)

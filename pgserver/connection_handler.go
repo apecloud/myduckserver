@@ -31,8 +31,6 @@ import (
 	"sync/atomic"
 
 	"github.com/apecloud/myduckserver/adapter"
-	"github.com/apecloud/myduckserver/catalog"
-
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	gms "github.com/dolthub/go-mysql-server"
@@ -313,8 +311,8 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 	if !dbSpecified {
 		db = h.mysqlConn.User
 	}
-	if db == "postgres" {
-		if provider, ok := h.duckHandler.e.Analyzer.Catalog.DbProvider.(*catalog.DatabaseProvider); ok {
+	if db == "postgres" || db == "mysql" {
+		if provider := h.duckHandler.GetCatalogProvider(); provider != nil {
 			db = provider.CatalogName()
 		}
 	}
@@ -334,7 +332,7 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 		_ = h.send(&pgproto3.ErrorResponse{
 			Severity: string(ErrorResponseSeverity_Fatal),
 			Code:     "3D000",
-			Message:  fmt.Sprintf(`"database "%s" does not exist"`, db),
+			Message:  fmt.Sprintf(`"database "%s" does not exist, err: %v"`, db, err),
 			Routine:  "InitPostgres",
 		})
 		return err

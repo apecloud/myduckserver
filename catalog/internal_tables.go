@@ -59,9 +59,7 @@ func (it *InternalTable) UpsertStmt() string {
 	var b strings.Builder
 	b.Grow(128)
 	b.WriteString("INSERT OR REPLACE INTO ")
-	b.WriteString(it.Schema)
-	b.WriteByte('.')
-	b.WriteString(it.Name)
+	b.WriteString(it.QualifiedName())
 	b.WriteString(" VALUES (?")
 	for range it.KeyColumns[1:] {
 		b.WriteString(", ?")
@@ -77,9 +75,7 @@ func (it *InternalTable) DeleteStmt() string {
 	var b strings.Builder
 	b.Grow(128)
 	b.WriteString("DELETE FROM ")
-	b.WriteString(it.Schema)
-	b.WriteByte('.')
-	b.WriteString(it.Name)
+	b.WriteString(it.QualifiedName())
 	b.WriteString(" WHERE ")
 	b.WriteString(it.KeyColumns[0])
 	b.WriteString(" = ?")
@@ -94,9 +90,7 @@ func (it *InternalTable) DeleteAllStmt() string {
 	var b strings.Builder
 	b.Grow(128)
 	b.WriteString("DELETE FROM ")
-	b.WriteString(it.Schema)
-	b.WriteByte('.')
-	b.WriteString(it.Name)
+	b.WriteString(it.QualifiedName())
 	return b.String()
 }
 
@@ -110,9 +104,7 @@ func (it *InternalTable) SelectStmt() string {
 		b.WriteString(c)
 	}
 	b.WriteString(" FROM ")
-	b.WriteString(it.Schema)
-	b.WriteByte('.')
-	b.WriteString(it.Name)
+	b.WriteString(it.QualifiedName())
 	b.WriteString(" WHERE ")
 	b.WriteString(it.KeyColumns[0])
 	b.WriteString(" = ?")
@@ -134,9 +126,7 @@ func (it *InternalTable) SelectColumnsStmt(valueColumns []string) string {
 		b.WriteString(c)
 	}
 	b.WriteString(" FROM ")
-	b.WriteString(it.Schema)
-	b.WriteByte('.')
-	b.WriteString(it.Name)
+	b.WriteString(it.QualifiedName())
 	b.WriteString(" WHERE ")
 	b.WriteString(it.KeyColumns[0])
 	b.WriteString(" = ?")
@@ -152,9 +142,7 @@ func (it *InternalTable) SelectAllStmt() string {
 	var b strings.Builder
 	b.Grow(128)
 	b.WriteString("SELECT * FROM ")
-	b.WriteString(it.Schema)
-	b.WriteByte('.')
-	b.WriteString(it.Name)
+	b.WriteString(it.QualifiedName())
 	return b.String()
 }
 
@@ -163,9 +151,7 @@ func (it *InternalTable) CountAllStmt() string {
 	b.Grow(128)
 	b.WriteString("SELECT COUNT(*)")
 	b.WriteString(" FROM ")
-	b.WriteString(it.Schema)
-	b.WriteByte('.')
-	b.WriteString(it.Name)
+	b.WriteString(it.QualifiedName())
 	return b.String()
 }
 

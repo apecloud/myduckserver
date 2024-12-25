@@ -44,7 +44,7 @@ jobs:
     
     - name: Test packages
       run: |
-        go test -v -cover ./charset ./transpiler ./backend ./harness ./pgserver | tee packages.log
+        go test -v -cover ./charset ./transpiler ./backend ./harness ./pgserver ./catalog | tee packages.log
         cat packages.log | grep -e "^--- " | sed 's/--- //g' | awk 'BEGIN {count=1} {printf "%d. %s\n", count++, $0}'
         cat packages.log | grep -q "FAIL" && exit 1 || exit 0
 

@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -53,9 +52,6 @@ const (
 	ERNetReadError      = 1158
 	ERFatalReplicaError = 13117
 )
-
-// Match any strings starting with "ON" (case insensitive)
-var gtidModeIsOnRegex = regexp.MustCompile(`(?i)^ON$`)
 
 type tableIdentifier struct {
 	dbName, tableName string
@@ -127,27 +123,46 @@ func (a *binlogReplicaApplier) IsRunning() bool {
 }
 
 // This function will connect to the MySQL server and check the GTID_MODE.
-func connAndCheckGtidModeEnabled(ctx *sql.Context, params mysql.ConnParams) (bool, error) {
+func detectVersionAndGTIDMode(ctx *sql.Context, params mysql.ConnParams) (mariaDB, gtidMode bool, err error) {
 	conn, err := mysql.Connect(ctx, &params)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer conn.Close()
 
 	var qr *sqltypes.Result
-	qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_MODE", 1, true)
+	qr, err = conn.ExecuteFetch("SELECT VERSION()", 1, true)
 	if err != nil {
-		// Maybe it's a MariaDB server, try to get the GTID_STRICT_MODE instead
+		return false, false, fmt.Errorf("failed to check MySQL version: %w", err)
+	}
+	if len(qr.Rows) == 0 {
+		return false, false, errors.New("no rows returned when checking MySQL version")
+	}
+	version := string(qr.Rows[0][0].Raw())
+
+	mariaDB = strings.Contains(version, "MariaDB")
+	if mariaDB {
 		qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_STRICT_MODE", 1, true)
 		if err != nil {
-			return false, fmt.Errorf("error checking GTID_MODE: %v", err)
+			return mariaDB, false, fmt.Errorf("failed to check GTID_STRICT_MODE: %w", err)
+		}
+	} else {
+		qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_MODE", 1, true)
+		if err != nil {
+			return mariaDB, false, fmt.Errorf("failed to check GTID_MODE: %w", err)
 		}
 	}
 	if len(qr.Rows) == 0 {
-		return false, fmt.Errorf("no rows returned when checking GTID_MODE")
+		return mariaDB, false, errors.New("no rows returned when checking GTID_MODE")
 	}
-	gtidMode := string(qr.Rows[0][0].Raw())
-	return gtidModeIsOnRegex.MatchString(gtidMode), nil
+
+	gtidMode, err = qr.Rows[0][0].ToBool()
+	if err != nil {
+		gtidMode = strings.EqualFold(string(qr.Rows[0][0].Raw()), "ON") ||
+			string(qr.Rows[0][0].Raw()) == "1"
+	}
+
+	return mariaDB, gtidMode, nil
 }
 
 // connectAndStartReplicationEventStream connects to the configured MySQL replication source, including pausing
@@ -162,10 +177,13 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 		connectRetryDelay = status.ConnectRetry
 	})
 
-	var conn *mysql.Conn
-	var err error
-	gtidModeEnabled := false
-	flavorName := ""
+	var (
+		conn       *mysql.Conn
+		err        error
+		gtidMode   = false
+		mariaDB    = false
+		flavorName = ""
+	)
 	for connectionAttempts := uint64(0); ; connectionAttempts++ {
 		replicaSourceInfo, err := loadReplicationConfiguration(ctx, a.engine.Analyzer.Catalog.MySQLDb)
 
@@ -193,13 +211,15 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 			ConnectTimeoutMs: 4_000,
 		}
 
-		gtidModeEnabled, err = connAndCheckGtidModeEnabled(ctx, connParams)
+		mariaDB, gtidMode, err = detectVersionAndGTIDMode(ctx, connParams)
 		if err != nil && connectionAttempts >= maxConnectionAttempts {
 			return nil, err
 		}
 
-		if !gtidModeEnabled {
+		if !gtidMode {
 			flavorName = replication.FilePosFlavorID
+		} else if mariaDB {
+			flavorName = replication.MariadbFlavorID
 		} else {
 			flavorName = replication.Mysql56FlavorID
 		}
@@ -232,7 +252,7 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 
 	// Request binlog events to start
 	// TODO: This should also have retry logic
-	err = a.startReplicationEventStream(ctx, conn, gtidModeEnabled, flavorName)
+	err = a.startReplicationEventStream(ctx, conn, gtidMode, flavorName)
 	if err != nil {
 		return nil, err
 	}
@@ -316,14 +336,14 @@ func (a *binlogReplicaApplier) loadLogFilePosition(ctx *sql.Context, positionSto
 
 // startReplicationEventStream sends a request over |conn|, the connection to the MySQL source server, to begin
 // sending binlog events.
-func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, conn *mysql.Conn, gtidModeEnabled bool, flavorName string) error {
+func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, conn *mysql.Conn, gtidMode bool, flavorName string) error {
 	serverId, err := loadReplicaServerId()
 	if err != nil {
 		return err
 	}
 
 	var position replication.Position
-	if gtidModeEnabled {
+	if gtidMode {
 		position, err = a.loadGtidPosition(ctx, positionStore, flavorName)
 		if err != nil {
 			return err

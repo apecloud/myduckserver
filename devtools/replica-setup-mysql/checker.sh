@@ -13,7 +13,7 @@ check_server_params() {
     echo "Checking MySQL server parameters..."
 
     # Retrieve the required MySQL server variables using mysqlsh
-    result=$(mysqlsh --uri="$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION --sql -e "
+    result=$(mysqlsh --uri="$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql -e "
     SHOW VARIABLES WHERE variable_name IN ('binlog_format', 'enforce_gtid_consistency', 'gtid_mode', 'gtid_strict_mode', 'log_bin');
     ")
 
@@ -65,7 +65,7 @@ check_user_privileges() {
     echo "Checking privileges for the current user '$SOURCE_USER'..."
 
     # Check the user grants for the currently authenticated user using mysqlsh
-    result=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION --sql -e "
+    result=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql -e "
     SHOW GRANTS FOR CURRENT_USER();
     ")
 
@@ -98,7 +98,7 @@ check_mysql_config() {
 # Function to check if source MySQL server is empty
 check_if_source_mysql_is_empty() {
     # Run the query using mysqlsh and capture the output
-    OUTPUT=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_NO_PASSWORD_OPTION --sql -e "SHOW DATABASES;" 2>/dev/null)
+    OUTPUT=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql -e "SHOW DATABASES;" 2>/dev/null)
 
     check_command "retrieving database list"
 
@@ -114,7 +114,7 @@ check_if_source_mysql_is_empty() {
 
 # Function to check if there is ongoing replication on MyDuck Server
 check_if_myduck_has_replica() {
-    REPLICA_STATUS=$(mysqlsh --sql --host=$MYDUCK_HOST --port=$MYDUCK_PORT --user=root --password='' -e "SHOW REPLICA STATUS\G")
+    REPLICA_STATUS=$(mysqlsh --sql --host=$MYDUCK_HOST --port=$MYDUCK_PORT --user=${MYDUCK_USER} ${MYDUCK_PASSWORD_OPTION} -e "SHOW REPLICA STATUS\G")
     check_command "retrieving replica status"
 
     SOURCE_HOST_EXISTS=$(echo "$REPLICA_STATUS" | awk '/Source_Host/ {print $2}')

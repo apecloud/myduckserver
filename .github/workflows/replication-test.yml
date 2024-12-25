@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         # source: ['mysql', 'postgres', 'dolt', 'mariadb']
-        source: ['mysql', 'postgres']
+        source: ['mysql', 'postgres', 'mariadb']
     steps:
       - uses: actions/checkout@v4
 
@@ -37,9 +37,7 @@ jobs:
               mariadb:latest \
               --gtid-strict-mode=1 \
               --log-bin=mybinlog \
-              --binlog-format=ROW \
-              --character-set-server=utf8mb4 \
-              --collation-server=utf8mb4_general_ci
+              --binlog-format=ROW
 
           elif [ "${{ matrix.source }}" = "dolt" ]; then
             # Create Dolt config
