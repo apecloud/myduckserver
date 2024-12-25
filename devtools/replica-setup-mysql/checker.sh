@@ -14,7 +14,7 @@ check_server_params() {
 
     # Retrieve the required MySQL server variables using mysqlsh
     result=$(mysqlsh --uri="$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql -e "
-    SHOW VARIABLES WHERE variable_name IN ('binlog_format', 'enforce_gtid_consistency', 'gtid_mode', 'gtid_strict_mode', 'log_bin');
+    SHOW VARIABLES WHERE variable_name IN ('log_bin', 'binlog_format', 'gtid_mode', 'enforce_gtid_consistency', 'gtid_strict_mode', 'gtid_current_pos', 'gtid_executed');
     ")
 
     check_command "retrieving server parameters"
@@ -26,11 +26,19 @@ check_server_params() {
     fi
 
     # Check for each parameter and validate their values
-    binlog_format=$(echo "$result" | grep -i "binlog_format" | awk '{print $2}')
-    enforce_gtid_consistency=$(echo "$result" | grep -i "enforce_gtid_consistency" | awk '{print $2}')
-    gtid_mode=$(echo "$result" | grep -i "gtid_mode" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
-    gtid_strict_mode=$(echo "$result" | grep -i "gtid_strict_mode" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
     log_bin=$(echo "$result" | grep -i "log_bin" | awk '{print $2}')
+    binlog_format=$(echo "$result" | grep -i "binlog_format" | awk '{print $2}')
+    gtid_mode=$(echo "$result" | grep -i "gtid_mode" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+    enforce_gtid_consistency=$(echo "$result" | grep -i "enforce_gtid_consistency" | awk '{print $2}')
+    gtid_strict_mode=$(echo "$result" | grep -i "gtid_strict_mode" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+    gtid_current_pos=$(echo "$result" | grep -i "gtid_current_pos" | awk '{print $2}')
+    gtid_executed=$(echo "$result" | grep -i "gtid_executed" | awk '{print $2}')
+
+    # Validate log_bin
+    if [[ "$log_bin" != "ON" && "$log_bin" != "1" ]]; then
+        echo "Error: log_bin is not enabled. Current value is '$log_bin'."
+        return 1
+    fi
 
     # Validate binlog_format
     if [[ "$binlog_format" != "ROW" ]]; then
@@ -50,10 +58,12 @@ check_server_params() {
         return 1
     fi
 
-    # Validate log_bin
-    if [[ "$log_bin" != "ON" && "$log_bin" != "1" ]]; then
-        echo "Error: log_bin is not enabled. Current value is '$log_bin'."
-        return 1
+    # Set GTID_EXECUTED to either gtid_current_pos or gtid_executed
+    if [[ -n "$gtid_strict_mode" ]]; then
+        SOURCE_IS_MARIADB="true"
+        GTID_EXECUTED="$gtid_current_pos"
+    else
+        GTID_EXECUTED="$gtid_executed"
     fi
 
     echo "MySQL server parameters are correctly configured."
