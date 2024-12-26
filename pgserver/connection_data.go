@@ -60,6 +60,7 @@ type ConvertedStatement struct {
 	HasSentRowDesc     bool
 	SubscriptionConfig *SubscriptionConfig
 	BackupConfig       *BackupConfig
+	RestoreConfig      *RestoreConfig
 }
 
 // copyFromStdinState tracks the metadata for an import of data into a table using a COPY FROM STDIN statement. When
