@@ -1004,6 +1004,14 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 		return h.send(&pgproto3.ErrorResponse{
 			Message: msg,
 		})
+	} else if statement.RestoreConfig != nil {
+		msg, err := h.executeRestore(statement.RestoreConfig)
+		if err != nil {
+			return err
+		}
+		return h.send(&pgproto3.ErrorResponse{
+			Message: msg,
+		})
 	}
 
 	callback := h.spoolRowsCallback(statement.Tag, &rowsAffected, false)
@@ -1221,13 +1229,21 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 		}}, nil
 	}
 
-	// Check if the query is a backup query, and if so, parse it as a backup query.
+	// Check if the query is a backup/restore query, and if so, parse it as a backup/restore query.
 	backupConfig, err := parseBackupSQL(query)
 	if backupConfig != nil && err == nil {
 		return []ConvertedStatement{{
 			String:       query,
 			PgParsable:   true,
 			BackupConfig: backupConfig,
+		}}, nil
+	}
+	restoreConfig, err := parseRestoreSQL(query)
+	if restoreConfig != nil && err == nil {
+		return []ConvertedStatement{{
+			String:        query,
+			PgParsable:    true,
+			RestoreConfig: restoreConfig,
 		}}, nil
 	}
 

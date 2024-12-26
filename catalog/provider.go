@@ -189,16 +189,33 @@ func (prov *DatabaseProvider) attachCatalogs() error {
 		return fmt.Errorf("failed to read data directory: %w", err)
 	}
 	for _, file := range files {
-		if file.IsDir() {
-			continue
+		err := prov.AttachCatalog(file, true)
+		if err != nil {
+			logrus.Error(err)
 		}
-		if !strings.HasSuffix(file.Name(), ".db") {
-			continue
+	}
+	return nil
+}
+
+func (prov *DatabaseProvider) AttachCatalog(file interface {
+	IsDir() bool
+	Name() string
+}, ignoreNonDB bool) error {
+	if file.IsDir() {
+		if ignoreNonDB {
+			return nil
 		}
-		name := strings.TrimSuffix(file.Name(), ".db")
-		if _, err := prov.storage.ExecContext(context.Background(), "ATTACH IF NOT EXISTS '"+filepath.Join(prov.dataDir, file.Name())+"' AS "+name); err != nil {
-			logrus.WithError(err).Errorf("Failed to attach database %s", name)
+		return fmt.Errorf("file %s is a directory", file.Name())
+	}
+	if !strings.HasSuffix(file.Name(), ".db") {
+		if ignoreNonDB {
+			return nil
 		}
+		return fmt.Errorf("file %s is not a database file", file.Name())
+	}
+	name := strings.TrimSuffix(file.Name(), ".db")
+	if _, err := prov.storage.ExecContext(context.Background(), "ATTACH IF NOT EXISTS '"+filepath.Join(prov.dataDir, file.Name())+"' AS "+name); err != nil {
+		return fmt.Errorf("failed to attach database %s: %w", name, err)
 	}
 	return nil
 }

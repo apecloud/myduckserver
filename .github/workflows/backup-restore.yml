@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - compatibility
+      - noy/feat-restore-database
       - test
   pull_request:
     branches: [ "main" ]
@@ -147,7 +147,7 @@ jobs:
           psql "postgres://postgres:password@localhost:15432/testdb" \
             -c "INSERT INTO test_table VALUES (4, 'offline data 4');"
 
-      - name: Restore MyDuck
+      - name: Restore MyDuck at Startup
         run: |
           # Restart MyDuck
           ./myduckserver \
@@ -163,6 +163,29 @@ jobs:
           # Verify replication catches up
           psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
           
+          # Kill MyDuck
+          pkill myduckserver
+          rm -f ./myduck.db
+
+      - name: Restore MyDuck at Runtime
+        run: |
+          # Start MyDuck
+          ./myduckserver &
+          sleep 5
+          
+          psql "postgres://postgres:@127.0.0.1:5432" <<-EOSQL
+            RESTORE DATABASE testdb2 FROM 's3c://myduck-backup/myduck/myduck.bak' 
+              ENDPOINT = '127.0.0.1:9001' 
+              ACCESS_KEY_ID = 'minioadmin' 
+              SECRET_ACCESS_KEY = 'minioadmin';
+          EOSQL
+          sleep 10
+
+      - name: Test Replication
+        run: |
+          # Verify replication catches up
+          psql -h 127.0.0.1 -p 5432 -U postgres -d testdb2 -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
+
           # Kill MyDuck
           pkill myduckserver
 
