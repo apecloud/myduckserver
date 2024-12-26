@@ -118,7 +118,7 @@ jobs:
             apecloud/myduckserver:latest
 
           # Wait and check container status
-          for i in {1..10}; do
+          for i in {1..15}; do
             if ! docker ps | grep -q myduck; then
               echo "MyDuck container exited unexpectedly"
               docker logs myduck
