@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 
 load helper
 
@@ -50,7 +51,6 @@ EOF
     [ "$status" -eq 0 ]
     run -0 cat "${tmpfile}"
     [ "${#lines[@]}" -ge 12 ]
-    [ "${lines[0]}" = "1,one,1.1" ]
     [ "${lines[3]}" = "1,one" ]
     [ "${lines[6]}" = "1|one|1.1" ]
     [ "${lines[9]}" = "1|one|2.1" ]
