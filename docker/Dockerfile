@@ -96,7 +96,6 @@ COPY --from=builder /myduckserver /usr/local/bin/myduckserver
 COPY --chown=admin:admin --chmod=755 docker/*.sh .
 COPY --chown=admin:admin --chmod=755 devtools/replica-setup-mysql ./replica-setup-mysql
 COPY --chown=admin:admin --chmod=755 devtools/replica-setup-postgres ./replica-setup-postgres
-COPY --chown=admin:admin --chmod=755 initialdata ./initialdata
 
 # Initialize DuckDB
 RUN myduckserver --init

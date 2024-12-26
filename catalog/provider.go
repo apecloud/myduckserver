@@ -168,6 +168,10 @@ func (prov *DatabaseProvider) initCatalog() error {
 					return fmt.Errorf("failed to write initial data to temporary file: %w", err)
 				}
 
+				if err = tmpFile.Sync(); err != nil {
+					return fmt.Errorf("failed to sync initial data file: %w", err)
+				}
+
 				// Execute the COPY command to insert data into the table
 				if _, err := prov.storage.ExecContext(
 					context.Background(),
