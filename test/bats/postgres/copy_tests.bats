@@ -17,14 +17,14 @@ teardown() {
 }
 
 @test "copy with csv format" {
-    psql_exec "DROP TABLE IF EXISTS test_copy.csv_test;"
     # Test copy to CSV file
     tmpfile=$(mktemp)
-    run psql_exec "\copy test_copy.t TO '${tmpfile}' (FORMAT CSV, HEADER false);"
-    [ "$status" -eq 0 ]
+    psql_exec "\copy test_copy.t TO '${tmpfile}' (FORMAT CSV, HEADER false);"
     run cat "${tmpfile}"
     [ "$status" -eq 0 ]
-    [[ "${lines[0]}" == "1,one,1.1" ]]
+    [ "${lines[0]}" = "1,one,1.1" ]
+    [ "${lines[1]}" = "2,two,2.2" ]
+    [ "${lines[2]}" = "3,three,3.3" ]
     rm "${tmpfile}"
 
     # Test copy from CSV with headers
@@ -48,10 +48,10 @@ EOF
 EOF
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -ge 12 ]
-    [[ "${lines[0]}" == "1,one,1.1" ]]
-    [[ "${lines[3]}" == "1,one" ]]
-    [[ "${lines[6]}" == "1|one|1.1" ]]
-    [[ "${lines[9]}" == "1|one|2.1" ]]
+    [ "${lines[0]}" = "1,one,1.1" ]
+    [ "${lines[3]}" = "1,one" ]
+    [ "${lines[6]}" = "1|one|1.1" ]
+    [ "${lines[9]}" = "1|one|2.1" ]
 }
 
 @test "copy with parquet format" {
@@ -88,7 +88,6 @@ EOF
 }
 
 @test "copy with arrow format" {
-    psql_exec "DROP TABLE IF EXISTS test_copy.arrow_test;"
     # Test basic COPY TO ARROW
     outfile="test_out.arrow"
     run psql_exec_stdin <<-EOF
@@ -131,7 +130,6 @@ EOF
 }
 
 @test "copy from database" {
-    psql_exec "DROP TABLE IF EXISTS test_copy.db_test;"
     run psql_exec_stdin <<-EOF
         USE test_copy;
         CREATE TABLE db_test (a int, b text);

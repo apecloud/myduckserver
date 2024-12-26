@@ -49,4 +49,4 @@ jobs:
 
       - name: Run BATS Tests
         run: |
-          find test/bats -name "*.bats" -type f -exec bats {} +
+          find test/bats -name "*.bats" -type f -exec bats --print-output-on-failure {} +
