@@ -20,13 +20,3 @@ var InitialDataTables = struct {
 		{"3926", "20", "4536", "0", "3124", "int8range_canonical", "int8range_subdiff"},
 	},
 }
-
-var InitialDataFiles = struct {
-	PGClass string
-	PGProc  string
-	PGType  string
-}{
-	PGClass: "pg_class.csv",
-	PGProc:  "pg_proc.csv",
-	PGType:  "pg_type.csv",
-}

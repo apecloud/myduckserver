@@ -18,6 +18,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/configuration"
+	"github.com/apecloud/myduckserver/initialdata"
 )
 
 type DatabaseProvider struct {
@@ -32,7 +33,6 @@ type DatabaseProvider struct {
 	dsn                       string
 	externalProcedureRegistry sql.ExternalStoredProcedureRegistry
 	ready                     bool
-	initialDataDir            string
 }
 
 var _ sql.DatabaseProvider = (*DatabaseProvider)(nil)
@@ -42,21 +42,20 @@ var _ configuration.DataDirProvider = (*DatabaseProvider)(nil)
 
 const readOnlySuffix = "?access_mode=read_only"
 
-func NewInMemoryDBProvider(initialDataDir string) *DatabaseProvider {
-	prov, err := NewDBProvider("", ".", "", initialDataDir)
+func NewInMemoryDBProvider() *DatabaseProvider {
+	prov, err := NewDBProvider("", ".", "")
 	if err != nil {
 		panic(err)
 	}
 	return prov
 }
 
-func NewDBProvider(defaultTimeZone, dataDir, defaultDB, initialDataDir string) (prov *DatabaseProvider, err error) {
+func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabaseProvider, err error) {
 	prov = &DatabaseProvider{
 		mu:                        &sync.RWMutex{},
 		defaultTimeZone:           defaultTimeZone,
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
 		dataDir:                   dataDir,
-		initialDataDir:            initialDataDir,
 	}
 
 	shouldInit := true
@@ -146,15 +145,33 @@ func (prov *DatabaseProvider) initCatalog() error {
 			}
 		}
 
-		if t.InitialDataFile != "" {
+		initialFileContent := initialdata.InitialTableDataMap[t.Name]
+		if initialFileContent != "" {
 			var count int
+			// Count rows in the internal table
 			if err := prov.storage.QueryRow(t.CountAllStmt()).Scan(&count); err != nil {
 				return fmt.Errorf("failed to count rows in internal table %q: %w", t.Name, err)
 			}
+
 			if count == 0 {
+				// Create temporary file to store initial data
+				tmpFile, err := os.CreateTemp("", "initial-data-"+t.Name+".csv")
+				if err != nil {
+					return fmt.Errorf("failed to create temporary file for initial data: %w", err)
+				}
+				// Ensure the temporary file is removed after usage
+				defer os.Remove(tmpFile.Name())
+				defer tmpFile.Close()
+
+				// Write the initial data to the temporary file
+				if _, err := tmpFile.WriteString(initialFileContent); err != nil {
+					return fmt.Errorf("failed to write initial data to temporary file: %w", err)
+				}
+
+				// Execute the COPY command to insert data into the table
 				if _, err := prov.storage.ExecContext(
 					context.Background(),
-					fmt.Sprintf("COPY %s FROM '%s' (FORMAT CSV, HEADER)", t.QualifiedName(), prov.initialDataDir+t.InitialDataFile),
+					fmt.Sprintf("COPY %s FROM '%s' (DELIMITER ',', HEADER)", t.QualifiedName(), tmpFile.Name()),
 				); err != nil {
 					return fmt.Errorf("failed to insert initial data from file into internal table %q: %w", t.Name, err)
 				}

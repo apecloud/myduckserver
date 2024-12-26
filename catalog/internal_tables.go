@@ -3,13 +3,12 @@ package catalog
 import "strings"
 
 type InternalTable struct {
-	Schema          string
-	Name            string
-	KeyColumns      []string
-	ValueColumns    []string
-	DDL             string
-	InitialData     [][]any
-	InitialDataFile string
+	Schema       string
+	Name         string
+	KeyColumns   []string
+	ValueColumns []string
+	DDL          string
+	InitialData  [][]any
 }
 
 func (it *InternalTable) QualifiedName() string {
@@ -370,7 +369,6 @@ var InternalTables = struct {
 			"typdefaultbin VARCHAR, " + // Replace pg_node_tree with VARCHAR
 			"typdefault TEXT, " + // Supported as-is
 			"typacl TEXT",
-		InitialDataFile: InitialDataFiles.PGType,
 	},
 	//postgres=# \d+ pg_proc;
 	//                                              Table "pg_catalog.pg_proc"
@@ -473,7 +471,6 @@ var InternalTables = struct {
 			"prosqlbody TEXT," + // Replaced pg_node_tree with TEXT
 			"proconfig VARCHAR," + // Replaced text[] with VARCHAR
 			"proacl VARCHAR", // Replaced aclitem[] with VARCHAR
-		InitialDataFile: InitialDataFiles.PGProc,
 	},
 
 	// postgres=# \d+ pg_class;
@@ -586,7 +583,6 @@ var InternalTables = struct {
 			"relacl TEXT," +
 			"reloptions TEXT," +
 			"relpartbound TEXT",
-		InitialDataFile: InitialDataFiles.PGClass,
 	},
 	//  Table "pg_catalog.pg_namespace"
 	//  Column  |   Type    | Collation | Nullable | Default | Storage  | Compression | Stats target | Description

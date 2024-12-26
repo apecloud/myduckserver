@@ -19,7 +19,7 @@ import (
 )
 
 func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pgserver.Server, conn *pgx.Conn, close func() error, err error) {
-	provider := catalog.NewInMemoryDBProvider("../../initialdata/")
+	provider := catalog.NewInMemoryDBProvider()
 
 	// Postgres tables are created in the `public` schema by default.
 	// Create the `public` schema if it doesn't exist.
