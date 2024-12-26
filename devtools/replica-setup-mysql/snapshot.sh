@@ -53,6 +53,12 @@ if [[ $GTID_MODE == "ON" ]]; then
     #   Executed_GTID_set: 369107a6-a0a5-11ef-a255-0242ac110008:1-10
     EXECUTED_GTID_SET=$(echo "$output" | grep -i "EXECUTED_GTID_SET" | awk '{print $2}')
 
+    # If the source is MariaDB, we will get `Executed_GTID_set: ''`.
+    # In this case, we will use GTID_EXECUTED instead.
+    if [[ "$EXECUTED_GTID_SET" == "''" && "$SOURCE_IS_MARIADB" == "true" ]]; then
+        EXECUTED_GTID_SET="$GTID_EXECUTED"
+    fi
+
     # Check if EXECUTED_GTID_SET is empty
     if [ -z "$EXECUTED_GTID_SET" ]; then
         echo "EXECUTED_GTID_SET is empty, exiting."
