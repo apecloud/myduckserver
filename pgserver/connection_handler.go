@@ -1414,13 +1414,13 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 	}
 	defer writer.Close()
 
-	pipePath, ch, err := writer.Start()
+	var globalErr atomic.Pointer[error]
+	pipePath, ch, err := writer.Start(&globalErr)
 	if err != nil {
 		return err
 	}
 
 	done := make(chan struct{})
-	var globalErr atomic.Value
 	var blocked atomic.Bool
 	blocked.Store(true)
 	go func() {
@@ -1431,7 +1431,8 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 		pipe, err := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
 		blocked.Store(false)
 		if err != nil {
-			globalErr.Store(fmt.Errorf("failed to open pipe for reading: %w", err))
+			err = fmt.Errorf("failed to open pipe for reading: %w", err)
+			globalErr.Store(&err)
 			cancel()
 			return
 		}
@@ -1465,7 +1466,7 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 
 		switch format {
 		case tree.CopyFormatText:
-			flag := true
+			responsed := false
 			reader := bufio.NewReader(pipe)
 			for {
 				line, err := reader.ReadSlice('\n')
@@ -1473,23 +1474,23 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 					if err == io.EOF {
 						break
 					}
-					globalErr.Store(err)
+					globalErr.Store(&err)
 					cancel()
 					return
 				}
-				if flag {
-					flag = false
+				if !responsed {
+					responsed = true
 					count := bytes.Count(line, []byte{'\t'})
 					err := sendCopyOutResponse(count + 1)
 					if err != nil {
-						globalErr.Store(err)
+						globalErr.Store(&err)
 						cancel()
 						return
 					}
 				}
 				err = sendCopyData(line)
 				if err != nil {
-					globalErr.Store(err)
+					globalErr.Store(&err)
 					cancel()
 					return
 				}
@@ -1497,7 +1498,7 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 		default:
 			err := sendCopyOutResponse(1)
 			if err != nil {
-				globalErr.Store(err)
+				globalErr.Store(&err)
 				cancel()
 				return
 			}
@@ -1509,14 +1510,14 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 					if err == io.EOF {
 						break
 					}
-					globalErr.Store(err)
+					globalErr.Store(&err)
 					cancel()
 					return
 				}
 				if n > 0 {
 					err := sendCopyData(buf[:n])
 					if err != nil {
-						globalErr.Store(err)
+						globalErr.Store(&err)
 						cancel()
 						return
 					}
@@ -1528,30 +1529,29 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 	select {
 	case <-ctx.Done(): // Context is canceled
 		<-done
-		err, _ := globalErr.Load().(error)
-		return errors.Join(ctx.Err(), err)
+		if errPtr := globalErr.Load(); errPtr != nil {
+			return errors.Join(ctx.Err(), err)
+		}
+		return ctx.Err()
 	case result := <-ch:
 		if blocked.Load() {
 			// If the pipe is still opened for reading but the writer has exited,
 			// then we need to open the pipe for writing again to unblock the reader.
-			globalErr.Store(errors.Join(
-				fmt.Errorf("pipe is opened for reading but the writer has exited"),
-				result.Err,
-			))
 			pipe, _ := os.OpenFile(pipePath, os.O_WRONLY, os.ModeNamedPipe)
+			<-done
 			if pipe != nil {
 				pipe.Close()
 			}
+		} else {
+			<-done
 		}
-
-		<-done
 
 		if result.Err != nil {
 			return fmt.Errorf("failed to copy data: %w", result.Err)
 		}
 
-		if err, ok := globalErr.Load().(error); ok {
-			return err
+		if errPtr := globalErr.Load(); errPtr != nil {
+			return *errPtr
 		}
 
 		// After data is sent and the producer side is finished without errors, send CopyDone

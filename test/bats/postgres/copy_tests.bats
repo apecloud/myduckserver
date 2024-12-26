@@ -133,7 +133,6 @@ EOF
 }
 
 @test "copy error handling" {
-    skip
     # Test copying from non-existent schema
     run psql_exec "\copy nonexistent_schema.t TO STDOUT;"
     [ "$status" -ne 0 ]
