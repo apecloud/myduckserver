@@ -27,7 +27,6 @@ var wellKnownStatementTags = map[string]struct{}{
 	"EXECUTE": {},
 	"ATTACH":  {},
 	"DETACH":  {},
-	"RESTORE": {},
 }
 
 func IsWellKnownStatementTag(tag string) bool {

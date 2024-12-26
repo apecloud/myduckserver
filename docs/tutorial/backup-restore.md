@@ -38,15 +38,13 @@ BACKUP DATABASE my_database TO 's3://my_bucket/my_database/'
 
 ## Restore
 
-### Current Limitation
-
-Currently, MyDuck Server supports only a single database (catalog). Therefore, restore operations are performed only at startup. Future updates will enable support for multiple databases, allowing restore operations via SQL commands.
-
 ### Restore Process
 
-To restore a database, download the backup file (`mysql.db`) and attach it during the startup of MyDuck Server.
+To restore a database, download the backup file (`mysql.db`) and attach it.
 
 **Note:** Backup files created by either MyDuck Server or DuckDB can be used to restore MyDuck Server.
+
+### Restore at Startup
 
 #### Docker Usage
 
@@ -103,4 +101,22 @@ Run MyDuck Server with the following command-line arguments to perform a restore
   --restore-endpoint=s3.ap-northwest-1.amazonaws.com \
   --restore-access-key-id=xxxxxxxxxxxxxx \
   --restore-secret-access-key=xxxxxxxxxxxxxx
+```
+
+### Restore Syntax (Restore at Runtime)
+
+```sql
+RESTORE DATABASE my_database FROM '<uri>'
+  ENDPOINT = '<endpoint>'
+  ACCESS_KEY_ID = '<access_key>'
+  SECRET_ACCESS_KEY = '<secret_key>'
+```
+
+**Example**
+
+```sql
+RESTORE DATABASE my_database FROM 's3://my_bucket/my_database/'
+  ENDPOINT = 's3.cn-northwest-1.amazonaws.com.cn'
+  ACCESS_KEY_ID = 'xxxxxxxxxxxxx'
+  SECRET_ACCESS_KEY = 'xxxxxxxxxxxx'
 ```
