@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"github.com/apecloud/myduckserver/flightsqlserver"
+	"github.com/marcboeker/go-duckdb"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
@@ -96,7 +98,16 @@ func (s *SqlTestSuite) SetupSuite() {
 		if err != nil {
 			return nil, "", err
 		}
-		sqliteServer, err := flightsqlserver.NewSQLiteFlightSQLServer(provider.Storage())
+		conn, err := provider.Connector().Connect(context.Background())
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		duckConn, ok := conn.(*duckdb.Conn)
+		if !ok {
+			log.Fatal("Failed to get DuckDB connection")
+		}
+		sqliteServer, err := flightsqlserver.NewSQLiteFlightSQLServer(provider.Storage(), duckConn)
 		if err != nil {
 			return nil, "", err
 		}

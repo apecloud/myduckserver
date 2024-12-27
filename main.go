@@ -40,6 +40,7 @@ import (
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
+	"github.com/marcboeker/go-duckdb"
 	_ "github.com/marcboeker/go-duckdb"
 	"github.com/sirupsen/logrus"
 )
@@ -192,12 +193,18 @@ func main() {
 	if flightsqlPort > 0 {
 
 		db := provider.Storage()
+		conn, err := provider.Connector().Connect(context.Background())
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer db.Close()
 
-		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db)
+		duckConn, ok := conn.(*duckdb.Conn)
+		if !ok {
+			log.Fatal("Failed to get DuckDB connection")
+		}
+
+		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db, duckConn)
 		if err != nil {
 			log.Fatal(err)
 		}

@@ -87,18 +87,36 @@ func executeQueryAndVerify(cnxn adbc.Connection, query string, expectedResults [
 		record := rows.Record()
 		numRows := record.NumRows()
 
-		id := record.Column(0).(*array.Int64)
-		name := record.Column(1).(*array.String)
-		value := record.Column(2).(*array.Int64)
 		for i := 0; i < int(numRows); i++ {
+			var id, value int64
+			switch idCol := record.Column(0).(type) {
+			case *array.Int32:
+				id = int64(idCol.Value(i))
+			case *array.Int64:
+				id = idCol.Value(i)
+			default:
+				t.Fatalf("unexpected type for id column: %T", record.Column(0))
+			}
+
+			name := record.Column(1).(*array.String)
+
+			switch valueCol := record.Column(2).(type) {
+			case *array.Int32:
+				value = int64(valueCol.Value(i))
+			case *array.Int64:
+				value = valueCol.Value(i)
+			default:
+				t.Fatalf("unexpected type for value column: %T", record.Column(2))
+			}
+
 			actualResults = append(actualResults, struct {
 				id    int64
 				name  string
 				value int64
 			}{
-				id:    id.Value(i),
+				id:    id,
 				name:  name.Value(i),
-				value: value.Value(i),
+				value: value,
 			})
 		}
 	}
