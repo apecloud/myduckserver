@@ -32,16 +32,17 @@ class TestFlightSQLDatabase(unittest.TestCase):
                     value INT
                 )
             """)  # Create the table
+            self.conn.commit()
 
     def test_insert_and_select(self):
         """Test inserting data and selecting it back to verify correctness."""
         with self.conn.cursor() as cursor:
             # Insert sample data
-            cursor.execute("INSERT INTO myduck.intTable (id, name, value) VALUES (1, 'TestName', 100)")
-            cursor.execute("INSERT INTO myduck.intTable (id, name, value) VALUES (2, 'AnotherName', 200)")
+            cursor.execute("INSERT INTO intTable (id, name, value) VALUES (1, 'TestName', 100)")
+            cursor.execute("INSERT INTO intTable (id, name, value) VALUES (2, 'AnotherName', 200)")
 
             # Select data from the table
-            cursor.execute("SELECT * FROM myduck.intTable")
+            cursor.execute("SELECT * FROM intTable")
             rows = cursor.fetchall()
 
             # Expected result after insertions
