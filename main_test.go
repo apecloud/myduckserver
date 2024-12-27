@@ -1130,15 +1130,10 @@ func TestCreateTable(t *testing.T) {
 		"CREATE_TABLE_t1_as_select_concat(\"new\",_s),_i_from_mytable",
 		"display_width_for_numeric_types",
 		"SHOW_FULL_FIELDS_FROM_numericDisplayWidthTest;",
-		"Validate_that_CREATE_LIKE_preserves_checks",
 		"datetime_precision",
 		"CREATE_TABLE_tt_(pk_int_primary_key,_d_datetime(6)_default_current_timestamp(6))",
 		"Identifier_lengths",
-		"create_table_b_(a_int_primary_key,_constraint_abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl_check_(a_>_0))",
-		"create_table_d_(a_int_primary_key,_constraint_abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl_foreign_key_(a)_references_parent(a))",
 		"table_charset_options",
-		"show_create_table_t1",
-		"show_create_table_t2",
 		"show_create_table_t3",
 		"show_create_table_t4",
 		"create_table_with_select_preserves_default",
@@ -1158,17 +1153,10 @@ func TestCreateTable(t *testing.T) {
 		"CREATE_EVENT_foo_ON_SCHEDULE_EVERY_1_YEAR_DO_CREATE_TABLE_bar_AS_SELECT_1;",
 		"trigger_contains_CREATE_TABLE_AS",
 		"CREATE_TRIGGER_foo_AFTER_UPDATE_ON_t_FOR_EACH_ROW_BEGIN_CREATE_TABLE_bar_AS_SELECT_1;_END;",
-		"insert_into_t1_(b)_values_(1),_(2)",
-		"show_create_table_t1",
-		"select_*_from_t1_order_by_b",
-		"insert_into_t1_(b)_values_(1),_(2)",
-		"show_create_table_t1",
-		"select_*_from_t1_order_by_b",
 	}
 
 	// Patch auto-generated queries that are known to fail
 	waitForFixQueries = append(waitForFixQueries, []string{
-		"CREATE TABLE t1 (pk int primary key, test_score int, height int CHECK (height < 10) , CONSTRAINT mycheck CHECK (test_score >= 50))",
 		"create table a (i int primary key, j int default 100);", // skip the case "create table with select preserves default" since there is no support for CREATE TABLE SELECT
 	}...)
 

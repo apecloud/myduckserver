@@ -99,8 +99,8 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 
 		if dst, err := plan.GetInsertable(insert.Destination); err == nil {
 			// For AUTO_INCREMENT column, we fallback to the framework if the column is specified.
-			if dst.Schema().HasAutoIncrement() &&
-				(0 == len(insert.ColumnNames) || len(insert.ColumnNames) == len(dst.Schema())) {
+			// if dst.Schema().HasAutoIncrement() && (0 == len(insert.ColumnNames) || len(insert.ColumnNames) == len(dst.Schema())) {
+			if dst.Schema().HasAutoIncrement() {
 				return b.base.Build(ctx, root, r)
 			}
 			// For table with check constraints, we fallback to the framework.

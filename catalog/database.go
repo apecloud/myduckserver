@@ -229,7 +229,7 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	b.WriteString(")")
 
 	// Add comment to the table
-	info := ExtraTableInfo{schema.PkOrdinals, withoutIndex, fullSequenceName}
+	info := ExtraTableInfo{schema.PkOrdinals, withoutIndex, fullSequenceName, nil}
 	b.WriteString(fmt.Sprintf(
 		"; COMMENT ON TABLE %s IS '%s'",
 		fullTableName,

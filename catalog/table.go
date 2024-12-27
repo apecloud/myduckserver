@@ -711,6 +711,9 @@ func (t *Table) PreciseMatch() bool {
 
 // Comment implements sql.CommentedTable.
 func (t *Table) Comment() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	return t.comment.Text
 }
 
@@ -765,10 +768,16 @@ func (t *IndexedTable) LookupPartitions(ctx *sql.Context, lookup sql.IndexLookup
 
 // PeekNextAutoIncrementValue implements sql.AutoIncrementTable.
 func (t *Table) PeekNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if t.comment.Meta.Sequence == "" {
 		return 0, sql.ErrNoAutoIncrementCol
 	}
+	return t.getNextAutoIncrementValue(ctx)
+}
 
+func (t *Table) getNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
 	// For PeekNextAutoIncrementValue, we want to see what the next value would be
 	// without actually incrementing. We can do this by getting currval + 1.
 	var val uint64
@@ -792,12 +801,20 @@ func (t *Table) PeekNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
 }
 
 // GetNextAutoIncrementValue implements sql.AutoIncrementTable.
-func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal interface{}) (uint64, error) {
+func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal any) (uint64, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	if t.comment.Meta.Sequence == "" {
 		return 0, sql.ErrNoAutoIncrementCol
 	}
 
-	// If insertVal is provided and greater than current sequence value, update sequence
+	nextVal, err := t.getNextAutoIncrementValue(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	// If insertVal is provided and greater than the next sequence value, update sequence
 	if insertVal != nil {
 		var start uint64
 		switch v := insertVal.(type) {
@@ -808,7 +825,7 @@ func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal interface{
 				start = uint64(v)
 			}
 		}
-		if start > 0 {
+		if start > 0 && start > nextVal {
 			err := t.setAutoIncrementValue(ctx, start)
 			if err != nil {
 				return 0, err
@@ -819,7 +836,7 @@ func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal interface{
 
 	// Get next value from sequence
 	var val uint64
-	err := adapter.QueryRowCatalog(ctx, `SELECT nextval('`+t.comment.Meta.Sequence+`')`).Scan(&val)
+	err = adapter.QueryRowCatalog(ctx, `SELECT nextval('`+t.comment.Meta.Sequence+`')`).Scan(&val)
 	if err != nil {
 		return 0, ErrDuckDB.New(err)
 	}
@@ -889,14 +906,12 @@ func (t *Table) setAutoIncrementValue(ctx *sql.Context, value uint64) error {
 	// }
 
 	// Update the table comment with the new sequence name
-	tableInfo := t.comment.Meta
-	tableInfo.Sequence = fullSequenceName
-	comment := NewCommentWithMeta(t.comment.Text, tableInfo)
-	if _, err = adapter.Exec(ctx, `COMMENT ON TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` IS '`+comment.Encode()+`'`); err != nil {
-		return ErrDuckDB.New(err)
+	if err = t.updateExtraTableInfo(ctx, func(info *ExtraTableInfo) {
+		info.Sequence = fullSequenceName
+	}); err != nil {
+		return err
 	}
 
-	t.comment.Meta.Sequence = fullSequenceName
 	return t.withSchema(ctx)
 }
 
@@ -914,8 +929,8 @@ func (s *autoIncrementSetter) Close(ctx *sql.Context) error {
 }
 
 func (s *autoIncrementSetter) AcquireAutoIncrementLock(ctx *sql.Context) (func(), error) {
-	// DuckDB handles sequence synchronization internally
-	return func() {}, nil
+	s.t.mu.Lock()
+	return s.t.mu.Unlock, nil
 }
 
 func (t *Table) updateExtraTableInfo(ctx *sql.Context, updater func(*ExtraTableInfo)) error {

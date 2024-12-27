@@ -67,10 +67,11 @@ jobs:
             -- A table with non-default starting auto_increment value
             CREATE TABLE items (
               id INT AUTO_INCREMENT PRIMARY KEY,
+              v BIGINT check (v > 0),
               name VARCHAR(100)
             ) AUTO_INCREMENT=1000;
 
-            INSERT INTO items (name) VALUES ('item1'), ('item2'), ('item3');
+            INSERT INTO items (v, name) VALUES (1, 'item1'), (2, 'item2'), (3, 'item3');
           "
 
       - name: Build and start MyDuck Server
