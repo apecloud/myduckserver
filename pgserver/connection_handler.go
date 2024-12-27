@@ -313,7 +313,7 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 	}
 	if db == "postgres" || db == "mysql" {
 		if provider := h.duckHandler.GetCatalogProvider(); provider != nil {
-			db = provider.CatalogName()
+			db = provider.DefaultCatalogName()
 		}
 	}
 

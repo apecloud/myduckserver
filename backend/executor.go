@@ -111,7 +111,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 
 	switch node := n.(type) {
 	case *plan.Use:
-		useStmt := "USE " + catalog.FullSchemaName(b.provider.CatalogName(), node.Database().Name())
+		useStmt := "USE " + catalog.FullSchemaName(b.provider.Pool().CurrentCatalog(ctx.ID()), node.Database().Name())
 		if _, err := conn.ExecContext(ctx.Context, useStmt); err != nil {
 			if catalog.IsDuckDBSetSchemaNotFoundError(err) {
 				return nil, sql.ErrDatabaseNotFound.New(node.Database().Name())
