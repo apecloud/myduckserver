@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
@@ -13,7 +14,7 @@ import (
 )
 
 type DataWriter interface {
-	Start() (string, chan CopyToResult, error)
+	Start(globalErr *atomic.Pointer[error]) (string, chan CopyToResult, error)
 	Close()
 }
 
@@ -145,11 +146,10 @@ func NewDuckDataWriter(
 	}, nil
 }
 
-func (dw *DuckDataWriter) Start() (string, chan CopyToResult, error) {
+func (dw *DuckDataWriter) Start(globalErr *atomic.Pointer[error]) (string, chan CopyToResult, error) {
 	// Execute the COPY TO statement in a separate goroutine.
 	ch := make(chan CopyToResult, 1)
 	go func() {
-		defer os.Remove(dw.pipePath)
 		defer close(ch)
 
 		dw.ctx.GetLogger().Tracef("Executing COPY TO statement: %s", dw.duckSQL)
@@ -157,6 +157,7 @@ func (dw *DuckDataWriter) Start() (string, chan CopyToResult, error) {
 		// This operation will block until the reader opens the pipe for reading.
 		result, err := adapter.ExecCatalog(dw.ctx, dw.duckSQL)
 		if err != nil {
+			globalErr.Store(&err)
 			ch <- CopyToResult{Err: err}
 			return
 		}
