@@ -776,8 +776,9 @@ func (t *Table) PeekNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
 		if !strings.Contains(err.Error(), "sequence is not yet defined in this session") {
 			return 0, ErrDuckDB.New(err)
 		}
-		// If the sequence has not been used yet, we can get the start value from the sequence
-		err = adapter.QueryRowCatalog(ctx, `SELECT start_value FROM duckdb_sequences() WHERE concat('"', schema_name, '"."', sequence_name, '"') = '`+t.comment.Meta.Sequence+`'`).Scan(&val)
+		// If the sequence has not been used yet, we can get the start value from the sequence.
+		// See getCreateSequence() for the sequence name format.
+		err = adapter.QueryRowCatalog(ctx, `SELECT start_value FROM duckdb_sequences() WHERE concat(schema_name, '."', sequence_name, '"') = '`+t.comment.Meta.Sequence+`'`).Scan(&val)
 		if err != nil {
 			return 0, ErrDuckDB.New(err)
 		}
