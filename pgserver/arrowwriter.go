@@ -3,6 +3,7 @@ package pgserver
 import (
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apecloud/myduckserver/adapter"
@@ -62,17 +63,23 @@ func NewArrowWriter(
 	}, nil
 }
 
-func (dw *ArrowWriter) Start() (string, chan CopyToResult, error) {
+func (dw *ArrowWriter) Start(globalErr *atomic.Pointer[error]) (string, chan CopyToResult, error) {
 	// Execute the statement in a separate goroutine.
 	ch := make(chan CopyToResult, 1)
 	go func() {
-		defer os.Remove(dw.pipePath)
 		defer close(ch)
 
 		dw.ctx.GetLogger().Tracef("Executing statement via Arrow interface: %s", dw.duckSQL)
 		conn, err := adapter.GetConn(dw.ctx)
 		if err != nil {
+			globalErr.Store(&err)
 			ch <- CopyToResult{Err: err}
+			return
+		}
+
+		// If there is a global error, return immediately.
+		if e := globalErr.Load(); e != nil {
+			ch <- CopyToResult{Err: *e}
 			return
 		}
 
@@ -80,6 +87,7 @@ func (dw *ArrowWriter) Start() (string, chan CopyToResult, error) {
 		// This operation will block until the reader opens the pipe for reading.
 		pipe, err := os.OpenFile(dw.pipePath, os.O_WRONLY, os.ModeNamedPipe)
 		if err != nil {
+			globalErr.Store(&err)
 			ch <- CopyToResult{Err: err}
 			return
 		}
@@ -114,6 +122,7 @@ func (dw *ArrowWriter) Start() (string, chan CopyToResult, error) {
 			}
 			return recordReader.Err()
 		}); err != nil {
+			globalErr.Store(&err)
 			ch <- CopyToResult{Err: err}
 			return
 		}
