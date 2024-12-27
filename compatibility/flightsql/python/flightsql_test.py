@@ -37,6 +37,7 @@ class TestFlightSQLDatabase(unittest.TestCase):
         """Test inserting data and selecting it back to verify correctness."""
         with self.conn.cursor() as cursor:
             # Insert sample data
+            cursor.execute("SET search_path TO myduck")
             cursor.execute("INSERT INTO intTable (id, name, value) VALUES (1, 'TestName', 100)")
             cursor.execute("INSERT INTO intTable (id, name, value) VALUES (2, 'AnotherName', 200)")
 
