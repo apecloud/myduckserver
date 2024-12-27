@@ -95,7 +95,7 @@ func (d *Database) tablesInsensitive(ctx *sql.Context, pattern string) ([]*Table
 }
 
 func (d *Database) findTables(ctx *sql.Context, pattern string) ([]*Table, error) {
-	rows, err := adapter.QueryCatalog(ctx, "SELECT DISTINCT table_name, comment FROM duckdb_tables() WHERE (database_name = ? and schema_name = ? and table_name ILIKE ?) OR (temporary and table_name ILIKE ?)", d.catalog, d.name, pattern, pattern)
+	rows, err := adapter.QueryCatalog(ctx, "SELECT DISTINCT table_name, comment FROM duckdb_tables() WHERE (database_name = ? AND schema_name = ? AND table_name ILIKE ?) OR (temporary IS TRUE AND table_name ILIKE ?)", d.catalog, d.name, pattern, pattern)
 	if err != nil {
 		return nil, ErrDuckDB.New(err)
 	}
