@@ -113,7 +113,6 @@ func (d *Database) Name() string {
 }
 
 func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, temporary bool) error {
-
 	var columns []string
 	var columnCommentSQLs []string
 	var fullTableName string
