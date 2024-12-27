@@ -55,7 +55,6 @@ class TestFlightSQLDatabase(unittest.TestCase):
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intTable'")  # Check if the table exists
             rows = cursor.fetchall()
             self.assertEqual(len(rows), 0, "Table 'intTable' should be dropped and not exist in the database.")
-            cursor.execute("COMMIT;")
 
 if __name__ == "__main__":
     unittest.main()
