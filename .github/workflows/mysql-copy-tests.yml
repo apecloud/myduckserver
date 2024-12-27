@@ -35,12 +35,6 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install system packages
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: mysql-client
-          version: 1.0
-
       - name: Install dependencies
         run: |
           go get .
@@ -48,7 +42,7 @@ jobs:
           pip3 install "sqlglot[rs]"
 
           curl -LJO https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell_9.1.0-1debian12_amd64.deb
-          sudo apt-get install -y ./mysql-shell_9.1.0-1debian12_amd64.deb
+          sudo dpkg -i -y ./mysql-shell_9.1.0-1debian12_amd64.deb
 
       - name: Setup test data in source MySQL
         run: |

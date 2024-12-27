@@ -878,6 +878,12 @@ func (t *Table) setAutoIncrementValue(ctx *sql.Context, value uint64) error {
 		return ErrDuckDB.New(err)
 	}
 
+	// Drop the old sequence
+	// https://github.com/duckdb/duckdb/issues/15399
+	// if _, err = adapter.Exec(ctx, "DROP SEQUENCE " + t.comment.Meta.Sequence); err != nil {
+	// 	return ErrDuckDB.New(err)
+	// }
+
 	// Update the table comment with the new sequence name
 	tableInfo := t.comment.Meta
 	tableInfo.Sequence = fullSequenceName

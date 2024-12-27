@@ -39,9 +39,6 @@ jobs:
           chmod +x duckdb
           sudo mv duckdb /usr/local/bin
 
-          curl -LJO https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell_9.1.0-1debian12_amd64.deb
-          sudo apt-get install -y ./mysql-shell_9.1.0-1debian12_amd64.deb
-
       - name: Build
         run: go build -v
 
