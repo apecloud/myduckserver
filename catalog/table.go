@@ -27,6 +27,7 @@ type ExtraTableInfo struct {
 	PkOrdinals []int
 	Replicated bool
 	Sequence   string
+	Checks     []sql.CheckDefinition
 }
 
 type ColumnInfo struct {
@@ -37,6 +38,7 @@ type ColumnInfo struct {
 	ColumnDefault stdsql.NullString
 	Comment       stdsql.NullString
 }
+
 type IndexedTable struct {
 	*Table
 	Lookup sql.IndexLookup
@@ -54,6 +56,8 @@ var _ sql.TruncateableTable = (*Table)(nil)
 var _ sql.ReplaceableTable = (*Table)(nil)
 var _ sql.CommentedTable = (*Table)(nil)
 var _ sql.AutoIncrementTable = (*Table)(nil)
+var _ sql.CheckTable = (*Table)(nil)
+var _ sql.CheckAlterableTable = (*Table)(nil)
 
 func NewTable(name string, db *Database) *Table {
 	return &Table{
@@ -854,4 +858,60 @@ func (s *autoIncrementSetter) Close(ctx *sql.Context) error {
 func (s *autoIncrementSetter) AcquireAutoIncrementLock(ctx *sql.Context) (func(), error) {
 	// DuckDB handles sequence synchronization internally
 	return func() {}, nil
+}
+
+func (t *Table) updateExtraTableInfo(ctx *sql.Context, updater func(*ExtraTableInfo)) error {
+	tableInfo := t.comment.Meta
+	updater(&tableInfo)
+	comment := NewCommentWithMeta(t.comment.Text, tableInfo)
+	_, err := adapter.Exec(ctx, `COMMENT ON TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` IS '`+comment.Encode()+`'`)
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+	t.comment.Meta = tableInfo // Update the in-memory metadata
+	return nil
+}
+
+// CheckConstraints implements sql.CheckTable.
+func (t *Table) GetChecks(ctx *sql.Context) ([]sql.CheckDefinition, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.comment.Meta.Checks, nil
+}
+
+// AddCheck implements sql.CheckAlterableTable.
+func (t *Table) CreateCheck(ctx *sql.Context, check *sql.CheckDefinition) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// TODO(fan): Implement this once DuckDB supports modifying check constraints.
+	// https://duckdb.org/docs/sql/statements/alter_table.html#add--drop-constraint
+	// https://github.com/duckdb/duckdb/issues/57
+	// Just record the check constraint for now.
+	return t.updateExtraTableInfo(ctx, func(info *ExtraTableInfo) {
+		info.Checks = append(info.Checks, *check)
+	})
+}
+
+// DropCheck implements sql.CheckAlterableTable.
+func (t *Table) DropCheck(ctx *sql.Context, checkName string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	checks := make([]sql.CheckDefinition, 0, max(len(t.comment.Meta.Checks)-1, 0))
+	found := false
+	for i, check := range t.comment.Meta.Checks {
+		if check.Name == checkName {
+			found = true
+			continue
+		}
+		checks = append(checks, t.comment.Meta.Checks[i])
+	}
+	if !found {
+		return sql.ErrUnknownConstraint.New(checkName)
+	}
+	return t.updateExtraTableInfo(ctx, func(info *ExtraTableInfo) {
+		info.Checks = checks
+	})
 }
