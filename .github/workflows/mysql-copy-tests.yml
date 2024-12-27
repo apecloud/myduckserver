@@ -42,7 +42,7 @@ jobs:
           pip3 install "sqlglot[rs]"
 
           curl -LJO https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell_9.1.0-1debian12_amd64.deb
-          sudo dpkg -i -y ./mysql-shell_9.1.0-1debian12_amd64.deb
+          sudo dpkg -i ./mysql-shell_9.1.0-1debian12_amd64.deb
 
       - name: Setup test data in source MySQL
         run: |
