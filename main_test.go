@@ -1164,12 +1164,6 @@ func TestCreateTable(t *testing.T) {
 		"insert_into_t1_(b)_values_(1),_(2)",
 		"show_create_table_t1",
 		"select_*_from_t1_order_by_b",
-		"table_with_auto_increment_table_option",
-		"create_table_t1_(i_int)_auto_increment=10;",
-		"create_table_t2_(i_int_auto_increment_primary_key)_auto_increment=10;",
-		"show_create_table_t2",
-		"insert_into_t2_values_(null),_(null),_(null)",
-		"select_*_from_t2",
 	}
 
 	// Patch auto-generated queries that are known to fail

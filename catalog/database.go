@@ -73,10 +73,21 @@ func (d *Database) GetTableInsensitive(ctx *sql.Context, tblName string) (sql.Ta
 func (d *Database) tablesInsensitive(ctx *sql.Context, pattern string) ([]*Table, error) {
 	tables, err := d.findTables(ctx, pattern)
 	if err != nil {
+		ctx.GetLogger().WithFields(logrus.Fields{
+			"catalog":  d.catalog,
+			"database": d.name,
+			"pattern":  pattern,
+		}).WithError(err).Error("Failed to find tables")
 		return nil, err
 	}
 	for _, t := range tables {
 		if err := t.withSchema(ctx); err != nil {
+			ctx.GetLogger().WithFields(logrus.Fields{
+				"catalog":  d.catalog,
+				"database": d.name,
+				"pattern":  pattern,
+				"table":    t.Name(),
+			}).WithError(err).Error("Failed to get table schema")
 			return nil, err
 		}
 	}
@@ -84,7 +95,7 @@ func (d *Database) tablesInsensitive(ctx *sql.Context, pattern string) ([]*Table
 }
 
 func (d *Database) findTables(ctx *sql.Context, pattern string) ([]*Table, error) {
-	rows, err := adapter.QueryCatalog(ctx, "SELECT DISTINCT table_name, comment FROM duckdb_tables()  where (database_name = ? and schema_name = ? and table_name ILIKE ?) or (database_name = 'temp' and schema_name = 'main' and table_name ILIKE ?)", d.catalog, d.name, pattern, pattern)
+	rows, err := adapter.QueryCatalog(ctx, "SELECT DISTINCT table_name, comment FROM duckdb_tables() WHERE (database_name = ? AND schema_name = ? AND table_name ILIKE ?) OR (temporary IS TRUE AND table_name ILIKE ?)", d.catalog, d.name, pattern, pattern)
 	if err != nil {
 		return nil, ErrDuckDB.New(err)
 	}
@@ -113,7 +124,6 @@ func (d *Database) Name() string {
 }
 
 func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, temporary bool) error {
-
 	var columns []string
 	var columnCommentSQLs []string
 	var fullTableName string

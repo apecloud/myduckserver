@@ -203,6 +203,14 @@ func getPrimaryKeyOrdinals(ctx *sql.Context, catalogName, dbName, tableName stri
 	return ordinals
 }
 
+func getCreateSequence(temporary bool, sequenceName string) (createStmt, fullName string) {
+	if temporary {
+		return `CREATE TEMP SEQUENCE "` + sequenceName + `"`, `temp.main."` + sequenceName + `"`
+	}
+	fullName = InternalSchemas.SYS.Schema + `."` + sequenceName + `"`
+	return `CREATE SEQUENCE ` + fullName, fullName
+}
+
 // AddColumn implements sql.AlterableTable.
 func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.ColumnOrder) error {
 	t.mu.Lock()
@@ -219,7 +227,7 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	sql := `ALTER TABLE ` + FullTableName(t.db.catalog, t.db.name, t.name) + ` ADD COLUMN ` + QuoteIdentifierANSI(column.Name) + ` ` + typ.name
 
 	temporary := t.db.catalog == "temp"
-	var sequenceName, fullSequenceName string
+	var sequenceName, fullSequenceName, createSequenceStmt string
 
 	if column.Default != nil {
 		typ.mysql.Default = column.Default.String()
@@ -237,22 +245,11 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 			return err
 		}
 		sequenceName = SequenceNamePrefix + uuid.String()
-		if temporary {
-			fullSequenceName = `temp.main."` + sequenceName + `"`
-		} else {
-			fullSequenceName = InternalSchemas.SYS.Schema + `."` + sequenceName + `"`
-		}
+		createSequenceStmt, fullSequenceName = getCreateSequence(temporary, sequenceName)
+		sqls = append(sqls, createSequenceStmt)
 
 		defaultExpr := `nextval('` + fullSequenceName + `')`
 		sql += " DEFAULT " + defaultExpr
-	}
-
-	if column.AutoIncrement {
-		if temporary {
-			sqls = append(sqls, `CREATE TEMP SEQUENCE "`+sequenceName+`"`)
-		} else {
-			sqls = append(sqls, `CREATE SEQUENCE `+fullSequenceName)
-		}
 	}
 
 	sqls = append(sqls, sql)
@@ -391,7 +388,7 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 	tableInfoChanged := false
 
 	temporary := t.db.catalog == "temp"
-	var sequenceName, fullSequenceName string
+	var sequenceName, fullSequenceName, createSequenceStmt string
 
 	// Handle AUTO_INCREMENT changes
 	if !oldColumn.AutoIncrement && column.AutoIncrement {
@@ -402,17 +399,8 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 			return err
 		}
 		sequenceName = SequenceNamePrefix + uuid.String()
-		if temporary {
-			fullSequenceName = `temp.main."` + sequenceName + `"`
-		} else {
-			fullSequenceName = InternalSchemas.SYS.Schema + `."` + sequenceName + `"`
-		}
-
-		if temporary {
-			sqls = append(sqls, `CREATE TEMP SEQUENCE "`+sequenceName+`"`)
-		} else {
-			sqls = append(sqls, `CREATE SEQUENCE `+fullSequenceName)
-		}
+		createSequenceStmt, fullSequenceName = getCreateSequence(temporary, sequenceName)
+		sqls = append(sqls, createSequenceStmt)
 		sqls = append(sqls, baseSQL+` SET DEFAULT nextval('`+fullSequenceName+`')`)
 
 		// Update table comment with sequence info
@@ -786,7 +774,18 @@ func (t *Table) PeekNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
 	var val uint64
 	err := adapter.QueryRowCatalog(ctx, `SELECT currval('`+t.comment.Meta.Sequence+`') + 1`).Scan(&val)
 	if err != nil {
-		return 0, ErrDuckDB.New(err)
+		// https://duckdb.org/docs/sql/statements/create_sequence.html#selecting-the-current-value
+		// > Note that the nextval function must have already been called before calling currval,
+		// > otherwise a Serialization Error (sequence is not yet defined in this session) will be thrown.
+		if !strings.Contains(err.Error(), "sequence is not yet defined in this session") {
+			return 0, ErrDuckDB.New(err)
+		}
+		// If the sequence has not been used yet, we can get the start value from the sequence.
+		// See getCreateSequence() for the sequence name format.
+		err = adapter.QueryRowCatalog(ctx, `SELECT start_value FROM duckdb_sequences() WHERE concat(schema_name, '."', sequence_name, '"') = '`+t.comment.Meta.Sequence+`'`).Scan(&val)
+		if err != nil {
+			return 0, ErrDuckDB.New(err)
+		}
 	}
 
 	return val, nil
@@ -838,8 +837,67 @@ func (t *Table) AutoIncrementSetter(ctx *sql.Context) sql.AutoIncrementSetter {
 
 // setAutoIncrementValue is a helper function to update the sequence value
 func (t *Table) setAutoIncrementValue(ctx *sql.Context, value uint64) error {
-	_, err := adapter.ExecCatalog(ctx, `CREATE OR REPLACE SEQUENCE `+t.comment.Meta.Sequence+` START WITH `+strconv.FormatUint(value, 10))
-	return err
+	// DuckDB does not support setting the sequence value directly,
+	// so we need to recreate the sequence with the new start value.
+	//
+	// _, err := adapter.ExecCatalog(ctx, `CREATE OR REPLACE SEQUENCE `+t.comment.Meta.Sequence+` START WITH `+strconv.FormatUint(value, 10))
+	//
+	// However, `CREATE OR REPLACE` leads to a Dependency Error,
+	// while `ALTER TABLE ... ALTER COLUMN ... DROP DEFAULT` deos not remove the dependency:
+	// https://github.com/duckdb/duckdb/issues/15399
+	// So we create a new sequence with the new start value and change the auto_increment column to use the new sequence.
+
+	// Find the column with the auto_increment property
+	var autoIncrementColumn *sql.Column
+	for _, column := range t.schema.Schema {
+		if column.AutoIncrement {
+			autoIncrementColumn = column
+			break
+		}
+	}
+	if autoIncrementColumn == nil {
+		return sql.ErrNoAutoIncrementCol
+	}
+
+	// Generate a random sequence name.
+	uuid, err := uuid.NewRandom()
+	if err != nil {
+		return err
+	}
+	sequenceName := SequenceNamePrefix + uuid.String()
+
+	// Create a new sequence with the new start value
+	temporary := t.db.catalog == "temp"
+	createSequenceStmt, fullSequenceName := getCreateSequence(temporary, sequenceName)
+	_, err = adapter.Exec(ctx, createSequenceStmt+` START WITH `+strconv.FormatUint(value, 10))
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+
+	// Update the auto_increment column to use the new sequence
+	alterStmt := `ALTER TABLE ` + FullTableName(t.db.catalog, t.db.name, t.name) +
+		` ALTER COLUMN ` + QuoteIdentifierANSI(autoIncrementColumn.Name) +
+		` SET DEFAULT nextval('` + fullSequenceName + `')`
+	if _, err = adapter.Exec(ctx, alterStmt); err != nil {
+		return ErrDuckDB.New(err)
+	}
+
+	// Drop the old sequence
+	// https://github.com/duckdb/duckdb/issues/15399
+	// if _, err = adapter.Exec(ctx, "DROP SEQUENCE " + t.comment.Meta.Sequence); err != nil {
+	// 	return ErrDuckDB.New(err)
+	// }
+
+	// Update the table comment with the new sequence name
+	tableInfo := t.comment.Meta
+	tableInfo.Sequence = fullSequenceName
+	comment := NewCommentWithMeta(t.comment.Text, tableInfo)
+	if _, err = adapter.Exec(ctx, `COMMENT ON TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` IS '`+comment.Encode()+`'`); err != nil {
+		return ErrDuckDB.New(err)
+	}
+
+	t.comment.Meta.Sequence = fullSequenceName
+	return t.withSchema(ctx)
 }
 
 // autoIncrementSetter implements the AutoIncrementSetter interface
