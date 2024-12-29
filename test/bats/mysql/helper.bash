@@ -8,9 +8,9 @@ MYSQL_USER=${MYSQL_USER:-"root"}
 mysql_exec() {
     local query="$1"
     shift
-    mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --raw --batch --skip-column-names "$@" -e "$query"
+    mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --raw --batch --skip-column-names --local-infile "$@" -e "$query"
 }
 
 mysql_exec_stdin() {
-    mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --raw --batch --skip-column-names "$@"
+    mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --raw --batch --skip-column-names --local-infile "$@"
 }
