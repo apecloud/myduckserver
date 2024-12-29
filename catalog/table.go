@@ -16,11 +16,14 @@ import (
 )
 
 type Table struct {
-	mu      *sync.RWMutex
-	name    string
+	mu      sync.RWMutex
 	db      *Database
-	comment *Comment[ExtraTableInfo] // save the comment to avoid querying duckdb everytime
+	name    string
+	comment *Comment[ExtraTableInfo] // save the comment to avoid querying duckdb every time
 	schema  sql.PrimaryKeySchema
+
+	// Whether the table has a physical primary key.
+	hasPrimaryKey bool
 }
 
 type ExtraTableInfo struct {
@@ -59,11 +62,12 @@ var _ sql.AutoIncrementTable = (*Table)(nil)
 var _ sql.CheckTable = (*Table)(nil)
 var _ sql.CheckAlterableTable = (*Table)(nil)
 
-func NewTable(name string, db *Database) *Table {
+func NewTable(db *Database, name string, hasPrimaryKey bool) *Table {
 	return &Table{
-		mu:   &sync.RWMutex{},
-		name: name,
 		db:   db,
+		name: name,
+
+		hasPrimaryKey: hasPrimaryKey,
 	}
 }
 
@@ -94,6 +98,10 @@ func (t *Table) withSchema(ctx *sql.Context) error {
 
 func (t *Table) ExtraTableInfo() ExtraTableInfo {
 	return t.comment.Meta
+}
+
+func (t *Table) HasPrimaryKey() bool {
+	return t.hasPrimaryKey
 }
 
 // Collation implements sql.Table.
@@ -293,6 +301,7 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	}
 	// Update the PK ordinals only after the column is successfully added.
 	if column.PrimaryKey {
+		t.hasPrimaryKey = true
 		t.comment.Meta.PkOrdinals = tableInfo.PkOrdinals
 	}
 	return t.withSchema(ctx)
@@ -457,6 +466,7 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 
 	// Update table metadata
 	if column.PrimaryKey {
+		t.hasPrimaryKey = true
 		t.comment.Meta.PkOrdinals = []int{oldColumnIndex}
 	}
 	if !oldColumn.AutoIncrement && column.AutoIncrement {
@@ -510,6 +520,7 @@ func (t *Table) Inserter(*sql.Context) sql.RowInserter {
 		db:     t.db.Name(),
 		table:  t.name,
 		schema: t.schema.Schema,
+		hasPK:  t.hasPrimaryKey,
 	}
 }
 
@@ -535,6 +546,7 @@ func (t *Table) Replacer(*sql.Context) sql.RowReplacer {
 		db:      t.db.Name(),
 		table:   t.name,
 		schema:  t.schema.Schema,
+		hasPK:   t.hasPrimaryKey,
 		replace: hasKey,
 	}
 }

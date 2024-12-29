@@ -14,6 +14,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/dolthub/vitess/go/vt/proto/query"
 )
 
 const isUnixSystem = runtime.GOOS == "linux" ||
@@ -29,7 +30,12 @@ func isRewritableLoadData(node *plan.LoadData) bool {
 		isSupportedLineTerminator(node.LinesTerminatedBy) &&
 		areAllExpressionsNil(node.SetExprs) &&
 		areAllExpressionsNil(node.UserVars) &&
-		isSupportedFileCharacterSet(node.Charset)
+		isSupportedFileCharacterSet(node.Charset) &&
+		// JSON columns often contain espcaped characters,
+		// which cannot be handled by DuckDB perfectly until DuckDB 1.2.0.
+		// https://github.com/duckdb/duckdb/pull/14464
+		// TODO(fan): Remove this restriction after DuckDB 1.2.0 is released.
+		!containsJSONColumn(node.DestSch)
 }
 
 func areAllExpressionsNil(exprs []sql.Expression) bool {
@@ -50,6 +56,15 @@ func isSupportedFileCharacterSet(charset string) bool {
 
 func isSupportedLineTerminator(terminator string) bool {
 	return terminator == "\n" || terminator == "\r" || terminator == "\r\n"
+}
+
+func containsJSONColumn(schema sql.Schema) bool {
+	for _, col := range schema {
+		if col.Type.Type() == query.Type_JSON {
+			return true
+		}
+	}
+	return false
 }
 
 // buildLoadData translates a MySQL LOAD DATA statement
@@ -123,7 +138,7 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 			// Replicated tables do not have physical primary keys.
 			// Their logical primary keys are fake and should not be used in INSERT INTO statements.
 			// https://github.com/apecloud/myduckserver/issues/272
-			keyless = t.ExtraTableInfo().Replicated
+			keyless = t.ExtraTableInfo().Replicated || !t.HasPrimaryKey()
 		}
 	}
 
