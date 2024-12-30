@@ -51,12 +51,12 @@ github.com/apache/thrift v0.12.0/go.mod h1:cp2SuWMxlEZw2r+iP2GNCdIi4C1qmUzdZFSVb
 github.com/apache/thrift v0.13.0/go.mod h1:cp2SuWMxlEZw2r+iP2GNCdIi4C1qmUzdZFSVb+bacwQ=
 github.com/apache/thrift v0.21.0 h1:tdPmh/ptjE1IJnhbhrcl2++TauVjy242rkV/UzJChnE=
 github.com/apache/thrift v0.21.0/go.mod h1:W1H8aR/QRtYNvrPeFXBtobyRkd0/YVhTc6i07XIAgDw=
-github.com/apecloud/dolt-vitess v0.0.0-20241217030333-e641a5d88d61 h1:R91iftRDONaExzXlbMLGS+BMZfk3e/J51YW62155WK4=
-github.com/apecloud/dolt-vitess v0.0.0-20241217030333-e641a5d88d61/go.mod h1:1gQZs/byeHLMSul3Lvl3MzioMtOW1je79QYGyi2fd70=
+github.com/apecloud/dolt-vitess v0.0.0-20241230164356-4a83fa43c02a h1:SXBCXHJGSbHxq6k/WVAok2xAoEB2TK5ujTfyaYZKSwU=
+github.com/apecloud/dolt-vitess v0.0.0-20241230164356-4a83fa43c02a/go.mod h1:1gQZs/byeHLMSul3Lvl3MzioMtOW1je79QYGyi2fd70=
 github.com/apecloud/go-duckdb v0.0.0-20241127093618-047c1a233928 h1:uI/JM1iflKvc/u4SusP5V9EB4VMud7+YFlUK5xe6RcE=
 github.com/apecloud/go-duckdb v0.0.0-20241127093618-047c1a233928/go.mod h1:C9bYRE1dPYb1hhfu/SSomm78B0FXmNgRvv6YBW/Hooc=
-github.com/apecloud/go-mysql-server v0.0.0-20241217030038-1ec40b6e7e7f h1:Nn7HEMLNxRaDlsG4o1P484NJ6H3jSjKN0jdXujDIOno=
-github.com/apecloud/go-mysql-server v0.0.0-20241217030038-1ec40b6e7e7f/go.mod h1:elfIatfq2fkU5lqTBrTcpL0RcHZOgYPE8EzBD7yQFiY=
+github.com/apecloud/go-mysql-server v0.0.0-20241230161546-047d8079971d h1:VuNnD/7h5nLGo/aKdvUDmH367ZrdUdC/+SJDCN+Q3OY=
+github.com/apecloud/go-mysql-server v0.0.0-20241230161546-047d8079971d/go.mod h1:ToNOAVZAJ6iQBpigxYZo3q8JZDRxpI2/VRrtUoZeehI=
 github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e/go.mod h1:3U/XgcO3hCbHZ8TKRvWD2dDTCfh9M9ya+I9JpbB7O8o=
 github.com/armon/consul-api v0.0.0-20180202201655-eb2c6b5be1b6/go.mod h1:grANhF5doyWs3UAsr3K4I6qtAmlQcZDesFNEHPZAzj8=
 github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da/go.mod h1:Q73ZrmVTwzkszR9V5SSuryQ31EELlFMUz1kKyl939pY=
