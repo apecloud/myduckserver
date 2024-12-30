@@ -225,6 +225,16 @@ func (sess *Session) TryGetTxn() *stdsql.Tx {
 	return sess.db.Pool().TryGetTxn(sess.ID())
 }
 
+// GetCurrentCatalog implements adapter.ConnectionHolder.
+func (sess *Session) GetCurrentCatalog() string {
+	return sess.db.Pool().CurrentCatalog(sess.ID())
+}
+
+// GetCurrentSchema implements adapter.ConnectionHolder.
+func (sess *Session) GetCurrentSchema() string {
+	return sess.db.Pool().CurrentSchema(sess.ID())
+}
+
 // CloseTxn implements adapter.ConnectionHolder.
 func (sess *Session) CloseTxn() {
 	sess.db.Pool().CloseTxn(sess.ID())

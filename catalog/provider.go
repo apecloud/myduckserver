@@ -74,7 +74,7 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		return nil, err
 	}
 	prov.storage = stdsql.OpenDB(prov.connector)
-	prov.pool = NewConnectionPool(prov.defaultCatalogName, prov.connector, prov.storage)
+	prov.pool = NewConnectionPool(prov.connector, prov.storage)
 
 	bootQueries := []string{
 		"INSTALL arrow",
@@ -341,7 +341,7 @@ func (prov *DatabaseProvider) AllDatabases(ctx *sql.Context) []sql.Database {
 	prov.mu.RLock()
 	defer prov.mu.RUnlock()
 
-	catalogName := prov.pool.CurrentCatalog(ctx.ID())
+	catalogName := adapter.GetCurrentCatalog(ctx)
 	rows, err := adapter.QueryCatalog(ctx, "SELECT DISTINCT schema_name FROM information_schema.schemata WHERE catalog_name = ?", catalogName)
 	if err != nil {
 		panic(ErrDuckDB.New(err))
@@ -375,7 +375,7 @@ func (prov *DatabaseProvider) Database(ctx *sql.Context, name string) (sql.Datab
 	prov.mu.RLock()
 	defer prov.mu.RUnlock()
 
-	catalogName := prov.pool.CurrentCatalog(ctx.ID())
+	catalogName := adapter.GetCurrentCatalog(ctx)
 	ok, err := hasDatabase(ctx, catalogName, name)
 	if err != nil {
 		return nil, err
@@ -392,7 +392,7 @@ func (prov *DatabaseProvider) HasDatabase(ctx *sql.Context, name string) bool {
 	prov.mu.RLock()
 	defer prov.mu.RUnlock()
 
-	ok, err := hasDatabase(ctx, prov.pool.CurrentCatalog(ctx.ID()), name)
+	ok, err := hasDatabase(ctx, adapter.GetCurrentCatalog(ctx), name)
 	if err != nil {
 		panic(err)
 	}
@@ -415,7 +415,7 @@ func (prov *DatabaseProvider) CreateDatabase(ctx *sql.Context, name string) erro
 	defer prov.mu.Unlock()
 
 	_, err := adapter.ExecCatalog(ctx, fmt.Sprintf(`CREATE SCHEMA %s`,
-		FullSchemaName(prov.pool.CurrentCatalog(ctx.ID()), name)))
+		FullSchemaName(adapter.GetCurrentCatalog(ctx), name)))
 	if err != nil {
 		return ErrDuckDB.New(err)
 	}
@@ -429,7 +429,7 @@ func (prov *DatabaseProvider) DropDatabase(ctx *sql.Context, name string) error 
 	defer prov.mu.Unlock()
 
 	_, err := adapter.Exec(ctx, fmt.Sprintf(`DROP SCHEMA %s CASCADE`,
-		FullSchemaName(prov.pool.CurrentCatalog(ctx.ID()), name)))
+		FullSchemaName(adapter.GetCurrentCatalog(ctx), name)))
 	if err != nil {
 		return ErrDuckDB.New(err)
 	}

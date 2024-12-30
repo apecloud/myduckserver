@@ -29,17 +29,15 @@ import (
 
 type ConnectionPool struct {
 	*stdsql.DB
-	connector          *duckdb.Connector
-	defaultCatalogName string
-	conns              sync.Map // concurrent-safe map[uint32]*stdsql.Conn
-	txns               sync.Map // concurrent-safe map[uint32]*stdsql.Tx
+	connector *duckdb.Connector
+	conns     sync.Map // concurrent-safe map[uint32]*stdsql.Conn
+	txns      sync.Map // concurrent-safe map[uint32]*stdsql.Tx
 }
 
-func NewConnectionPool(defaultCatalogName string, connector *duckdb.Connector, db *stdsql.DB) *ConnectionPool {
+func NewConnectionPool(connector *duckdb.Connector, db *stdsql.DB) *ConnectionPool {
 	return &ConnectionPool{
-		DB:                 db,
-		connector:          connector,
-		defaultCatalogName: defaultCatalogName,
+		DB:        db,
+		connector: connector,
 	}
 }
 
@@ -65,8 +63,8 @@ func (p *ConnectionPool) CurrentSchema(id uint32) string {
 }
 
 // CurrentCatalog retrieves the current catalog of the connection.
-// Returns an empty string if the connection is not established.
-// Returns the default catalog name if the catalog cannot be retrieved.
+// Returns an empty string if the connection is not established
+// or the catalog cannot be retrieved.
 func (p *ConnectionPool) CurrentCatalog(id uint32) string {
 	entry, ok := p.conns.Load(id)
 	if !ok {
@@ -76,7 +74,7 @@ func (p *ConnectionPool) CurrentCatalog(id uint32) string {
 	var catalog string
 	if err := conn.QueryRowContext(context.Background(), "SELECT CURRENT_CATALOG").Scan(&catalog); err != nil {
 		logrus.WithError(err).Error("Failed to get current catalog")
-		return p.defaultCatalogName
+		return ""
 	}
 	return catalog
 }
