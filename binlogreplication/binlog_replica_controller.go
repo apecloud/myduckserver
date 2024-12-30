@@ -313,6 +313,18 @@ func (d *myBinlogReplicaController) SetReplicationSourceOptions(ctx *sql.Context
 func (d *myBinlogReplicaController) SetReplicationFilterOptions(_ *sql.Context, options []binlogreplication.ReplicationOption) error {
 	for _, option := range options {
 		switch strings.ToUpper(option.Name) {
+		case "REPLICATE_DO_DB":
+			value, err := getOptionValueAsStringSlice(option)
+			if err != nil {
+				return err
+			}
+			d.filters.setDoDatabases(value)
+		case "REPLICATE_IGNORE_DB":
+			value, err := getOptionValueAsStringSlice(option)
+			if err != nil {
+				return err
+			}
+			d.filters.setIgnoreDatabases(value)
 		case "REPLICATE_DO_TABLE":
 			value, err := getOptionValueAsTableNames(option)
 			if err != nil {
@@ -378,6 +390,8 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	copy.SourceServerUuid = replicaSourceInfo.Uuid
 	copy.ConnectRetry = replicaSourceInfo.ConnectRetryInterval
 	copy.SourceRetryCount = replicaSourceInfo.ConnectRetryCount
+	// copy.ReplicateDoDBs = d.filters.getDoDatabases()
+	// copy.ReplicateIgnoreDBs = d.filters.getIgnoreDatabases()
 	copy.ReplicateDoTables = d.filters.getDoTables()
 	copy.ReplicateIgnoreTables = d.filters.getIgnoreTables()
 
@@ -521,6 +535,20 @@ func getOptionValueAsTableNames(option binlogreplication.ReplicationOption) ([]s
 
 	return nil, fmt.Errorf("unsupported value type for option %q; found %T, "+
 		"but expected a list of tables", option.Name, option.Value.GetValue())
+}
+
+func getOptionValueAsStringSlice(option binlogreplication.ReplicationOption) ([]string, error) {
+	ov, ok := option.Value.(binlogreplication.StringReplicationOptionValue)
+	if ok {
+		values := strings.Split(ov.GetValueAsString(), ",")
+		for i, value := range values {
+			values[i] = strings.TrimSpace(value)
+		}
+		return values, nil
+	}
+
+	return nil, fmt.Errorf("unsupported value type for option %q; found %T, "+
+		"but expected a list of databases", option.Name, option.Value.GetValue())
 }
 
 func verifyAllTablesAreQualified(urts []sql.UnresolvedTable) error {
