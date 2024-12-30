@@ -80,13 +80,12 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	case *plan.InsertInto:
 		insert := n.(*plan.InsertInto)
 
-		// For AUTO_INCREMENT column, we fallback to the framework if the column is specified.
-		if dst, err := plan.GetInsertable(insert.Destination); err == nil && dst.Schema().HasAutoIncrement() {
-			if len(insert.ColumnNames) == 0 || len(insert.ColumnNames) == len(dst.Schema()) {
-				return b.base.Build(ctx, root, r)
-			}
-		}
-
+		// The handling of auto_increment reset and check constraints is not supported by DuckDB.
+		// We need to fallback to the framework for these cases.
+		// But we want to rewrite LOAD DATA to be handled by DuckDB,
+		// as it is a common way to import data into the database.
+		// Therefore, we ignoring auto_increment and check constraints for LOAD DATA.
+		// So rewriting LOAD DATA is done eagerly here.
 		src := insert.Source
 		if proj, ok := src.(*plan.Project); ok {
 			src = proj.Child
@@ -96,6 +95,20 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 				return b.buildLoadData(ctx, root, insert, dst, load)
 			}
 			return b.base.Build(ctx, root, r)
+		}
+
+		if dst, err := plan.GetInsertable(insert.Destination); err == nil {
+			// For AUTO_INCREMENT column, we fallback to the framework if the column is specified.
+			// if dst.Schema().HasAutoIncrement() && (0 == len(insert.ColumnNames) || len(insert.ColumnNames) == len(dst.Schema())) {
+			if dst.Schema().HasAutoIncrement() {
+				return b.base.Build(ctx, root, r)
+			}
+			// For table with check constraints, we fallback to the framework.
+			if ct, ok := dst.(sql.CheckTable); ok {
+				if checks, err := ct.GetChecks(ctx); err == nil && len(checks) > 0 {
+					return b.base.Build(ctx, root, r)
+				}
+			}
 		}
 	}
 
