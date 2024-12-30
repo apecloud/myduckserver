@@ -314,13 +314,13 @@ func (d *myBinlogReplicaController) SetReplicationFilterOptions(_ *sql.Context, 
 	for _, option := range options {
 		switch strings.ToUpper(option.Name) {
 		case "REPLICATE_DO_DB":
-			value, err := getOptionValueAsStringSlice(option)
+			value, err := getOptionValueAsDatabaseNames(option)
 			if err != nil {
 				return err
 			}
 			d.filters.setDoDatabases(value)
 		case "REPLICATE_IGNORE_DB":
-			value, err := getOptionValueAsStringSlice(option)
+			value, err := getOptionValueAsDatabaseNames(option)
 			if err != nil {
 				return err
 			}
@@ -537,14 +537,18 @@ func getOptionValueAsTableNames(option binlogreplication.ReplicationOption) ([]s
 		"but expected a list of tables", option.Name, option.Value.GetValue())
 }
 
-func getOptionValueAsStringSlice(option binlogreplication.ReplicationOption) ([]string, error) {
-	ov, ok := option.Value.(binlogreplication.StringReplicationOptionValue)
+func getOptionValueAsDatabaseNames(option binlogreplication.ReplicationOption) ([]string, error) {
+	// The value of the option should be a list of database names.
+	// But since the parser doesn't have a database name list type,
+	// we reuse the table name list type to represent a list of database names.
+	ov, ok := option.Value.(binlogreplication.TableNamesReplicationOptionValue)
 	if ok {
-		values := strings.Split(ov.GetValueAsString(), ",")
-		for i, value := range values {
-			values[i] = strings.TrimSpace(value)
+		list := ov.GetValueAsTableList()
+		names := make([]string, len(list))
+		for i, t := range list {
+			names[i] = t.Name()
 		}
-		return values, nil
+		return names, nil
 	}
 
 	return nil, fmt.Errorf("unsupported value type for option %q; found %T, "+

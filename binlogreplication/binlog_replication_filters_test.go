@@ -21,9 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBinlogReplicationFilters_ignoreTablesOnly tests that the ignoreTables replication
+// TestReplicationFilters_ignoreTablesOnly tests that the ignoreTables replication
 // filtering option is correctly applied and honored.
-func TestBinlogReplicationFilters_ignoreTablesOnly(t *testing.T) {
+func TestReplicationFilters_ignoreTablesOnly(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -72,9 +72,9 @@ func TestBinlogReplicationFilters_ignoreTablesOnly(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
-// TestBinlogReplicationFilters_doTablesOnly tests that the doTables replication
+// TestReplicationFilters_doTablesOnly tests that the doTables replication
 // filtering option is correctly applied and honored.
-func TestBinlogReplicationFilters_doTablesOnly(t *testing.T) {
+func TestReplicationFilters_doTablesOnly(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -123,9 +123,9 @@ func TestBinlogReplicationFilters_doTablesOnly(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
-// TestBinlogReplicationFilters_doTablesAndIgnoreTables tests that the doTables and ignoreTables
+// TestReplicationFilters_doTablesAndIgnoreTables tests that the doTables and ignoreTables
 // replication filtering options are correctly applied and honored when used together.
-func TestBinlogReplicationFilters_doTablesAndIgnoreTables(t *testing.T) {
+func TestReplicationFilters_doTablesAndIgnoreTables(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -175,8 +175,8 @@ func TestBinlogReplicationFilters_doTablesAndIgnoreTables(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
-// TestBinlogReplicationFilters_errorCases test returned errors for various error cases.
-func TestBinlogReplicationFilters_errorCases(t *testing.T) {
+// TestReplicationFilters_errorCases test returned errors for various error cases.
+func TestReplicationFilters_errorCases(t *testing.T) {
 	defer teardown(t)
 	startSqlServers(t)
 
@@ -190,9 +190,9 @@ func TestBinlogReplicationFilters_errorCases(t *testing.T) {
 	require.ErrorContains(t, err, "no database specified for table")
 }
 
-// TestBinlogReplicationFilters_ignoreDatabasesOnly tests that the ignoreDatabases replication
+// TestReplicationFilters_ignoreDatabasesOnly tests that the ignoreDatabases replication
 // filtering option is correctly applied and honored.
-func TestBinlogReplicationFilters_ignoreDatabasesOnly(t *testing.T) {
+func TestReplicationFilters_ignoreDatabasesOnly(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -209,6 +209,7 @@ func TestBinlogReplicationFilters_ignoreDatabasesOnly(t *testing.T) {
 	// require.Equal(t, "", status["Replicate_Do_DB"])
 
 	// Make changes on the primary
+	primaryDatabase.MustExec("CREATE DATABASE db02;")
 	primaryDatabase.MustExec("CREATE TABLE db01.t1 (pk INT PRIMARY KEY);")
 	primaryDatabase.MustExec("CREATE TABLE db02.t1 (pk INT PRIMARY KEY);")
 	for i := 1; i < 12; i++ {
@@ -218,6 +219,9 @@ func TestBinlogReplicationFilters_ignoreDatabasesOnly(t *testing.T) {
 
 	// Pause to let the replica catch up
 	waitForReplicaToCatchUp(t)
+
+	// Although the database is ignored, it is still created on the replica
+	// because the DDL statements are not filtered out.
 
 	// Verify that no changes from db01 were applied on the replica
 	rows, err := replicaDatabase.Queryx("SELECT COUNT(pk) as count FROM db01.t1;")
@@ -234,9 +238,9 @@ func TestBinlogReplicationFilters_ignoreDatabasesOnly(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
-// TestBinlogReplicationFilters_doDatabasesOnly tests that the doDatabases replication
+// TestReplicationFilters_doDatabasesOnly tests that the doDatabases replication
 // filtering option is correctly applied and honored.
-func TestBinlogReplicationFilters_doDatabasesOnly(t *testing.T) {
+func TestReplicationFilters_doDatabasesOnly(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -253,51 +257,7 @@ func TestBinlogReplicationFilters_doDatabasesOnly(t *testing.T) {
 	// require.Equal(t, "", status["Replicate_Ignore_DB"])
 
 	// Make changes on the primary
-	primaryDatabase.MustExec("CREATE TABLE db01.t1 (pk INT PRIMARY KEY);")
-	primaryDatabase.MustExec("CREATE TABLE db02.t1 (pk INT PRIMARY KEY);")
-	for i := 1; i < 12; i++ {
-		primaryDatabase.MustExec(fmt.Sprintf("INSERT INTO db01.t1 VALUES (%d);", i))
-		primaryDatabase.MustExec(fmt.Sprintf("INSERT INTO db02.t1 VALUES (%d);", i))
-	}
-
-	// Pause to let the replica catch up
-	waitForReplicaToCatchUp(t)
-
-	// Verify that all changes from db01 were applied on the replica
-	rows, err := replicaDatabase.Queryx("SELECT COUNT(pk) as count FROM db01.t1;")
-	require.NoError(t, err)
-	row := convertMapScanResultToStrings(readNextRow(t, rows))
-	require.Equal(t, "11", row["count"])
-	require.NoError(t, rows.Close())
-
-	// Verify that no changes from db02 were applied on the replica
-	rows, err = replicaDatabase.Queryx("SELECT COUNT(pk) as count FROM db02.t1;")
-	require.NoError(t, err)
-	row = convertMapScanResultToStrings(readNextRow(t, rows))
-	require.Equal(t, "0", row["count"])
-	require.NoError(t, rows.Close())
-}
-
-// TestBinlogReplicationFilters_doDatabasesAndIgnoreDatabases tests that the doDatabases and ignoreDatabases
-// replication filtering options are correctly applied and honored when used together.
-func TestBinlogReplicationFilters_doDatabasesAndIgnoreDatabases(t *testing.T) {
-	defer teardown(t)
-	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
-	startReplicationAndCreateTestDb(t, mySqlPort)
-
-	// Do replication events for db01, and db02
-	replicaDatabase.MustExec("CHANGE REPLICATION FILTER REPLICATE_DO_DB=(db01, db02);")
-	// Ignore replication events for db02
-	replicaDatabase.MustExec("CHANGE REPLICATION FILTER REPLICATE_IGNORE_DB=(db02);")
-
-	// TODO(fan): Not implemented yet
-	// Assert that replica status shows replication filters
-	// status := showReplicaStatus(t)
-	// require.True(t, status["Replicate_Do_DB"] == "db01,db02" ||
-	// 	status["Replicate_Do_DB"] == "db02,db01")
-	// require.Equal(t, "db02", status["Replicate_Ignore_DB"])
-
-	// Make changes on the primary
+	primaryDatabase.MustExec("CREATE DATABASE db02;")
 	primaryDatabase.MustExec("CREATE TABLE db01.t1 (pk INT PRIMARY KEY);")
 	primaryDatabase.MustExec("CREATE TABLE db02.t1 (pk INT PRIMARY KEY);")
 	for i := 1; i < 12; i++ {

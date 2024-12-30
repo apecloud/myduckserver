@@ -241,7 +241,7 @@ func convertFilterMapToStringSlice(filterMap map[string]map[string]struct{}) []s
 
 	tableNames := make([]string, 0, len(filterMap))
 	for dbName, tableMap := range filterMap {
-		for tableName, _ := range tableMap {
+		for tableName := range tableMap {
 			tableNames = append(tableNames, fmt.Sprintf("%s.%s", dbName, tableName))
 		}
 	}
