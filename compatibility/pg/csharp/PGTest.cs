@@ -14,7 +14,7 @@ public class PGTest
 
         public void Connect(string ip, int port, string user, string password)
         {
-            string connectionString = $"Host={ip};Port={port};Username={user};Password={password};Database=postgres;";
+            string connectionString = $"Host={ip};Port={port};Username={user};Password={password};Database=postgres;Timeout=300;CommandTimeout=600;";
             try
             {
                 conn = new NpgsqlConnection(connectionString);
