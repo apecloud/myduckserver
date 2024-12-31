@@ -128,7 +128,7 @@ jobs:
           
           # Verify replication of new data
           psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 3 AND name = 'new data 3';" | grep -q 1
-           
+
       - name: Backup MyDuck and Insert more data into source PG
         run: |
           psql "postgres://postgres:@127.0.0.1:5432" <<-EOSQL
@@ -157,14 +157,16 @@ jobs:
           --restore-secret-access-key=minioadmin &
           
           sleep 10
-          
+
       - name: Test Replication
         run: |
           # Verify replication catches up
           psql -h 127.0.0.1 -p 5432 -U postgres -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
-          
-          # Kill MyDuck
-          pkill myduckserver
+
+      - name: Cleanup
+        if: always()
+        run: |
+          pkill myduckserver || true
           rm -f ./myduck.db
 
       - name: Restore MyDuck at Runtime
@@ -186,8 +188,43 @@ jobs:
           # Verify replication catches up
           psql -h 127.0.0.1 -p 5432 -U postgres -d testdb2 -c "SELECT 1 FROM test_table WHERE id = 4 AND name = 'offline data 4';" | grep -q 1
 
-          # Kill MyDuck
-          pkill myduckserver
+      - name: Test Multiple Databases
+        run: |
+          psql "postgres://postgres:@127.0.0.1:5432" <<-EOSQL
+            CREATE DATABASE testdb3;
+            CREATE SCHEMA testdb3.sch3;
+            USE testdb3.sch3;
+            CREATE TABLE test_table3 (id int primary key, name text);
+            INSERT INTO test_table3 VALUES (3, 'initial data 3'), (33, 'initial data 33');
+            CREATE DATABASE testdb4;
+            CREATE SCHEMA testdb4.sch4;
+            USE testdb4.sch4;
+            CREATE TABLE test_table4 (id int primary key, name text);
+            INSERT INTO test_table4 VALUES (4, 'initial data 4'), (44, 'initial data 44');
+          
+            BACKUP DATABASE testdb3 TO 's3c://myduck-backup/myduck/myduck3.bak' 
+              ENDPOINT = '127.0.0.1:9001' 
+              ACCESS_KEY_ID = 'minioadmin' 
+              SECRET_ACCESS_KEY = 'minioadmin';
+          
+            BACKUP DATABASE testdb4 TO 's3c://myduck-backup/myduck/myduck4.bak'
+              ENDPOINT = '127.0.0.1:9001' 
+              ACCESS_KEY_ID = 'minioadmin' 
+              SECRET_ACCESS_KEY = 'minioadmin';
+          
+            RESTORE DATABASE testdb5 FROM 's3c://myduck-backup/myduck/myduck3.bak' 
+              ENDPOINT = '127.0.0.1:9001' 
+              ACCESS_KEY_ID = 'minioadmin' 
+              SECRET_ACCESS_KEY = 'minioadmin';
+          
+            RESTORE DATABASE testdb6 FROM 's3c://myduck-backup/myduck/myduck4.bak' 
+              ENDPOINT = '127.0.0.1:9001' 
+              ACCESS_KEY_ID = 'minioadmin' 
+              SECRET_ACCESS_KEY = 'minioadmin';
+          EOSQL
+          
+          psql -h 127.0.0.1 -p 5432 -U postgres -d testdb5 -c "SELECT 1 FROM sch3.test_table3 WHERE id = 3 AND name = 'initial data 3';" | grep -q 1
+          psql -h 127.0.0.1 -p 5432 -U postgres -d testdb6 -c "SELECT 1 FROM sch4.test_table4 WHERE id = 44 AND name = 'initial data 44';" | grep -q 1
 
       - name: Cleanup
         if: always()
