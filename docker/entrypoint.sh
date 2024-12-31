@@ -45,6 +45,9 @@ parse_dsn() {
         export SOURCE_HOST="${BASH_REMATCH[4]}"
         export SOURCE_PORT="${BASH_REMATCH[6]}"
         export SOURCE_DATABASE="${BASH_REMATCH[8]}"
+
+        # Remove the query parameters from SOURCE_DSN
+        export SOURCE_DSN="${dsn%%\?*}"
     else
         echo "Error: Failed to parse DSN"
         exit 1

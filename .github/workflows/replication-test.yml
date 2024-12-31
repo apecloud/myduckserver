@@ -90,15 +90,21 @@ jobs:
             docker exec source-db dolt sql -q "
               CREATE DATABASE test;
               CREATE TABLE test.items (id INT PRIMARY KEY, name VARCHAR(50));
-              INSERT INTO test.items VALUES (1, 'test1'), (2, 'test2');"
+              INSERT INTO test.items VALUES (1, 'test1'), (2, 'test2');
+              CREATE TABLE test.skip (id INT PRIMARY KEY, name VARCHAR(50));
+              INSERT INTO test.skip VALUES (1, 'abc'), (2, 'def');"
           elif [ "${{ matrix.source }}" = "mariadb" ]; then
             docker exec source-db mariadb -uroot -proot test -e "
               CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(50));
-              INSERT INTO items VALUES (1, 'test1'), (2, 'test2');"
+              INSERT INTO items VALUES (1, 'test1'), (2, 'test2');
+              CREATE TABLE skip (id INT PRIMARY KEY, name VARCHAR(50));
+              INSERT INTO skip VALUES (1, 'abc'), (2, 'def');"
           else
             docker exec source-db mysql -uroot -proot test -e "
               CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(50));
-              INSERT INTO items VALUES (1, 'test1'), (2, 'test2');"
+              INSERT INTO items VALUES (1, 'test1'), (2, 'test2');
+              CREATE TABLE skip (id INT PRIMARY KEY, name VARCHAR(50));
+              INSERT INTO skip VALUES (1, 'abc'), (2, 'def');"
           fi
 
       - name: Start MyDuck Server in replica mode
@@ -106,8 +112,7 @@ jobs:
           if [ "${{ matrix.source }}" = "postgres" ]; then
             SOURCE_DSN="postgres://postgres:postgres@host.docker.internal:5432/test"
           else
-            # The '/test' part also tests the database filtering feature
-            SOURCE_DSN="mysql://root:root@host.docker.internal:3306/test"
+            SOURCE_DSN="mysql://root:root@host.docker.internal:3306/test?skip-tables=skip"
           fi
 
           docker run -d --name myduck \
