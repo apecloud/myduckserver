@@ -23,7 +23,7 @@ import (
 
 // TestReplicationFilters_ignoreTablesOnly tests that the ignoreTables replication
 // filtering option is correctly applied and honored.
-func TestReplicationFilters_ignoreTablesOnly(t *testing.T) {
+func TestBinlogReplicationFilters_ignoreTablesOnly(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -72,9 +72,9 @@ func TestReplicationFilters_ignoreTablesOnly(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
-// TestReplicationFilters_doTablesOnly tests that the doTables replication
+// TestBinlogReplicationFilters_doTablesOnly tests that the doTables replication
 // filtering option is correctly applied and honored.
-func TestReplicationFilters_doTablesOnly(t *testing.T) {
+func TestBinlogReplicationFilters_doTablesOnly(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -123,9 +123,9 @@ func TestReplicationFilters_doTablesOnly(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
-// TestReplicationFilters_doTablesAndIgnoreTables tests that the doTables and ignoreTables
+// TestBinlogReplicationFilters_doTablesAndIgnoreTables tests that the doTables and ignoreTables
 // replication filtering options are correctly applied and honored when used together.
-func TestReplicationFilters_doTablesAndIgnoreTables(t *testing.T) {
+func TestBinlogReplicationFilters_doTablesAndIgnoreTables(t *testing.T) {
 	defer teardown(t)
 	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
 	startReplicationAndCreateTestDb(t, mySqlPort)
@@ -175,8 +175,8 @@ func TestReplicationFilters_doTablesAndIgnoreTables(t *testing.T) {
 	require.NoError(t, rows.Close())
 }
 
-// TestReplicationFilters_errorCases test returned errors for various error cases.
-func TestReplicationFilters_errorCases(t *testing.T) {
+// TestBinlogReplicationFilters_errorCases test returned errors for various error cases.
+func TestBinlogReplicationFilters_errorCases(t *testing.T) {
 	defer teardown(t)
 	startSqlServers(t)
 

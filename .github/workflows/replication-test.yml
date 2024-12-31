@@ -106,7 +106,8 @@ jobs:
           if [ "${{ matrix.source }}" = "postgres" ]; then
             SOURCE_DSN="postgres://postgres:postgres@host.docker.internal:5432/test"
           else
-            SOURCE_DSN="mysql://root:root@host.docker.internal:3306"
+            # The '/test' part also tests the database filtering feature
+            SOURCE_DSN="mysql://root:root@host.docker.internal:3306/test"
           fi
 
           docker run -d --name myduck \
@@ -202,6 +203,9 @@ jobs:
             echo 'Replication of new data verification failed'
             exit 1
           fi
+
+          # Print the logs
+          docker logs myduck
 
       - name: Cleanup
         if: always()

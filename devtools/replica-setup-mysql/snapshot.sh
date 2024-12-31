@@ -34,13 +34,22 @@ THREAD_COUNT=$(( 2 * CORE_COUNT ))
 echo "Detected core count: $CORE_COUNT"
 echo "Thread count set to: $THREAD_COUNT"
 
-echo "Copying data from MySQL to MyDuck..."
-INCLUDE_SCHEMAS_OPTION=${INCLUDE_SCHEMAS_OPTION:-}
-if [ -n "$SOURCE_DATABASE" ]; then
-    if [ "$SOURCE_DATABASE" != "mysql" ]; then
-        INCLUDE_SCHEMAS_OPTION="--include-schemas $SOURCE_DATABASE"
-    fi
+# Prepare filter options
+FILTER_OPTIONS=""
+if [ -n "$INCLUDE_SCHEMAS" ]; then
+    FILTER_OPTIONS="$FILTER_OPTIONS --include-schemas $INCLUDE_SCHEMAS"
 fi
+if [ -n "$EXCLUDE_SCHEMAS" ]; then
+    FILTER_OPTIONS="$FILTER_OPTIONS --exclude-schemas $EXCLUDE_SCHEMAS"
+fi
+if [ -n "$INCLUDE_TABLES" ]; then
+    FILTER_OPTIONS="$FILTER_OPTIONS --include-tables $INCLUDE_TABLES"
+fi
+if [ -n "$EXCLUDE_TABLES" ]; then
+    FILTER_OPTIONS="$FILTER_OPTIONS --exclude-tables $EXCLUDE_TABLES"
+fi
+
+echo "Copying data from MySQL to MyDuck..."
 # Run mysqlsh command and capture the output
 output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_PASSWORD_OPTION -- util copy-instance "mysql://${MYDUCK_USER}:${MYDUCK_PASSWORD}@${MYDUCK_HOST}:${MYDUCK_PORT}" \
     --users false \
@@ -52,7 +61,7 @@ output=$(mysqlsh --uri "$SOURCE_DSN" $SOURCE_PASSWORD_OPTION -- util copy-instan
     --ignore-version true \
     --load-indexes false \
     --defer-table-indexes all \
-    ${INCLUDE_SCHEMAS_OPTION} \
+    ${FILTER_OPTIONS} \
 )
 
 if [[ $GTID_MODE == "ON" ]]; then
