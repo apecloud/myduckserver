@@ -750,7 +750,7 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
 
-	callback := h.spoolRowsCallback(query.Tag, &rowsAffected, true)
+	callback := h.spoolRowsCallback(query, &rowsAffected, true)
 	err = h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, portalData, callback)
 	if err != nil {
 		return err
@@ -1014,7 +1014,7 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 		})
 	}
 
-	callback := h.spoolRowsCallback(statement.Tag, &rowsAffected, false)
+	callback := h.spoolRowsCallback(statement, &rowsAffected, false)
 	if err := h.duckHandler.ComQuery(
 		context.Background(),
 		h.mysqlConn,
@@ -1030,20 +1030,23 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 
 // spoolRowsCallback returns a callback function that will send RowDescription message,
 // then a DataRow message for each row in the result set.
-func (h *ConnectionHandler) spoolRowsCallback(tag string, rows *int32, isExecute bool) func(res *Result) error {
+func (h *ConnectionHandler) spoolRowsCallback(statement ConvertedStatement, rows *int32, isExecute bool) func(res *Result) error {
 	// IsIUD returns whether the query is either an INSERT, UPDATE, or DELETE query.
+	tag := statement.Tag
 	isIUD := tag == "INSERT" || tag == "UPDATE" || tag == "DELETE"
 	return func(res *Result) error {
 		logrus.Tracef("spooling %d rows for tag %s (execute = %v)", res.RowsAffected, tag, isExecute)
 		if returnsRow(tag) {
 			// EXECUTE does not send RowDescription; instead it should be sent from DESCRIBE prior to it
-			if !isExecute {
+			// We only send RowDescription once per statement execution.
+			if !isExecute && !statement.HasSentRowDesc {
 				logrus.Tracef("sending RowDescription %+v for tag %s", res.Fields, tag)
 				if err := h.send(&pgproto3.RowDescription{
 					Fields: res.Fields,
 				}); err != nil {
 					return err
 				}
+				statement.HasSentRowDesc = true
 			}
 
 			logrus.Tracef("sending Rows %+v for tag %s", res.Rows, tag)
@@ -1265,7 +1268,13 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 
 	convertedStmts := make([]ConvertedStatement, len(stmts))
 	for i, stmt := range stmts {
-		convertedStmts[i].String = stmt.SQL
+		// Check if the query is a full match query, and if so, handle it as a full match query.
+		fullMatchQuery := handleFullMatchQuery(stmt.SQL)
+		if fullMatchQuery != "" {
+			convertedStmts[i].String = fullMatchQuery
+		} else {
+			convertedStmts[i].String = stmt.SQL
+		}
 		convertedStmts[i].AST = stmt.AST
 		convertedStmts[i].Tag = stmt.AST.StatementTag()
 		convertedStmts[i].PgParsable = true

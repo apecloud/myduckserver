@@ -17,8 +17,8 @@ require (
 	github.com/cockroachdb/cockroachdb-parser v0.23.2
 	github.com/cockroachdb/errors v1.9.0
 	github.com/dolthub/doltgresql v0.13.0
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241215013221-68ab2c34608f
-	github.com/dolthub/vitess v0.0.0-20241211024425-b00987f7ba54
+	github.com/dolthub/go-mysql-server v0.19.1-0.20241227200914-69b2934b5468
+	github.com/dolthub/vitess v0.0.0-20241220202600-b18f18d0cde7
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
@@ -40,8 +40,8 @@ require (
 )
 
 replace (
-	github.com/dolthub/go-mysql-server v0.18.2-0.20241215013221-68ab2c34608f => github.com/apecloud/go-mysql-server v0.0.0-20241217030038-1ec40b6e7e7f
-	github.com/dolthub/vitess v0.0.0-20241211024425-b00987f7ba54 => github.com/apecloud/dolt-vitess v0.0.0-20241217030333-e641a5d88d61
+	github.com/dolthub/go-mysql-server v0.19.1-0.20241227200914-69b2934b5468 => github.com/apecloud/go-mysql-server v0.0.0-20241230161546-047d8079971d
+	github.com/dolthub/vitess v0.0.0-20241220202600-b18f18d0cde7 => github.com/apecloud/dolt-vitess v0.0.0-20241230164356-4a83fa43c02a
 	github.com/marcboeker/go-duckdb v1.8.3 => github.com/apecloud/go-duckdb v0.0.0-20241127093618-047c1a233928
 )
 
