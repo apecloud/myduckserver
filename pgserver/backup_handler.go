@@ -89,12 +89,6 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 }
 
 func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, error) {
-	// TODO(neo.zty): Add support for backing up multiple databases once MyDuck Server supports multi-database functionality.
-	if backupConfig.DbName != h.server.Provider.CatalogName() {
-		return "", fmt.Errorf("backup database name %s does not match server database name %s",
-			backupConfig.DbName, h.server.Provider.CatalogName())
-	}
-
 	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to create context for query: %w", err)
@@ -114,7 +108,7 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 	}
 
 	msg, err := backupConfig.StorageConfig.UploadFile(
-		h.server.Provider.DataDir(), h.server.Provider.DbFile(), backupConfig.RemotePath)
+		h.server.Provider.DataDir(), backupConfig.DbName+".db", backupConfig.RemotePath)
 	if err != nil {
 		return "", err
 	}
@@ -133,12 +127,7 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 
 func (h *ConnectionHandler) restartServer(readOnly bool) error {
 	provider := h.server.Provider
-	err := provider.Restart(readOnly)
-	if err != nil {
-		return err
-	}
-
-	return h.server.Provider.Pool().Reset(provider.CatalogName(), provider.Connector(), provider.Storage())
+	return provider.Restart(readOnly)
 }
 
 func doCheckpoint(sqlCtx *sql.Context) error {
