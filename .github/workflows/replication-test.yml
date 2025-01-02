@@ -174,19 +174,6 @@ jobs:
             exit 1
           fi
 
-          # Verify skipped table is empty (for MySQL-compatible databases only)
-          if [ "${{ matrix.source }}" != "postgres" ]; then
-            # Check if skip table has any rows
-            COUNT=$(docker exec myduck psql -t -U postgres -h 127.0.0.1 -c \
-              "SELECT COUNT(*) FROM ${SCHEMA}.skip;" | tr -d ' ')
-            if [ "$COUNT" -eq "0" ]; then
-              echo "Successfully verified that skipped table exists but is empty"
-            else
-              echo "Error: Skipped table 'skip' contains $COUNT rows when it should be empty"
-              exit 1
-            fi
-          fi
-
       - name: Test replication of new data
         run: |
           # Insert new data in source
@@ -224,6 +211,28 @@ jobs:
 
           # Print the logs
           docker logs myduck
+
+      - name: Verify skip tables
+        run: |
+          # Verify skipped table is empty (for MySQL-compatible databases only)
+          if [ "${{ matrix.source }}" != "postgres" ]; then
+            # Check if skip table exists and has any rows
+            TABLE_EXISTS=$(docker exec myduck psql -t -U postgres -h 127.0.0.1 -c \
+              "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${SCHEMA}' AND table_name = 'skip';" | tr -d ' ')
+
+            if [ "$TABLE_EXISTS" -ne "0" ]; then
+              COUNT=$(docker exec myduck psql -t -U postgres -h 127.0.0.1 -c \
+                "SELECT COUNT(*) FROM ${SCHEMA}.skip;" | tr -d ' ')
+              if [ "$COUNT" -eq "0" ]; then
+                echo "Successfully verified that skipped table exists but is empty"
+              else
+                echo "Error: Skipped table 'skip' contains $COUNT rows when it should be empty"
+                exit 1
+              fi
+            else
+              echo "Successfully verified that skipped table does not exist in destination"
+            fi
+          fi
 
       - name: Cleanup
         if: always()
