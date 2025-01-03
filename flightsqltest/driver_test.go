@@ -96,6 +96,7 @@ func (s *SqlTestSuite) SetupSuite() {
 		if err != nil {
 			return nil, "", err
 		}
+
 		sqliteServer, err := flightsqlserver.NewSQLiteFlightSQLServer(provider.Storage())
 		if err != nil {
 			return nil, "", err
