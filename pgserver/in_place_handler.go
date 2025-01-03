@@ -170,10 +170,11 @@ func (h *ConnectionHandler) handlePgCatalog(query ConvertedStatement) (bool, err
 	})
 }
 
-type PGCatalogHandler struct {
-	// HandledInPlace is a function that determines if the query should be handled in place and not passed to the engine.
-	HandledInPlace func(ConvertedStatement) (bool, error)
-	Handler        func(*ConnectionHandler, ConvertedStatement) (bool, error)
+type InPlaceHandler struct {
+	// ShouldHandledInPlace is a function that determines if the query should be
+	// handled in place and not passed to the engine.
+	ShouldHandledInPlace func(ConvertedStatement) (bool, error)
+	Handler              func(*ConnectionHandler, ConvertedStatement) (bool, error)
 }
 
 func isPgIsInRecovery(query ConvertedStatement) bool {
@@ -208,9 +209,9 @@ func isSpecialPgCatalog(query ConvertedStatement) bool {
 }
 
 // The key is the statement tag of the query.
-var pgCatalogHandlers = map[string]PGCatalogHandler{
+var inPlaceHandlers = map[string]InPlaceHandler{
 	"SELECT": {
-		HandledInPlace: func(query ConvertedStatement) (bool, error) {
+		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
 			// TODO(sean): Evaluate the conditions by iterating over the AST.
 			if isPgIsInRecovery(query) {
 				return true, nil
@@ -244,7 +245,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 		},
 	},
 	"SHOW": {
-		HandledInPlace: func(query ConvertedStatement) (bool, error) {
+		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
 			switch query.AST.(type) {
 			case *tree.ShowVar:
 				return true, nil
@@ -277,7 +278,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 		},
 	},
 	"SET": {
-		HandledInPlace: func(query ConvertedStatement) (bool, error) {
+		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				key := strings.ToLower(stmt.Name)
@@ -333,7 +334,7 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 		},
 	},
 	"RESET": {
-		HandledInPlace: func(query ConvertedStatement) (bool, error) {
+		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				if !stmt.Reset && !stmt.ResetAll {
@@ -375,11 +376,11 @@ var pgCatalogHandlers = map[string]PGCatalogHandler{
 // passed to the engine. This is useful for queries that are not supported by the engine, or that require
 // special handling.
 func shouldQueryBeHandledInPlace(sql ConvertedStatement) (bool, error) {
-	handler, ok := pgCatalogHandlers[sql.Tag]
+	handler, ok := inPlaceHandlers[sql.Tag]
 	if !ok {
 		return false, nil
 	}
-	handledInPlace, err := handler.HandledInPlace(sql)
+	handledInPlace, err := handler.ShouldHandledInPlace(sql)
 	if err != nil {
 		return false, err
 	}
@@ -388,8 +389,8 @@ func shouldQueryBeHandledInPlace(sql ConvertedStatement) (bool, error) {
 
 // TODO(sean): This is a temporary work around for clients that query the views from schema 'pg_catalog'.
 // Remove this once we add the views for 'pg_catalog'.
-func (h *ConnectionHandler) handlePgCatalogQueries(sql ConvertedStatement) (bool, error) {
-	handler, ok := pgCatalogHandlers[sql.Tag]
+func (h *ConnectionHandler) handleInPlaceQueries(sql ConvertedStatement) (bool, error) {
+	handler, ok := inPlaceHandlers[sql.Tag]
 	if !ok {
 		return false, nil
 	}

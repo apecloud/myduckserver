@@ -548,7 +548,7 @@ func (h *ConnectionHandler) handleStatementOutsideEngine(statement ConvertedStat
 		}
 	}
 
-	handled, err = h.handlePgCatalogQueries(statement)
+	handled, err = h.handleInPlaceQueries(statement)
 	if handled || err != nil {
 		return true, true, err
 	}
@@ -568,12 +568,12 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 
 	// TODO(Noy): handle multiple statements
 	statement := statements[0]
-	if statement.AST == nil {
+	if statement.AST == nil && strings.TrimSpace(statement.String) == "" {
 		// special case: empty query
 		h.preparedStatements[message.Name] = PreparedStatementData{
 			Statement: statement,
 		}
-		return nil
+		return h.send(&pgproto3.ParseComplete{})
 	}
 
 	handledOutsideEngine, err := shouldQueryBeHandledInPlace(statement)
@@ -666,6 +666,10 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 		if portalData.Stmt != nil {
 			fields = portalData.Fields
 			tag = portalData.Statement.Tag
+		} else {
+			// The RowDescription message will be sent by the inplace handler if this statement
+			// is intercepted internally.
+			return nil
 		}
 	}
 
@@ -686,10 +690,11 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 
 	if preparedData.Stmt == nil {
 		h.portals[message.DestinationPortal] = PortalData{
-			Statement: preparedData.Statement,
-			Fields:    nil,
-			Stmt:      nil,
-			Vars:      nil,
+			Statement:    preparedData.Statement,
+			IsEmptyQuery: strings.TrimSpace(preparedData.Statement.String) == "",
+			Fields:       nil,
+			Stmt:         nil,
+			Vars:         nil,
 		}
 		return h.send(&pgproto3.BindComplete{})
 	}
@@ -738,6 +743,10 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	query := portalData.Statement
 
 	if portalData.IsEmptyQuery {
+		err := h.send(&pgproto3.NoData{})
+		if err != nil {
+			return fmt.Errorf("error sending NoData message: %w", err)
+		}
 		return h.send(&pgproto3.EmptyQueryResponse{})
 	}
 
