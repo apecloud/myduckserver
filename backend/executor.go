@@ -245,20 +245,6 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 	})), nil
 }
 
-func (b *DuckBuilder) executeTable(ctx *sql.Context, n *plan.Table) (sql.RowIter, error) {
-	tableName := n.Name()
-	query := fmt.Sprintf("SELECT * FROM %s", tableName)
-	conn, err := adapter.GetConn(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := conn.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	return NewSQLRowIter(rows, n.Schema())
-}
-
 // containsVariable inspects if the plan contains a system or user variable.
 func containsVariable(n sql.Node) bool {
 	found := false
