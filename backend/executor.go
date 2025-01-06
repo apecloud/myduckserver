@@ -173,6 +173,9 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	switch n.(type) {
 	case *plan.ShowTables:
 		duckSQL = ctx.Query()
+	case *plan.ResolvedTable:
+		// SQLGlot cannot translate MySQL's `TABLE t` into DuckDB's `FROM t` - it produces `"table" AS t` instead. 
+		duckSQL = `FROM ` + catalog.ConnectIdentifiersANSI(n.Database().Name(), n.Name())
 	default:
 		duckSQL, err = transpiler.TranslateWithSQLGlot(ctx.Query())
 	}
@@ -240,6 +243,20 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 		InsertID:     uint64(insertId),
 		Info:         info,
 	})), nil
+}
+
+func (b *DuckBuilder) executeTable(ctx *sql.Context, n *plan.Table) (sql.RowIter, error) {
+	tableName := n.Name()
+	query := fmt.Sprintf("SELECT * FROM %s", tableName)
+	conn, err := adapter.GetConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return NewSQLRowIter(rows, n.Schema())
 }
 
 // containsVariable inspects if the plan contains a system or user variable.
