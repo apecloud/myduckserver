@@ -39,9 +39,9 @@ EOF
         tot date DEFAULT NULL,
         doel enum('phprapporten','excelrapporten','opslagkosten') CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-    LOAD DATA LOCAL INFILE '$tempfile' REPLACE INTO TABLE peildatum
+    LOAD DATA LOCAL INFILE '${tempfile}' REPLACE INTO TABLE peildatum
     CHARACTER SET 'utf8mb4'
-    FIELDS TERMINATED BY '	' ESCAPED BY '\\'
+    FIELDS TERMINATED BY '	' ESCAPED BY '\\\\'
     LINES STARTING BY '' TERMINATED BY '\n'
     (datum, vanaf, tot, doel);
 EOF
