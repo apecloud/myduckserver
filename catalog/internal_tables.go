@@ -168,6 +168,7 @@ var InternalTables = struct {
 	PGProc            InternalTable
 	PGClass           InternalTable
 	PGNamespace       InternalTable
+	PGMatViews        InternalTable
 }{
 	PersistentVariable: InternalTable{
 		Schema:       "__sys__",
@@ -608,6 +609,52 @@ var InternalTables = struct {
 			"nspacl TEXT",
 		InitialData: InitialDataTables.PGNamespace,
 	},
+	// View "pg_catalog.pg_matviews"
+	// postgres=# \d+ pg_catalog.pg_matviews
+	//                          View "pg_catalog.pg_matviews"
+	//    Column    |  Type   | Collation | Nullable | Default | Storage  | Description
+	//--------------+---------+-----------+----------+---------+----------+-------------
+	// schemaname   | name    |           |          |         | plain    |
+	// matviewname  | name    |           |          |         | plain    |
+	// matviewowner | name    |           |          |         | plain    |
+	// tablespace   | name    |           |          |         | plain    |
+	// hasindexes   | boolean |           |          |         | plain    |
+	// ispopulated  | boolean |           |          |         | plain    |
+	// definition   | text    |           |          |         | extended |
+	//View definition:
+	// SELECT n.nspname AS schemaname,
+	//    c.relname AS matviewname,
+	//    pg_get_userbyid(c.relowner) AS matviewowner,
+	//    t.spcname AS tablespace,
+	//    c.relhasindex AS hasindexes,
+	//    c.relispopulated AS ispopulated,
+	//    pg_get_viewdef(c.oid) AS definition
+	//   FROM pg_class c
+	//     LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+	//     LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+	//  WHERE c.relkind = 'm'::"char";
+	PGMatViews: InternalTable{
+		Schema: "__sys__",
+		Name:   "pg_matviews",
+		KeyColumns: []string{
+			"schemaname",
+			"matviewname",
+		},
+		ValueColumns: []string{
+			"matviewowner",
+			"tablespace",
+			"hasindexes",
+			"ispopulated",
+			"definition",
+		},
+		DDL: "schemaname VARCHAR NOT NULL, " +
+			"matviewname VARCHAR NOT NULL, " +
+			"matviewowner VARCHAR, " +
+			"tablespace VARCHAR, " +
+			"hasindexes BOOLEAN, " +
+			"ispopulated BOOLEAN, " +
+			"definition TEXT",
+	},
 }
 
 var internalTables = []InternalTable{
@@ -621,6 +668,7 @@ var internalTables = []InternalTable{
 	InternalTables.PGProc,
 	InternalTables.PGClass,
 	InternalTables.PGNamespace,
+	InternalTables.PGMatViews,
 }
 
 func GetInternalTables() []InternalTable {

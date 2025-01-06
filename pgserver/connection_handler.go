@@ -479,6 +479,7 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 	h.deletePortal("")
 
 	for _, statement := range statements {
+		statement.IsExtendedQuery = false
 		// Certain statement types get handled directly by the handler instead of being passed to the engine
 		handled, endOfMessages, err = h.handleStatementOutsideEngine(statement)
 		if handled {
@@ -568,6 +569,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 
 	// TODO(Noy): handle multiple statements
 	statement := statements[0]
+	statement.IsExtendedQuery = true
 	if statement.AST == nil && strings.TrimSpace(statement.String) == "" {
 		// special case: empty query
 		h.preparedStatements[message.Name] = PreparedStatementData{
@@ -576,7 +578,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		return h.send(&pgproto3.ParseComplete{})
 	}
 
-	handledOutsideEngine, err := shouldQueryBeHandledInPlace(statement)
+	handledOutsideEngine, err := shouldQueryBeHandledInPlace(h, &statement)
 	if err != nil {
 		return err
 	}

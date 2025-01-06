@@ -57,7 +57,6 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		dataDir:                   dataDir,
 	}
 
-	shouldInit := true
 	if defaultDB == "" || defaultDB == "memory" {
 		prov.defaultCatalogName = "memory"
 		prov.dbFile = ""
@@ -66,8 +65,6 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		prov.defaultCatalogName = defaultDB
 		prov.dbFile = defaultDB + ".db"
 		prov.dsn = filepath.Join(prov.dataDir, prov.dbFile)
-		_, err = os.Stat(prov.dsn)
-		shouldInit = os.IsNotExist(err)
 	}
 
 	prov.connector, err = duckdb.NewConnector(prov.dsn, nil)
@@ -94,11 +91,9 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		}
 	}
 
-	if shouldInit {
-		err = prov.initCatalog()
-		if err != nil {
-			return nil, err
-		}
+	err = prov.initCatalog()
+	if err != nil {
+		return nil, err
 	}
 
 	err = prov.attachCatalogs()
@@ -179,6 +174,21 @@ func (prov *DatabaseProvider) initCatalog() error {
 					return fmt.Errorf("failed to insert initial data from file into internal table %q: %w", t.Name, err)
 				}
 			}
+		}
+	}
+
+	for _, v := range InternalViews {
+		if _, err := prov.storage.ExecContext(
+			context.Background(),
+			"CREATE SCHEMA IF NOT EXISTS "+v.Schema,
+		); err != nil {
+			return fmt.Errorf("failed to create internal schema %q: %w", v.Schema, err)
+		}
+		if _, err := prov.storage.ExecContext(
+			context.Background(),
+			"CREATE VIEW IF NOT EXISTS "+v.QualifiedName()+" AS "+v.DDL,
+		); err != nil {
+			return fmt.Errorf("failed to create internal view %q: %w", v.Name, err)
 		}
 	}
 

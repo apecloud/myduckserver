@@ -271,14 +271,21 @@ var (
 // get the regex to match any table in pg_catalog in the query.
 func getPgCatalogRegex() *regexp.Regexp {
 	initPgCatalogRegex.Do(func() {
-		var tableNames []string
+		var internalNames []string
 		for _, table := range catalog.GetInternalTables() {
 			if table.Schema != "__sys__" {
 				continue
 			}
-			tableNames = append(tableNames, table.Name)
+			internalNames = append(internalNames, table.Name)
 		}
-		pgCatalogRegex = regexp.MustCompile(`(?i)\b(FROM|JOIN|INTO)\s+(?:pg_catalog\.)?(` + strings.Join(tableNames, "|") + `)`)
+		for _, view := range catalog.InternalViews {
+			if view.Schema != "__sys__" {
+				continue
+			}
+			internalNames = append(internalNames, view.Name)
+		}
+		pgCatalogRegex = regexp.MustCompile(
+			`(?i)\b(FROM|JOIN|INTO)\s+(?:pg_catalog\.)?(?:"?(` + strings.Join(internalNames, "|") + `)"?)`)
 	})
 	return pgCatalogRegex
 }

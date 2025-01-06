@@ -121,131 +121,157 @@ func (h *ConnectionHandler) setPgSessionVar(name string, value any, useDefault b
 	return true, nil
 }
 
-// handler for pgIsInRecovery
-func (h *ConnectionHandler) handleIsInRecovery() (bool, error) {
-	isInRecovery, err := h.isInRecovery()
-	if err != nil {
-		return false, err
-	}
-	return true, h.run(ConvertedStatement{
-		String: fmt.Sprintf(`SELECT '%s' AS "pg_is_in_recovery";`, isInRecovery),
-		Tag:    "SELECT",
-	})
-}
-
-// handler for pgWALLSN
-func (h *ConnectionHandler) handleWALSN() (bool, error) {
-	lsnStr, err := h.readOneWALPositionStr()
-	if err != nil {
-		return false, err
-	}
-	return true, h.run(ConvertedStatement{
-		String: fmt.Sprintf(`SELECT '%s' AS "%s";`, lsnStr, "pg_current_wal_lsn"),
-		Tag:    "SELECT",
-	})
-}
-
-// handler for currentSetting
-func (h *ConnectionHandler) handleCurrentSetting(query ConvertedStatement) (bool, error) {
-	sql := RemoveComments(query.String)
-	matches := currentSettingRegex.FindStringSubmatch(sql)
-	if len(matches) != 3 {
-		return false, fmt.Errorf("error: invalid current_setting query")
-	}
-	setting, err := h.queryPGSetting(matches[2])
-	if err != nil {
-		return false, err
-	}
-	return true, h.run(ConvertedStatement{
-		String: fmt.Sprintf(`SELECT '%s' AS "current_setting";`, fmt.Sprintf("%v", setting)),
-		Tag:    "SELECT",
-	})
-}
-
-// handler for pgCatalog
-func (h *ConnectionHandler) handlePgCatalog(query ConvertedStatement) (bool, error) {
-	return true, h.run(ConvertedStatement{
-		String: ConvertToSys(query.String),
-		Tag:    "SELECT",
-	})
-}
-
 type InPlaceHandler struct {
 	// ShouldHandledInPlace is a function that determines if the query should be
 	// handled in place and not passed to the engine.
-	ShouldHandledInPlace func(ConvertedStatement) (bool, error)
+	ShouldHandledInPlace func(*ConnectionHandler, *ConvertedStatement) (bool, error)
 	Handler              func(*ConnectionHandler, ConvertedStatement) (bool, error)
 }
 
-func isPgIsInRecovery(query ConvertedStatement) bool {
-	sql := RemoveComments(query.String)
-	return pgIsInRecoveryRegex.MatchString(sql)
+var typeCastConversion = map[string]string{
+	"::regclass": "::varchar",
 }
 
-func isPgWALSN(query ConvertedStatement) bool {
-	sql := RemoveComments(query.String)
-	return pgWALLSNRegex.MatchString(sql)
+type SelectionConversion struct {
+	needConvert func(*ConvertedStatement) bool
+	doConvert   func(*ConnectionHandler, *ConvertedStatement) error
 }
 
-func isPgCurrentSetting(query ConvertedStatement) bool {
-	sql := RemoveComments(query.String)
-	if !currentSettingRegex.MatchString(sql) {
-		return false
-	}
-	matches := currentSettingRegex.FindStringSubmatch(sql)
-	if len(matches) != 3 {
-		return false
-	}
-	if !pgconfig.IsValidPostgresConfigParameter(matches[2]) {
-		// This is a configuration of DuckDB, it should be bypassed to DuckDB
-		return false
-	}
-	return true
-}
-
-func isSpecialPgCatalog(query ConvertedStatement) bool {
-	sql := RemoveComments(query.String)
-	return getPgCatalogRegex().MatchString(sql)
+var selectionConversions = []SelectionConversion{
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			sql := RemoveComments(query.String)
+			// TODO(sean): Evaluate the conditions by iterating over the AST.
+			return pgIsInRecoveryRegex.MatchString(sql)
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			isInRecovery, err := h.isInRecovery()
+			if err != nil {
+				return err
+			}
+			sqlStr := fmt.Sprintf(`SELECT '%s' AS "pg_is_in_recovery";`, isInRecovery)
+			query.String = sqlStr
+			return nil
+		},
+	},
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			sql := RemoveComments(query.String)
+			// TODO(sean): Evaluate the conditions by iterating over the AST.
+			return pgWALLSNRegex.MatchString(sql)
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			lsnStr, err := h.readOneWALPositionStr()
+			if err != nil {
+				return err
+			}
+			sqlStr := fmt.Sprintf(`SELECT '%s' AS "%s";`, lsnStr, "pg_current_wal_lsn")
+			query.String = sqlStr
+			return nil
+		},
+	},
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			sql := RemoveComments(query.String)
+			// TODO(sean): Evaluate the conditions by iterating over the AST.
+			if !currentSettingRegex.MatchString(sql) {
+				return false
+			}
+			matches := currentSettingRegex.FindStringSubmatch(sql)
+			if len(matches) != 3 {
+				return false
+			}
+			if !pgconfig.IsValidPostgresConfigParameter(matches[2]) {
+				// This is a configuration of DuckDB, it should be bypassed to DuckDB
+				return false
+			}
+			return true
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			sql := RemoveComments(query.String)
+			matches := currentSettingRegex.FindStringSubmatch(sql)
+			setting, err := h.queryPGSetting(matches[2])
+			if err != nil {
+				return err
+			}
+			sqlStr := fmt.Sprintf(`SELECT '%s' AS "current_setting";`, fmt.Sprintf("%v", setting))
+			query.String = sqlStr
+			return nil
+		},
+	},
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			sql := RemoveComments(query.String)
+			// TODO(sean): Evaluate the conditions by iterating over the AST.
+			return getPgCatalogRegex().MatchString(sql)
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			sqlStr := ConvertToSys(query.String)
+			query.String = sqlStr
+			return nil
+		},
+	},
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			sqlStr := RemoveComments(query.String)
+			// TODO(sean): Evaluate the conditions by iterating over the AST.
+			for k := range typeCastConversion {
+				if strings.Contains(sqlStr, k) {
+					return true
+				}
+			}
+			return false
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			sqlStr := RemoveComments(query.String)
+			for k, v := range typeCastConversion {
+				sqlStr = strings.ReplaceAll(sqlStr, k, v)
+			}
+			query.String = sqlStr
+			return nil
+		},
+	},
 }
 
 // The key is the statement tag of the query.
 var inPlaceHandlers = map[string]InPlaceHandler{
 	"SELECT": {
-		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
-			// TODO(sean): Evaluate the conditions by iterating over the AST.
-			if isPgIsInRecovery(query) {
-				return true, nil
-			}
-			if isPgWALSN(query) {
-				return true, nil
-			}
-			if isPgCurrentSetting(query) {
-				return true, nil
-			}
-			if isSpecialPgCatalog(query) {
-				return true, nil
+		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
+			for _, conv := range selectionConversions {
+				if conv.needConvert(query) {
+					var err error
+					// Do not execute this query here. Instead, fallback to the original processing.
+					// So we don't have to deal with the dynamic SQL with placeholders here.
+					err = conv.doConvert(h, query)
+					if err != nil {
+						return false, err
+					}
+				}
 			}
 			return false, nil
 		},
 		Handler: func(h *ConnectionHandler, query ConvertedStatement) (bool, error) {
-			if isPgIsInRecovery(query) {
-				return h.handleIsInRecovery()
+			// This is for simple query
+			converted := false
+			convertedStatement := query
+			for _, conv := range selectionConversions {
+				if conv.needConvert(&convertedStatement) {
+					var err error
+					err = conv.doConvert(h, &convertedStatement)
+					if err != nil {
+						return false, err
+					}
+					converted = true
+				}
 			}
-			if isPgWALSN(query) {
-				return h.handleWALSN()
-			}
-			if isPgCurrentSetting(query) {
-				return h.handleCurrentSetting(query)
-			}
-			//if pgCatalogRegex.MatchString(sql) {
-			if isSpecialPgCatalog(query) {
-				return h.handlePgCatalog(query)
+			if converted {
+				return true, h.run(convertedStatement)
 			}
 			return false, nil
 		},
 	},
 	"SHOW": {
-		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
+		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
 			switch query.AST.(type) {
 			case *tree.ShowVar:
 				return true, nil
@@ -278,7 +304,7 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 		},
 	},
 	"SET": {
-		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
+		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				key := strings.ToLower(stmt.Name)
@@ -334,7 +360,7 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 		},
 	},
 	"RESET": {
-		ShouldHandledInPlace: func(query ConvertedStatement) (bool, error) {
+		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				if !stmt.Reset && !stmt.ResetAll {
@@ -375,12 +401,12 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 // shouldQueryBeHandledInPlace determines whether a query should be handled in place, rather than being
 // passed to the engine. This is useful for queries that are not supported by the engine, or that require
 // special handling.
-func shouldQueryBeHandledInPlace(sql ConvertedStatement) (bool, error) {
+func shouldQueryBeHandledInPlace(h *ConnectionHandler, sql *ConvertedStatement) (bool, error) {
 	handler, ok := inPlaceHandlers[sql.Tag]
 	if !ok {
 		return false, nil
 	}
-	handledInPlace, err := handler.ShouldHandledInPlace(sql)
+	handledInPlace, err := handler.ShouldHandledInPlace(h, sql)
 	if err != nil {
 		return false, err
 	}
