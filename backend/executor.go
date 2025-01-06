@@ -170,7 +170,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	)
 
 	// Translate the MySQL query to a DuckDB query
-	switch n.(type) {
+	switch n := n.(type) {
 	case *plan.ShowTables:
 		duckSQL = ctx.Query()
 	case *plan.ResolvedTable:
