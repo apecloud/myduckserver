@@ -30,16 +30,14 @@ import (
 type ConnectionPool struct {
 	*stdsql.DB
 	connector *duckdb.Connector
-	catalog   string
 	conns     sync.Map // concurrent-safe map[uint32]*stdsql.Conn
 	txns      sync.Map // concurrent-safe map[uint32]*stdsql.Tx
 }
 
-func NewConnectionPool(catalog string, connector *duckdb.Connector, db *stdsql.DB) *ConnectionPool {
+func NewConnectionPool(connector *duckdb.Connector, db *stdsql.DB) *ConnectionPool {
 	return &ConnectionPool{
 		DB:        db,
 		connector: connector,
-		catalog:   catalog,
 	}
 }
 
@@ -57,11 +55,28 @@ func (p *ConnectionPool) CurrentSchema(id uint32) string {
 	}
 	conn := entry.(*stdsql.Conn)
 	var schema string
-	if err := conn.QueryRowContext(context.Background(), "SELECT CURRENT_SCHEMA()").Scan(&schema); err != nil {
+	if err := conn.QueryRowContext(context.Background(), "SELECT CURRENT_SCHEMA").Scan(&schema); err != nil {
 		logrus.WithError(err).Error("Failed to get current schema")
 		return ""
 	}
 	return schema
+}
+
+// CurrentCatalog retrieves the current catalog of the connection.
+// Returns an empty string if the connection is not established
+// or the catalog cannot be retrieved.
+func (p *ConnectionPool) CurrentCatalog(id uint32) string {
+	entry, ok := p.conns.Load(id)
+	if !ok {
+		return ""
+	}
+	conn := entry.(*stdsql.Conn)
+	var catalog string
+	if err := conn.QueryRowContext(context.Background(), "SELECT CURRENT_CATALOG").Scan(&catalog); err != nil {
+		logrus.WithError(err).Error("Failed to get current catalog")
+		return ""
+	}
+	return catalog
 }
 
 func (p *ConnectionPool) GetConn(ctx context.Context, id uint32) (*stdsql.Conn, error) {
@@ -88,11 +103,11 @@ func (p *ConnectionPool) GetConnForSchema(ctx context.Context, id uint32, schema
 
 	if schemaName != "" {
 		var currentSchema string
-		if err := conn.QueryRowContext(context.Background(), "SELECT CURRENT_SCHEMA()").Scan(&currentSchema); err != nil {
+		if err := conn.QueryRowContext(context.Background(), "SELECT CURRENT_SCHEMA").Scan(&currentSchema); err != nil {
 			logrus.WithError(err).Error("Failed to get current schema")
 			return nil, err
 		} else if currentSchema != schemaName {
-			if _, err := conn.ExecContext(context.Background(), "USE "+FullSchemaName(p.catalog, schemaName)); err != nil {
+			if _, err := conn.ExecContext(context.Background(), "USE "+FullSchemaName(p.CurrentCatalog(id), schemaName)); err != nil {
 				if IsDuckDBSetSchemaNotFoundError(err) {
 					return nil, sql.ErrDatabaseNotFound.New(schemaName)
 				}
@@ -187,7 +202,7 @@ func (p *ConnectionPool) Close() error {
 	return errors.Join(lastErr, p.DB.Close())
 }
 
-func (p *ConnectionPool) Reset(catalog string, connector *duckdb.Connector, db *stdsql.DB) error {
+func (p *ConnectionPool) Reset(connector *duckdb.Connector, db *stdsql.DB) error {
 	err := p.Close()
 	if err != nil {
 		return fmt.Errorf("failed to close connection pool: %w", err)
@@ -195,7 +210,6 @@ func (p *ConnectionPool) Reset(catalog string, connector *duckdb.Connector, db *
 
 	p.conns.Clear()
 	p.txns.Clear()
-	p.catalog = catalog
 	p.DB = db
 	p.connector = connector
 

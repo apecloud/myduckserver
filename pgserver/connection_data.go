@@ -57,6 +57,7 @@ type ConvertedStatement struct {
 	AST                tree.Statement
 	Tag                string
 	PgParsable         bool
+	HasSentRowDesc     bool
 	SubscriptionConfig *SubscriptionConfig
 	BackupConfig       *BackupConfig
 	RestoreConfig      *RestoreConfig

@@ -38,13 +38,16 @@ parse_dsn() {
         exit 1
     fi
 
-    # Extract credentials and host/port/dbname
-    if [[ "$dsn" =~ ^([^:@]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?(/(.+))?$ ]]; then
+    # Extract credentials and host/port/dbname, stopping at any query parameters
+    if [[ "$dsn" =~ ^([^:@]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?(/([^?]+))? ]]; then
         export SOURCE_USER="${BASH_REMATCH[1]}"
         export SOURCE_PASSWORD="${BASH_REMATCH[3]}"
         export SOURCE_HOST="${BASH_REMATCH[4]}"
         export SOURCE_PORT="${BASH_REMATCH[6]}"
         export SOURCE_DATABASE="${BASH_REMATCH[8]}"
+
+        # Remove the query parameters from SOURCE_DSN
+        export SOURCE_DSN="${dsn%%\?*}"
     else
         echo "Error: Failed to parse DSN"
         exit 1
@@ -65,6 +68,49 @@ parse_dsn() {
             export SOURCE_PORT="5432"
         elif [[ "$SOURCE_TYPE" == "MYSQL" ]]; then
             export SOURCE_PORT="3306"
+        fi
+    fi
+
+    # Extract query parameters if present
+    if [[ "$dsn" =~ \?(.+)$ ]]; then
+        local query_string="${BASH_REMATCH[1]}"
+        # Initialize filter variables
+        local include_schemas=""
+        local exclude_schemas=""
+        local include_tables=""
+        local exclude_tables=""
+        
+        # Parse query parameters
+        IFS='&' read -ra PARAMS <<< "$query_string"
+        for param in "${PARAMS[@]}"; do
+            IFS='=' read -r key value <<< "$param"
+            case "$key" in
+                # Support both old and new parameter names
+                "schemas"|"include-schemas") include_schemas="$value" ;;
+                "exclude-schemas"|"skip-schemas") exclude_schemas="$value" ;;
+                "tables"|"include-tables") include_tables="$value" ;;
+                "exclude-tables"|"skip-tables") exclude_tables="$value" ;;
+            esac
+        done
+
+        # Handle include-schemas from both path and query parameter
+        if [[ -n "$SOURCE_DATABASE" && "$SOURCE_DATABASE" != "mysql" ]]; then
+            if [[ -n "$include_schemas" ]]; then
+                export INCLUDE_SCHEMAS="$SOURCE_DATABASE,$include_schemas"
+            else
+                export INCLUDE_SCHEMAS="$SOURCE_DATABASE"
+            fi
+        else
+            export INCLUDE_SCHEMAS="$include_schemas"
+        fi
+
+        export EXCLUDE_SCHEMAS="$exclude_schemas"
+        export INCLUDE_TABLES="$include_tables"
+        export EXCLUDE_TABLES="$exclude_tables"
+    else
+        # If no query parameters, but SOURCE_DATABASE is set
+        if [[ -n "$SOURCE_DATABASE" && "$SOURCE_DATABASE" != "mysql" ]]; then
+            export INCLUDE_SCHEMAS="$SOURCE_DATABASE"
         fi
     fi
 

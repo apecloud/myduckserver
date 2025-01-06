@@ -16,17 +16,21 @@ import (
 )
 
 type Table struct {
-	mu      *sync.RWMutex
-	name    string
+	mu      sync.RWMutex
 	db      *Database
-	comment *Comment[ExtraTableInfo] // save the comment to avoid querying duckdb everytime
+	name    string
+	comment *Comment[ExtraTableInfo] // save the comment to avoid querying duckdb every time
 	schema  sql.PrimaryKeySchema
+
+	// Whether the table has a physical primary key.
+	hasPrimaryKey bool
 }
 
 type ExtraTableInfo struct {
 	PkOrdinals []int
 	Replicated bool
 	Sequence   string
+	Checks     []sql.CheckDefinition
 }
 
 type ColumnInfo struct {
@@ -37,6 +41,7 @@ type ColumnInfo struct {
 	ColumnDefault stdsql.NullString
 	Comment       stdsql.NullString
 }
+
 type IndexedTable struct {
 	*Table
 	Lookup sql.IndexLookup
@@ -54,12 +59,15 @@ var _ sql.TruncateableTable = (*Table)(nil)
 var _ sql.ReplaceableTable = (*Table)(nil)
 var _ sql.CommentedTable = (*Table)(nil)
 var _ sql.AutoIncrementTable = (*Table)(nil)
+var _ sql.CheckTable = (*Table)(nil)
+var _ sql.CheckAlterableTable = (*Table)(nil)
 
-func NewTable(name string, db *Database) *Table {
+func NewTable(db *Database, name string, hasPrimaryKey bool) *Table {
 	return &Table{
-		mu:   &sync.RWMutex{},
-		name: name,
 		db:   db,
+		name: name,
+
+		hasPrimaryKey: hasPrimaryKey,
 	}
 }
 
@@ -90,6 +98,10 @@ func (t *Table) withSchema(ctx *sql.Context) error {
 
 func (t *Table) ExtraTableInfo() ExtraTableInfo {
 	return t.comment.Meta
+}
+
+func (t *Table) HasPrimaryKey() bool {
+	return t.hasPrimaryKey
 }
 
 // Collation implements sql.Table.
@@ -199,6 +211,14 @@ func getPrimaryKeyOrdinals(ctx *sql.Context, catalogName, dbName, tableName stri
 	return ordinals
 }
 
+func getCreateSequence(temporary bool, sequenceName string) (createStmt, fullName string) {
+	if temporary {
+		return `CREATE TEMP SEQUENCE "` + sequenceName + `"`, `temp.main."` + sequenceName + `"`
+	}
+	fullName = InternalSchemas.SYS.Schema + `."` + sequenceName + `"`
+	return `CREATE SEQUENCE ` + fullName, fullName
+}
+
 // AddColumn implements sql.AlterableTable.
 func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.ColumnOrder) error {
 	t.mu.Lock()
@@ -215,7 +235,7 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	sql := `ALTER TABLE ` + FullTableName(t.db.catalog, t.db.name, t.name) + ` ADD COLUMN ` + QuoteIdentifierANSI(column.Name) + ` ` + typ.name
 
 	temporary := t.db.catalog == "temp"
-	var sequenceName, fullSequenceName string
+	var sequenceName, fullSequenceName, createSequenceStmt string
 
 	if column.Default != nil {
 		typ.mysql.Default = column.Default.String()
@@ -233,22 +253,11 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 			return err
 		}
 		sequenceName = SequenceNamePrefix + uuid.String()
-		if temporary {
-			fullSequenceName = `temp.main."` + sequenceName + `"`
-		} else {
-			fullSequenceName = InternalSchemas.SYS.Schema + `."` + sequenceName + `"`
-		}
+		createSequenceStmt, fullSequenceName = getCreateSequence(temporary, sequenceName)
+		sqls = append(sqls, createSequenceStmt)
 
 		defaultExpr := `nextval('` + fullSequenceName + `')`
 		sql += " DEFAULT " + defaultExpr
-	}
-
-	if column.AutoIncrement {
-		if temporary {
-			sqls = append(sqls, `CREATE TEMP SEQUENCE "`+sequenceName+`"`)
-		} else {
-			sqls = append(sqls, `CREATE SEQUENCE `+fullSequenceName)
-		}
 	}
 
 	sqls = append(sqls, sql)
@@ -292,6 +301,7 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	}
 	// Update the PK ordinals only after the column is successfully added.
 	if column.PrimaryKey {
+		t.hasPrimaryKey = true
 		t.comment.Meta.PkOrdinals = tableInfo.PkOrdinals
 	}
 	return t.withSchema(ctx)
@@ -387,7 +397,7 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 	tableInfoChanged := false
 
 	temporary := t.db.catalog == "temp"
-	var sequenceName, fullSequenceName string
+	var sequenceName, fullSequenceName, createSequenceStmt string
 
 	// Handle AUTO_INCREMENT changes
 	if !oldColumn.AutoIncrement && column.AutoIncrement {
@@ -398,17 +408,8 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 			return err
 		}
 		sequenceName = SequenceNamePrefix + uuid.String()
-		if temporary {
-			fullSequenceName = `temp.main."` + sequenceName + `"`
-		} else {
-			fullSequenceName = InternalSchemas.SYS.Schema + `."` + sequenceName + `"`
-		}
-
-		if temporary {
-			sqls = append(sqls, `CREATE TEMP SEQUENCE "`+sequenceName+`"`)
-		} else {
-			sqls = append(sqls, `CREATE SEQUENCE `+fullSequenceName)
-		}
+		createSequenceStmt, fullSequenceName = getCreateSequence(temporary, sequenceName)
+		sqls = append(sqls, createSequenceStmt)
 		sqls = append(sqls, baseSQL+` SET DEFAULT nextval('`+fullSequenceName+`')`)
 
 		// Update table comment with sequence info
@@ -465,6 +466,7 @@ func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Co
 
 	// Update table metadata
 	if column.PrimaryKey {
+		t.hasPrimaryKey = true
 		t.comment.Meta.PkOrdinals = []int{oldColumnIndex}
 	}
 	if !oldColumn.AutoIncrement && column.AutoIncrement {
@@ -518,6 +520,7 @@ func (t *Table) Inserter(*sql.Context) sql.RowInserter {
 		db:     t.db.Name(),
 		table:  t.name,
 		schema: t.schema.Schema,
+		hasPK:  t.hasPrimaryKey,
 	}
 }
 
@@ -543,6 +546,7 @@ func (t *Table) Replacer(*sql.Context) sql.RowReplacer {
 		db:      t.db.Name(),
 		table:   t.name,
 		schema:  t.schema.Schema,
+		hasPK:   t.hasPrimaryKey,
 		replace: hasKey,
 	}
 }
@@ -719,6 +723,9 @@ func (t *Table) PreciseMatch() bool {
 
 // Comment implements sql.CommentedTable.
 func (t *Table) Comment() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	return t.comment.Text
 }
 
@@ -773,28 +780,53 @@ func (t *IndexedTable) LookupPartitions(ctx *sql.Context, lookup sql.IndexLookup
 
 // PeekNextAutoIncrementValue implements sql.AutoIncrementTable.
 func (t *Table) PeekNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if t.comment.Meta.Sequence == "" {
 		return 0, sql.ErrNoAutoIncrementCol
 	}
+	return t.getNextAutoIncrementValue(ctx)
+}
 
+func (t *Table) getNextAutoIncrementValue(ctx *sql.Context) (uint64, error) {
 	// For PeekNextAutoIncrementValue, we want to see what the next value would be
 	// without actually incrementing. We can do this by getting currval + 1.
 	var val uint64
 	err := adapter.QueryRowCatalog(ctx, `SELECT currval('`+t.comment.Meta.Sequence+`') + 1`).Scan(&val)
 	if err != nil {
-		return 0, ErrDuckDB.New(err)
+		// https://duckdb.org/docs/sql/statements/create_sequence.html#selecting-the-current-value
+		// > Note that the nextval function must have already been called before calling currval,
+		// > otherwise a Serialization Error (sequence is not yet defined in this session) will be thrown.
+		if !strings.Contains(err.Error(), "sequence is not yet defined in this session") {
+			return 0, ErrDuckDB.New(err)
+		}
+		// If the sequence has not been used yet, we can get the start value from the sequence.
+		// See getCreateSequence() for the sequence name format.
+		err = adapter.QueryRowCatalog(ctx, `SELECT start_value FROM duckdb_sequences() WHERE concat(schema_name, '."', sequence_name, '"') = '`+t.comment.Meta.Sequence+`'`).Scan(&val)
+		if err != nil {
+			return 0, ErrDuckDB.New(err)
+		}
 	}
 
 	return val, nil
 }
 
 // GetNextAutoIncrementValue implements sql.AutoIncrementTable.
-func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal interface{}) (uint64, error) {
+func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal any) (uint64, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	if t.comment.Meta.Sequence == "" {
 		return 0, sql.ErrNoAutoIncrementCol
 	}
 
-	// If insertVal is provided and greater than current sequence value, update sequence
+	nextVal, err := t.getNextAutoIncrementValue(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	// If insertVal is provided and greater than the next sequence value, update sequence
 	if insertVal != nil {
 		var start uint64
 		switch v := insertVal.(type) {
@@ -805,7 +837,7 @@ func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal interface{
 				start = uint64(v)
 			}
 		}
-		if start > 0 {
+		if start > 0 && start > nextVal {
 			err := t.setAutoIncrementValue(ctx, start)
 			if err != nil {
 				return 0, err
@@ -816,7 +848,7 @@ func (t *Table) GetNextAutoIncrementValue(ctx *sql.Context, insertVal interface{
 
 	// Get next value from sequence
 	var val uint64
-	err := adapter.QueryRowCatalog(ctx, `SELECT nextval('`+t.comment.Meta.Sequence+`')`).Scan(&val)
+	err = adapter.QueryRowCatalog(ctx, `SELECT nextval('`+t.comment.Meta.Sequence+`')`).Scan(&val)
 	if err != nil {
 		return 0, ErrDuckDB.New(err)
 	}
@@ -834,8 +866,65 @@ func (t *Table) AutoIncrementSetter(ctx *sql.Context) sql.AutoIncrementSetter {
 
 // setAutoIncrementValue is a helper function to update the sequence value
 func (t *Table) setAutoIncrementValue(ctx *sql.Context, value uint64) error {
-	_, err := adapter.ExecCatalog(ctx, `CREATE OR REPLACE SEQUENCE `+t.comment.Meta.Sequence+` START WITH `+strconv.FormatUint(value, 10))
-	return err
+	// DuckDB does not support setting the sequence value directly,
+	// so we need to recreate the sequence with the new start value.
+	//
+	// _, err := adapter.ExecCatalog(ctx, `CREATE OR REPLACE SEQUENCE `+t.comment.Meta.Sequence+` START WITH `+strconv.FormatUint(value, 10))
+	//
+	// However, `CREATE OR REPLACE` leads to a Dependency Error,
+	// while `ALTER TABLE ... ALTER COLUMN ... DROP DEFAULT` deos not remove the dependency:
+	// https://github.com/duckdb/duckdb/issues/15399
+	// So we create a new sequence with the new start value and change the auto_increment column to use the new sequence.
+
+	// Find the column with the auto_increment property
+	var autoIncrementColumn *sql.Column
+	for _, column := range t.schema.Schema {
+		if column.AutoIncrement {
+			autoIncrementColumn = column
+			break
+		}
+	}
+	if autoIncrementColumn == nil {
+		return sql.ErrNoAutoIncrementCol
+	}
+
+	// Generate a random sequence name.
+	uuid, err := uuid.NewRandom()
+	if err != nil {
+		return err
+	}
+	sequenceName := SequenceNamePrefix + uuid.String()
+
+	// Create a new sequence with the new start value
+	temporary := t.db.catalog == "temp"
+	createSequenceStmt, fullSequenceName := getCreateSequence(temporary, sequenceName)
+	_, err = adapter.Exec(ctx, createSequenceStmt+` START WITH `+strconv.FormatUint(value, 10))
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+
+	// Update the auto_increment column to use the new sequence
+	alterStmt := `ALTER TABLE ` + FullTableName(t.db.catalog, t.db.name, t.name) +
+		` ALTER COLUMN ` + QuoteIdentifierANSI(autoIncrementColumn.Name) +
+		` SET DEFAULT nextval('` + fullSequenceName + `')`
+	if _, err = adapter.Exec(ctx, alterStmt); err != nil {
+		return ErrDuckDB.New(err)
+	}
+
+	// Drop the old sequence
+	// https://github.com/duckdb/duckdb/issues/15399
+	// if _, err = adapter.Exec(ctx, "DROP SEQUENCE " + t.comment.Meta.Sequence); err != nil {
+	// 	return ErrDuckDB.New(err)
+	// }
+
+	// Update the table comment with the new sequence name
+	if err = t.updateExtraTableInfo(ctx, func(info *ExtraTableInfo) {
+		info.Sequence = fullSequenceName
+	}); err != nil {
+		return err
+	}
+
+	return t.withSchema(ctx)
 }
 
 // autoIncrementSetter implements the AutoIncrementSetter interface
@@ -852,6 +941,62 @@ func (s *autoIncrementSetter) Close(ctx *sql.Context) error {
 }
 
 func (s *autoIncrementSetter) AcquireAutoIncrementLock(ctx *sql.Context) (func(), error) {
-	// DuckDB handles sequence synchronization internally
-	return func() {}, nil
+	s.t.mu.Lock()
+	return s.t.mu.Unlock, nil
+}
+
+func (t *Table) updateExtraTableInfo(ctx *sql.Context, updater func(*ExtraTableInfo)) error {
+	tableInfo := t.comment.Meta
+	updater(&tableInfo)
+	comment := NewCommentWithMeta(t.comment.Text, tableInfo)
+	_, err := adapter.Exec(ctx, `COMMENT ON TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` IS '`+comment.Encode()+`'`)
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+	t.comment.Meta = tableInfo // Update the in-memory metadata
+	return nil
+}
+
+// CheckConstraints implements sql.CheckTable.
+func (t *Table) GetChecks(ctx *sql.Context) ([]sql.CheckDefinition, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.comment.Meta.Checks, nil
+}
+
+// AddCheck implements sql.CheckAlterableTable.
+func (t *Table) CreateCheck(ctx *sql.Context, check *sql.CheckDefinition) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// TODO(fan): Implement this once DuckDB supports modifying check constraints.
+	// https://duckdb.org/docs/sql/statements/alter_table.html#add--drop-constraint
+	// https://github.com/duckdb/duckdb/issues/57
+	// Just record the check constraint for now.
+	return t.updateExtraTableInfo(ctx, func(info *ExtraTableInfo) {
+		info.Checks = append(info.Checks, *check)
+	})
+}
+
+// DropCheck implements sql.CheckAlterableTable.
+func (t *Table) DropCheck(ctx *sql.Context, checkName string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	checks := make([]sql.CheckDefinition, 0, max(len(t.comment.Meta.Checks)-1, 0))
+	found := false
+	for i, check := range t.comment.Meta.Checks {
+		if check.Name == checkName {
+			found = true
+			continue
+		}
+		checks = append(checks, t.comment.Meta.Checks[i])
+	}
+	if !found {
+		return sql.ErrUnknownConstraint.New(checkName)
+	}
+	return t.updateExtraTableInfo(ctx, func(info *ExtraTableInfo) {
+		info.Checks = checks
+	})
 }

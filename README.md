@@ -201,9 +201,13 @@ Looking to load Parquet files into MyDuck Server and start querying? Follow our 
 
 Already have a DuckDB file? You can seamlessly bootstrap MyDuck Server with it. See our [DuckDB file bootstrapping guide](docs/tutorial/bootstrap.md) for more details.
 
+### Managing Multiple Databases
+
+Easily manage multiple databases in MyDuck Server, same as Postgres. For step-by-step instructions and detailed guidance, check out our [Database Management Guide](docs/tutorial/manage-multiple-databases.md).
+
 ### Backup and Restore with Object Storage
 
-To back up and restore your MyDuck Server database using object storage, refer to our [backup and restore guide](docs/tutorial/backup-restore.md) for detailed instructions.
+To back up and restore your databases inside MyDuck Server using object storage, refer to our [backup and restore guide](docs/tutorial/backup-restore.md) for detailed instructions.
 
 ### LLM Integration
 
@@ -217,8 +221,8 @@ MyDuck Server can be seamlessly accessed from the Python data science ecosystem.
 
 We have big plans for MyDuck Server! Here are some of the features we’re working on:
 
-- [ ] Arrow Flight SQL.
-- [ ] Multiple DB.
+- [x] Arrow Flight SQL.
+- [x] Multiple DB.
 - [ ] Authentication.
 - [ ] ...and more! We’re always looking for ways to make MyDuck Server better. If you have a feature request, please let us know by [opening an issue](https://github.com/apecloud/myduckserver/issues/new).
 

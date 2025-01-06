@@ -17,6 +17,7 @@ import (
 	stdsql "database/sql"
 	"fmt"
 
+	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/transpiler"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -63,7 +64,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	ctx.GetLogger().WithFields(logrus.Fields{
 		"Query":    ctx.Query(),
 		"NodeType": fmt.Sprintf("%T", n),
-	}).Trace("Building node:", n)
+	}).Traceln("Building node:", n)
 
 	// TODO; find a better way to fallback to the base builder
 	switch n.(type) {
@@ -80,13 +81,12 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	case *plan.InsertInto:
 		insert := n.(*plan.InsertInto)
 
-		// For AUTO_INCREMENT column, we fallback to the framework if the column is specified.
-		if dst, err := plan.GetInsertable(insert.Destination); err == nil && dst.Schema().HasAutoIncrement() {
-			if len(insert.ColumnNames) == 0 || len(insert.ColumnNames) == len(dst.Schema()) {
-				return b.base.Build(ctx, root, r)
-			}
-		}
-
+		// The handling of auto_increment reset and check constraints is not supported by DuckDB.
+		// We need to fallback to the framework for these cases.
+		// But we want to rewrite LOAD DATA to be handled by DuckDB,
+		// as it is a common way to import data into the database.
+		// Therefore, we ignoring auto_increment and check constraints for LOAD DATA.
+		// So rewriting LOAD DATA is done eagerly here.
 		src := insert.Source
 		if proj, ok := src.(*plan.Project); ok {
 			src = proj.Child
@@ -96,6 +96,20 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 				return b.buildLoadData(ctx, root, insert, dst, load)
 			}
 			return b.base.Build(ctx, root, r)
+		}
+
+		if dst, err := plan.GetInsertable(insert.Destination); err == nil {
+			// For AUTO_INCREMENT column, we fallback to the framework if the column is specified.
+			// if dst.Schema().HasAutoIncrement() && (0 == len(insert.ColumnNames) || len(insert.ColumnNames) == len(dst.Schema())) {
+			if dst.Schema().HasAutoIncrement() {
+				return b.base.Build(ctx, root, r)
+			}
+			// For table with check constraints, we fallback to the framework.
+			if ct, ok := dst.(sql.CheckTable); ok {
+				if checks, err := ct.GetChecks(ctx); err == nil && len(checks) > 0 {
+					return b.base.Build(ctx, root, r)
+				}
+			}
 		}
 	}
 
@@ -111,7 +125,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 
 	switch node := n.(type) {
 	case *plan.Use:
-		useStmt := "USE " + catalog.FullSchemaName(b.provider.CatalogName(), node.Database().Name())
+		useStmt := "USE " + catalog.FullSchemaName(adapter.GetCurrentCatalog(ctx), node.Database().Name())
 		if _, err := conn.ExecContext(ctx.Context, useStmt); err != nil {
 			if catalog.IsDuckDBSetSchemaNotFoundError(err) {
 				return nil, sql.ErrDatabaseNotFound.New(node.Database().Name())
@@ -156,9 +170,12 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	)
 
 	// Translate the MySQL query to a DuckDB query
-	switch n.(type) {
+	switch n := n.(type) {
 	case *plan.ShowTables:
 		duckSQL = ctx.Query()
+	case *plan.ResolvedTable:
+		// SQLGlot cannot translate MySQL's `TABLE t` into DuckDB's `FROM t` - it produces `"table" AS t` instead. 
+		duckSQL = `FROM ` + catalog.ConnectIdentifiersANSI(n.Database().Name(), n.Name())
 	default:
 		duckSQL, err = transpiler.TranslateWithSQLGlot(ctx.Query())
 	}

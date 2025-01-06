@@ -15,6 +15,7 @@ type rowInserter struct {
 	db      string
 	table   string
 	schema  sql.Schema
+	hasPK   bool
 	replace bool
 
 	once     sync.Once
@@ -69,7 +70,7 @@ func (ri *rowInserter) init(ctx *sql.Context) {
 
 	insert.Reset()
 	insert.WriteString("INSERT ")
-	if ri.replace {
+	if ri.replace && ri.hasPK {
 		insert.WriteString(" OR REPLACE")
 	}
 	insert.WriteString(" INTO ")

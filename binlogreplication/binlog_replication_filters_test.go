@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBinlogReplicationFilters_ignoreTablesOnly tests that the ignoreTables replication
+// TestReplicationFilters_ignoreTablesOnly tests that the ignoreTables replication
 // filtering option is correctly applied and honored.
 func TestBinlogReplicationFilters_ignoreTablesOnly(t *testing.T) {
 	defer teardown(t)
@@ -188,4 +188,97 @@ func TestBinlogReplicationFilters_errorCases(t *testing.T) {
 	_, err = replicaDatabase.Queryx("CHANGE REPLICATION FILTER REPLICATE_IGNORE_TABLE=(t1);")
 	require.Error(t, err)
 	require.ErrorContains(t, err, "no database specified for table")
+}
+
+// TestReplicationFilters_ignoreDatabasesOnly tests that the ignoreDatabases replication
+// filtering option is correctly applied and honored.
+func TestReplicationFilters_ignoreDatabasesOnly(t *testing.T) {
+	defer teardown(t)
+	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
+	startReplicationAndCreateTestDb(t, mySqlPort)
+
+	// Ignore replication events for db01. Also tests that the first filter setting is overwritten by
+	// the second and that db names are case-insensitive.
+	replicaDatabase.MustExec("CHANGE REPLICATION FILTER REPLICATE_IGNORE_DB=(db02);")
+	replicaDatabase.MustExec("CHANGE REPLICATION FILTER REPLICATE_IGNORE_DB=(DB01);")
+
+	// TODO(fan): Not implemented yet
+	// Assert that status shows replication filters
+	// status := showReplicaStatus(t)
+	// require.Equal(t, "db01", status["Replicate_Ignore_DB"])
+	// require.Equal(t, "", status["Replicate_Do_DB"])
+
+	// Make changes on the primary
+	primaryDatabase.MustExec("CREATE DATABASE db02;")
+	primaryDatabase.MustExec("CREATE TABLE db01.t1 (pk INT PRIMARY KEY);")
+	primaryDatabase.MustExec("CREATE TABLE db02.t1 (pk INT PRIMARY KEY);")
+	for i := 1; i < 12; i++ {
+		primaryDatabase.MustExec(fmt.Sprintf("INSERT INTO db01.t1 VALUES (%d);", i))
+		primaryDatabase.MustExec(fmt.Sprintf("INSERT INTO db02.t1 VALUES (%d);", i))
+	}
+
+	// Pause to let the replica catch up
+	waitForReplicaToCatchUp(t)
+
+	// Although the database is ignored, it is still created on the replica
+	// because the DDL statements are not filtered out.
+
+	// Verify that no changes from db01 were applied on the replica
+	rows, err := replicaDatabase.Queryx("SELECT COUNT(pk) as count FROM db01.t1;")
+	require.NoError(t, err)
+	row := convertMapScanResultToStrings(readNextRow(t, rows))
+	require.Equal(t, "0", row["count"])
+	require.NoError(t, rows.Close())
+
+	// Verify that all changes from db02 were applied on the replica
+	rows, err = replicaDatabase.Queryx("SELECT COUNT(pk) as count FROM db02.t1;")
+	require.NoError(t, err)
+	row = convertMapScanResultToStrings(readNextRow(t, rows))
+	require.Equal(t, "11", row["count"])
+	require.NoError(t, rows.Close())
+}
+
+// TestReplicationFilters_doDatabasesOnly tests that the doDatabases replication
+// filtering option is correctly applied and honored.
+func TestReplicationFilters_doDatabasesOnly(t *testing.T) {
+	defer teardown(t)
+	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
+	startReplicationAndCreateTestDb(t, mySqlPort)
+
+	// Do replication events for db01. Also tests that the first filter setting is overwritten by
+	// the second and that db names are case-insensitive.
+	replicaDatabase.MustExec("CHANGE REPLICATION FILTER REPLICATE_DO_DB=(db02);")
+	replicaDatabase.MustExec("CHANGE REPLICATION FILTER REPLICATE_DO_DB=(DB01);")
+
+	// TODO(fan): Not implemented yet
+	// Assert that status shows replication filters
+	// status := showReplicaStatus(t)
+	// require.Equal(t, "db01", status["Replicate_Do_DB"])
+	// require.Equal(t, "", status["Replicate_Ignore_DB"])
+
+	// Make changes on the primary
+	primaryDatabase.MustExec("CREATE DATABASE db02;")
+	primaryDatabase.MustExec("CREATE TABLE db01.t1 (pk INT PRIMARY KEY);")
+	primaryDatabase.MustExec("CREATE TABLE db02.t1 (pk INT PRIMARY KEY);")
+	for i := 1; i < 12; i++ {
+		primaryDatabase.MustExec(fmt.Sprintf("INSERT INTO db01.t1 VALUES (%d);", i))
+		primaryDatabase.MustExec(fmt.Sprintf("INSERT INTO db02.t1 VALUES (%d);", i))
+	}
+
+	// Pause to let the replica catch up
+	waitForReplicaToCatchUp(t)
+
+	// Verify that all changes from db01 were applied on the replica
+	rows, err := replicaDatabase.Queryx("SELECT COUNT(pk) as count FROM db01.t1;")
+	require.NoError(t, err)
+	row := convertMapScanResultToStrings(readNextRow(t, rows))
+	require.Equal(t, "11", row["count"])
+	require.NoError(t, rows.Close())
+
+	// Verify that no changes from db02 were applied on the replica
+	rows, err = replicaDatabase.Queryx("SELECT COUNT(pk) as count FROM db02.t1;")
+	require.NoError(t, err)
+	row = convertMapScanResultToStrings(readNextRow(t, rows))
+	require.Equal(t, "0", row["count"])
+	require.NoError(t, rows.Close())
 }

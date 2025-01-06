@@ -313,6 +313,18 @@ func (d *myBinlogReplicaController) SetReplicationSourceOptions(ctx *sql.Context
 func (d *myBinlogReplicaController) SetReplicationFilterOptions(_ *sql.Context, options []binlogreplication.ReplicationOption) error {
 	for _, option := range options {
 		switch strings.ToUpper(option.Name) {
+		case "REPLICATE_DO_DB":
+			value, err := getOptionValueAsDatabaseNames(option)
+			if err != nil {
+				return err
+			}
+			d.filters.setDoDatabases(value)
+		case "REPLICATE_IGNORE_DB":
+			value, err := getOptionValueAsDatabaseNames(option)
+			if err != nil {
+				return err
+			}
+			d.filters.setIgnoreDatabases(value)
 		case "REPLICATE_DO_TABLE":
 			value, err := getOptionValueAsTableNames(option)
 			if err != nil {
@@ -378,6 +390,8 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	copy.SourceServerUuid = replicaSourceInfo.Uuid
 	copy.ConnectRetry = replicaSourceInfo.ConnectRetryInterval
 	copy.SourceRetryCount = replicaSourceInfo.ConnectRetryCount
+	// copy.ReplicateDoDBs = d.filters.getDoDatabases()
+	// copy.ReplicateIgnoreDBs = d.filters.getIgnoreDatabases()
 	copy.ReplicateDoTables = d.filters.getDoTables()
 	copy.ReplicateIgnoreTables = d.filters.getIgnoreTables()
 
@@ -521,6 +535,24 @@ func getOptionValueAsTableNames(option binlogreplication.ReplicationOption) ([]s
 
 	return nil, fmt.Errorf("unsupported value type for option %q; found %T, "+
 		"but expected a list of tables", option.Name, option.Value.GetValue())
+}
+
+func getOptionValueAsDatabaseNames(option binlogreplication.ReplicationOption) ([]string, error) {
+	// The value of the option should be a list of database names.
+	// But since the parser doesn't have a database name list type,
+	// we reuse the table name list type to represent a list of database names.
+	ov, ok := option.Value.(binlogreplication.TableNamesReplicationOptionValue)
+	if ok {
+		list := ov.GetValueAsTableList()
+		names := make([]string, len(list))
+		for i, t := range list {
+			names[i] = t.Name()
+		}
+		return names, nil
+	}
+
+	return nil, fmt.Errorf("unsupported value type for option %q; found %T, "+
+		"but expected a list of databases", option.Name, option.Value.GetValue())
 }
 
 func verifyAllTablesAreQualified(urts []sql.UnresolvedTable) error {

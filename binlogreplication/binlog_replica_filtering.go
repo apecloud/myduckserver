@@ -25,6 +25,10 @@ import (
 
 // filterConfiguration defines the binlog filtering rules applied on the replica.
 type filterConfiguration struct {
+	// doDatabases holds a map of database names that SHOULD be replicated.
+	doDatabases map[string]struct{}
+	// ignoreDatabases holds a map of database names that should NOT be replicated.
+	ignoreDatabases map[string]struct{}
 	// doTables holds a map of database name to map of table names, indicating tables that SHOULD be replicated.
 	doTables map[string]map[string]struct{}
 	// ignoreTables holds a map of database name to map of table names, indicating tables that should NOT be replicated.
@@ -36,9 +40,39 @@ type filterConfiguration struct {
 // newFilterConfiguration creates a new filterConfiguration instance and initializes members.
 func newFilterConfiguration() *filterConfiguration {
 	return &filterConfiguration{
-		doTables:     make(map[string]map[string]struct{}),
-		ignoreTables: make(map[string]map[string]struct{}),
-		mu:           &sync.Mutex{},
+		doDatabases:     make(map[string]struct{}),
+		ignoreDatabases: make(map[string]struct{}),
+		doTables:        make(map[string]map[string]struct{}),
+		ignoreTables:    make(map[string]map[string]struct{}),
+		mu:              &sync.Mutex{},
+	}
+}
+
+// setDoDatabases sets the databases that are allowed to replicate. If any DoDatabases were previously configured,
+// they are cleared out before the new databases are set.
+func (fc *filterConfiguration) setDoDatabases(databases []string) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	// Setting new replication filters clears out any existing filters
+	fc.doDatabases = make(map[string]struct{})
+
+	for _, db := range databases {
+		fc.doDatabases[strings.ToLower(db)] = struct{}{}
+	}
+}
+
+// setIgnoreDatabases sets the databases that are NOT allowed to replicate. If any IgnoreDatabases were previously configured,
+// they are cleared out before the new databases are set.
+func (fc *filterConfiguration) setIgnoreDatabases(databases []string) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	// Setting new replication filters clears out any existing filters
+	fc.ignoreDatabases = make(map[string]struct{})
+
+	for _, db := range databases {
+		fc.ignoreDatabases[strings.ToLower(db)] = struct{}{}
 	}
 }
 
@@ -96,6 +130,38 @@ func (fc *filterConfiguration) setIgnoreTables(urts []sql.UnresolvedTable) error
 	return nil
 }
 
+// getDoDatabases returns a slice of database names that are configured to be replicated.
+func (fc *filterConfiguration) getDoDatabases() []string {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	if len(fc.doDatabases) == 0 {
+		return nil
+	}
+
+	databases := make([]string, 0, len(fc.doDatabases))
+	for db := range fc.doDatabases {
+		databases = append(databases, db)
+	}
+	return databases
+}
+
+// getIgnoreDatabases returns a slice of database names that are configured to be filtered out of replication.
+func (fc *filterConfiguration) getIgnoreDatabases() []string {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	if len(fc.ignoreDatabases) == 0 {
+		return nil
+	}
+
+	databases := make([]string, 0, len(fc.ignoreDatabases))
+	for db := range fc.ignoreDatabases {
+		databases = append(databases, db)
+	}
+	return databases
+}
+
 // isTableFilteredOut returns true if the table identified by |tableMap| has been filtered out on this replica and
 // should not have any updates applied from binlog messages.
 func (fc *filterConfiguration) isTableFilteredOut(ctx *sql.Context, tableMap *mysql.TableMap) bool {
@@ -108,6 +174,21 @@ func (fc *filterConfiguration) isTableFilteredOut(ctx *sql.Context, tableMap *my
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+
+	// If any filter doDatabase options are specified, then a database MUST be listed in the set
+	// for it to be replicated. doDatabase options are processed BEFORE ignoreDatabase options.
+	// https://dev.mysql.com/doc/refman/8.4/en/replication-rules-db-options.html
+	if len(fc.doDatabases) > 0 {
+		if _, ok := fc.doDatabases[db]; !ok {
+			ctx.GetLogger().Tracef("skipping database %s (not in doDatabases)", db)
+			return true
+		}
+	} else if len(fc.ignoreDatabases) > 0 {
+		if _, ok := fc.ignoreDatabases[db]; ok {
+			ctx.GetLogger().Tracef("skipping database %s (in ignoreDatabases)", db)
+			return true
+		}
+	}
 
 	// If any filter doTable options are specified, then a table MUST be listed in the set
 	// for it to be replicated. doTables options are processed BEFORE ignoreTables options.
@@ -160,7 +241,7 @@ func convertFilterMapToStringSlice(filterMap map[string]map[string]struct{}) []s
 
 	tableNames := make([]string, 0, len(filterMap))
 	for dbName, tableMap := range filterMap {
-		for tableName, _ := range tableMap {
+		for tableName := range tableMap {
 			tableNames = append(tableNames, fmt.Sprintf("%s.%s", dbName, tableName))
 		}
 	}
