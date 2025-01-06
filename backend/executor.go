@@ -64,7 +64,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	ctx.GetLogger().WithFields(logrus.Fields{
 		"Query":    ctx.Query(),
 		"NodeType": fmt.Sprintf("%T", n),
-	}).Trace("Building node:", n)
+	}).Traceln("Building node:", n)
 
 	// TODO; find a better way to fallback to the base builder
 	switch n.(type) {

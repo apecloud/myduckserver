@@ -99,8 +99,13 @@ func newDateTimeType(mysqlName string, precision int) AnnotatedDuckType {
 }
 
 func newEnumType(typ sql.EnumType) AnnotatedDuckType {
-	// TODO: `ENUM` allows `,` and `'` in the values. We need to escape `'`.
-	typeString := `ENUM('` + strings.Join(typ.Values(), `', '`) + `')`
+	// For ENUM type, we need to escape single quotes in values
+	escapedValues := make([]string, len(typ.Values()))
+	for i, v := range typ.Values() {
+		// Replace each single quote with two single quotes to escape it
+		escapedValues[i] = strings.ReplaceAll(v, "'", "''")
+	}
+	typeString := `ENUM('` + strings.Join(escapedValues, `', '`) + `')`
 	return AnnotatedDuckType{typeString, MySQLType{Name: "ENUM", Values: typ.Values(), Collation: uint16(typ.Collation())}}
 }
 

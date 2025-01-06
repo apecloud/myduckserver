@@ -14,6 +14,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/dolthub/vitess/go/vt/proto/query"
 )
 
 const isUnixSystem = runtime.GOOS == "linux" ||
@@ -244,14 +245,8 @@ func columnTypeHints(b *strings.Builder, dst sql.Table, schema sql.Schema, colNa
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(catalog.QuoteIdentifierANSI(col.Name))
-			b.WriteString(": ")
-			if dt, err := catalog.DuckdbDataType(col.Type); err != nil {
+			if err := columnTypeHint(b, col); err != nil {
 				return err
-			} else {
-				b.WriteString(`'`)
-				b.WriteString(dt.Name())
-				b.WriteString(`'`)
 			}
 		}
 		b.WriteString("}")
@@ -262,22 +257,33 @@ func columnTypeHints(b *strings.Builder, dst sql.Table, schema sql.Schema, colNa
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(catalog.QuoteIdentifierANSI(col))
-		b.WriteString(": ")
 		idx := schema.IndexOf(col, dst.Name()) // O(n^2) but n := # of columns is usually small
 		if idx < 0 {
 			return sql.ErrTableColumnNotFound.New(dst.Name(), col)
 		}
-		if dt, err := catalog.DuckdbDataType(schema[idx].Type); err != nil {
+		if err := columnTypeHint(b, schema[idx]); err != nil {
 			return err
-		} else {
-			b.WriteString(`'`)
-			b.WriteString(dt.Name())
-			b.WriteString(`'`)
 		}
 	}
 
 	b.WriteString("}")
+	return nil
+}
+
+func columnTypeHint(b *strings.Builder, col *sql.Column) error {
+	b.WriteString(catalog.QuoteIdentifierANSI(col.Name))
+	b.WriteString(": ")
+	if dt, err := catalog.DuckdbDataType(col.Type); err != nil {
+		return err
+	} else {
+		b.WriteString(`'`)
+		if col.Type.Type() == query.Type_ENUM {
+			b.WriteString(`VARCHAR`)
+		} else {
+			b.WriteString(dt.Name())
+		}
+		b.WriteString(`'`)
+	}
 	return nil
 }
 

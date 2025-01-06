@@ -14,3 +14,11 @@ mysql_exec() {
 mysql_exec_stdin() {
     mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" --raw --batch --skip-column-names --local-infile "$@"
 }
+
+create_temp_file() {
+    local content="$1"
+    local tempfile
+    tempfile="$(mktemp)"
+    echo -e "$content" > "$tempfile"
+    echo "$tempfile"
+}
