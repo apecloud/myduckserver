@@ -199,16 +199,20 @@ func (prov *DatabaseProvider) initCatalog() error {
 		); err != nil {
 			return fmt.Errorf("failed to create internal schema %q: %w", m.Schema, err)
 		}
-		macroParams := strings.Join(m.Params, ", ")
-		var asType string
-		if m.IsTableMacro {
-			asType = "TABLE\n"
-		} else {
-			asType = "\n"
+		definitions := make([]string, 0, len(m.Definitions))
+		for _, d := range m.Definitions {
+			macroParams := strings.Join(d.Params, ", ")
+			var asType string
+			if m.IsTableMacro {
+				asType = "TABLE\n"
+			} else {
+				asType = "\n"
+			}
+			definitions = append(definitions, fmt.Sprintf("\n(%s) AS %s%s", macroParams, asType, d.DDL))
 		}
 		if _, err := prov.storage.ExecContext(
 			context.Background(),
-			"CREATE OR REPLACE MACRO "+m.QualifiedName()+"("+macroParams+") AS "+asType+m.DDL,
+			"CREATE OR REPLACE MACRO "+m.QualifiedName()+strings.Join(definitions, ",")+";",
 		); err != nil {
 			return fmt.Errorf("failed to create internal macro %q: %w", m.Name, err)
 		}

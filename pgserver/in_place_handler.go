@@ -215,10 +215,16 @@ var selectionConversions = []SelectionConversion{
 		needConvert: func(query *ConvertedStatement) bool {
 			sql := RemoveComments(query.String)
 			// TODO(sean): Evaluate the conditions by iterating over the AST.
-			return getPgFuncRegex().MatchString(sql)
+			return getRenamePgCatalogFuncRegex().MatchString(sql) || getPgFuncRegex().MatchString(sql)
 		},
 		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
-			sqlStr := ConvertToDuckDBMacro(query.String)
+			var sqlStr string
+			if getRenamePgCatalogFuncRegex().MatchString(query.String) {
+				sqlStr = ConvertPgCatalogFuncToSys(query.String)
+			} else {
+				sqlStr = query.String
+			}
+			sqlStr = ConvertToDuckDBMacro(sqlStr)
 			query.String = sqlStr
 			return nil
 		},
