@@ -192,6 +192,28 @@ func (prov *DatabaseProvider) initCatalog() error {
 		}
 	}
 
+	for _, m := range InternalMacros {
+		if _, err := prov.storage.ExecContext(
+			context.Background(),
+			"CREATE SCHEMA IF NOT EXISTS "+m.Schema,
+		); err != nil {
+			return fmt.Errorf("failed to create internal schema %q: %w", m.Schema, err)
+		}
+		macroParams := strings.Join(m.Params, ", ")
+		var asType string
+		if m.IsTableMacro {
+			asType = "TABLE\n"
+		} else {
+			asType = "\n"
+		}
+		if _, err := prov.storage.ExecContext(
+			context.Background(),
+			"CREATE OR REPLACE MACRO "+m.QualifiedName()+"("+macroParams+") AS "+asType+m.DDL,
+		); err != nil {
+			return fmt.Errorf("failed to create internal macro %q: %w", m.Name, err)
+		}
+	}
+
 	if _, err := prov.pool.ExecContext(context.Background(), "PRAGMA enable_checkpoint_on_shutdown"); err != nil {
 		logrus.WithError(err).Fatalln("Failed to enable checkpoint on shutdown")
 	}

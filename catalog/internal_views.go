@@ -46,4 +46,43 @@ FROM
 WHERE
     t.table_type = 'BASE TABLE'; -- Include only base tables (not views)`,
 	},
+	{
+		Schema: "__sys__",
+		Name:   "pg_index",
+		DDL: `SELECT
+    ROW_NUMBER() OVER () AS indexrelid,                -- Simulated unique ID for the index
+    t.table_oid AS indrelid,                          -- OID of the table
+    COUNT(k.column_name) AS indnatts,                 -- Number of columns included in the index
+    COUNT(k.column_name) AS indnkeyatts,              -- Number of key columns in the index (same as indnatts here)
+    CASE
+        WHEN c.constraint_type = 'UNIQUE' THEN TRUE
+        ELSE FALSE
+    END AS indisunique,                               -- Indicates if the index is unique
+    CASE
+        WHEN c.constraint_type = 'PRIMARY KEY' THEN TRUE
+        ELSE FALSE
+    END AS indisprimary,                              -- Indicates if the index is a primary key
+    ARRAY_AGG(k.ordinal_position ORDER BY k.ordinal_position) AS indkey,  -- Array of column positions
+    ARRAY[]::BIGINT[] AS indcollation,                -- DuckDB does not support collation, set to default
+    ARRAY[]::BIGINT[] AS indclass,                    -- DuckDB does not support index class, set to default
+    ARRAY[]::INTEGER[] AS indoption,                  -- DuckDB does not support index options, set to default
+    NULL AS indexprs,                                 -- DuckDB does not support expression indexes, set to NULL
+    NULL AS indpred                                   -- DuckDB does not support partial indexes, set to NULL
+FROM
+    information_schema.key_column_usage k
+JOIN
+    information_schema.table_constraints c
+    ON k.constraint_name = c.constraint_name
+    AND k.table_name = c.table_name
+JOIN
+    duckdb_tables() t
+    ON k.table_name = t.table_name
+    AND k.table_schema = t.schema_name
+WHERE
+    c.constraint_type IN ('PRIMARY KEY', 'UNIQUE')    -- Only select primary key and unique constraints
+GROUP BY
+    t.table_oid, c.constraint_type, c.constraint_name
+ORDER BY
+    t.table_oid;`,
+	},
 }

@@ -213,6 +213,18 @@ var selectionConversions = []SelectionConversion{
 	},
 	{
 		needConvert: func(query *ConvertedStatement) bool {
+			sql := RemoveComments(query.String)
+			// TODO(sean): Evaluate the conditions by iterating over the AST.
+			return getPgFuncRegex().MatchString(sql)
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			sqlStr := ConvertToDuckDBMacro(query.String)
+			query.String = sqlStr
+			return nil
+		},
+	},
+	{
+		needConvert: func(query *ConvertedStatement) bool {
 			sqlStr := RemoveComments(query.String)
 			// TODO(sean): Evaluate the conditions by iterating over the AST.
 			for k := range typeCastConversion {
