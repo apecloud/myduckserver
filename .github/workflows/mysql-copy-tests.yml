@@ -49,6 +49,7 @@ jobs:
           mysqlsh -hlocalhost -P13306 -uroot -proot --sql -e "
             CREATE DATABASE testdb;
             USE testdb;
+            -- Normal table, which should be copied to MyDuck via duckdb's csv import
             CREATE TABLE users (
               id INT AUTO_INCREMENT PRIMARY KEY,
               name VARCHAR(100),
@@ -70,6 +71,20 @@ jobs:
             ) AUTO_INCREMENT=1000;
 
             INSERT INTO items (v, name) VALUES (1, 'item1'), (2, 'item2'), (3, 'item3');
+
+            -- Table with UUID primary key
+            -- For such tables, MySQL Shell generates nontrivial LOAD DATA statements
+            -- to copy the data to MyDuck: `LOAD DATA ... (@id, title, created_at) SET id = FROM_BASE64(@id)`,
+            -- which can only be executed by the go-mysql-server framework for now.
+            CREATE TABLE documents (
+              id BINARY(16) PRIMARY KEY,
+              title VARCHAR(200),
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            INSERT INTO documents (id, title) VALUES
+              (UUID_TO_BIN(UUID()), 'Document 1'),
+              (UUID_TO_BIN(UUID()), 'Document 2');
           "
 
       - name: Build and start MyDuck Server
@@ -89,7 +104,7 @@ jobs:
             --users false --ignore-version true
 
           # Verify the data was copied
-          for table in users items; do
+          for table in users items documents; do
             mysqlsh -hlocalhost -P13306 -uroot -proot --sql -e "
               SELECT * FROM testdb.$table ORDER BY id;
             " | tee source_data_$table.tsv
