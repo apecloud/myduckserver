@@ -24,6 +24,7 @@ type rowInserter struct {
 	stmt     *stdsql.Stmt
 	err      error
 	flushSQL string
+	enums    []int
 }
 
 var _ sql.RowInserter = &rowInserter{}
@@ -75,9 +76,15 @@ func (ri *rowInserter) init(ctx *sql.Context) {
 	}
 	insert.WriteString(" INTO ")
 	insert.WriteString(ConnectIdentifiersANSI(ri.db, ri.table))
-	insert.WriteString(" SELECT * FROM ")
+	insert.WriteString(" FROM ")
 	insert.WriteString(QuoteIdentifierANSI(ri.tmpTable))
 	ri.flushSQL = insert.String()
+
+	for i, col := range ri.schema {
+		if _, ok := col.Type.(sql.EnumType); ok {
+			ri.enums = append(ri.enums, i)
+		}
+	}
 }
 
 func (ri *rowInserter) StatementBegin(ctx *sql.Context) {
@@ -106,6 +113,18 @@ func (ri *rowInserter) Insert(ctx *sql.Context, row sql.Row) error {
 	if ri.err != nil {
 		return ri.err
 	}
+
+	// For enum columns, we have to convert the enum ordinal to the enum string.
+	for _, i := range ri.enums {
+		if idx, ok := row[i].(uint16); ok {
+			if s, ok := ri.schema[i].Type.(sql.EnumType).At(int(idx)); ok {
+				row[i] = s
+			} else {
+				return fmt.Errorf("invalid enum value %d for column %s", idx, ri.schema[i].Name)
+			}
+		}
+	}
+
 	if _, err := ri.stmt.ExecContext(ctx, row...); err != nil {
 		ri.err = err
 		return err
