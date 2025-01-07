@@ -61,10 +61,13 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	}
 
 	n := root
-	ctx.GetLogger().WithFields(logrus.Fields{
-		"Query":    ctx.Query(),
-		"NodeType": fmt.Sprintf("%T", n),
-	}).Traceln("Building node:", n)
+
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
+		log.WithFields(logrus.Fields{
+			"Query":    ctx.Query(),
+			"NodeType": fmt.Sprintf("%T", n),
+		}).Traceln("Building node:", n)
+	}
 
 	// TODO; find a better way to fallback to the base builder
 	switch n.(type) {
@@ -114,7 +117,13 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	}
 
 	// Fallback to the base builder if the plan contains system/user variables or is not a pure data query.
-	if containsVariable(n) || !IsPureDataQuery(n) {
+	tree := n
+	switch n := n.(type) {
+	case *plan.TableCopier:
+		tree = n.Source
+	}
+	if containsVariable(tree) || !IsPureDataQuery(tree) {
+		ctx.GetLogger().Traceln("Falling back to the base builder")
 		return b.base.Build(ctx, root, r)
 	}
 
@@ -133,11 +142,14 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 			return nil, err
 		}
 		return b.base.Build(ctx, root, r)
-	// SubqueryAlias is for select * from view
+	// ResolvedTable is for `SELECT * FROM table` and `TABLE table`
+	// SubqueryAlias is for `SELECT * FROM view``
 	case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.TableAlias:
 		return b.executeQuery(ctx, node, conn)
 	case *plan.Distinct, *plan.OrderedDistinct:
 		return b.executeQuery(ctx, node, conn)
+	case *plan.TableCopier:
+		return b.executeDML(ctx, node, conn)
 	case sql.Expressioner:
 		return b.executeExpressioner(ctx, node, conn)
 	case *plan.DeleteFrom:
@@ -174,7 +186,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	case *plan.ShowTables:
 		duckSQL = ctx.Query()
 	case *plan.ResolvedTable:
-		// SQLGlot cannot translate MySQL's `TABLE t` into DuckDB's `FROM t` - it produces `"table" AS t` instead. 
+		// SQLGlot cannot translate MySQL's `TABLE t` into DuckDB's `FROM t` - it produces `"table" AS t` instead.
 		duckSQL = `FROM ` + catalog.ConnectIdentifiersANSI(n.Database().Name(), n.Name())
 	default:
 		duckSQL, err = transpiler.TranslateWithSQLGlot(ctx.Query())
@@ -183,10 +195,12 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 		return nil, catalog.ErrTranspiler.New(err)
 	}
 
-	ctx.GetLogger().WithFields(logrus.Fields{
-		"Query":   ctx.Query(),
-		"DuckSQL": duckSQL,
-	}).Trace("Executing Query...")
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
+		log.WithFields(logrus.Fields{
+			"Query":   ctx.Query(),
+			"DuckSQL": duckSQL,
+		}).Trace("Executing Query...")
+	}
 
 	// Execute the DuckDB query
 	rows, err := conn.QueryContext(ctx.Context, duckSQL)
@@ -204,10 +218,12 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 		return nil, catalog.ErrTranspiler.New(err)
 	}
 
-	ctx.GetLogger().WithFields(logrus.Fields{
-		"Query":   ctx.Query(),
-		"DuckSQL": duckSQL,
-	}).Trace("Executing DML...")
+	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
+		log.WithFields(logrus.Fields{
+			"Query":   ctx.Query(),
+			"DuckSQL": duckSQL,
+		}).Trace("Executing DML...")
+	}
 
 	// Execute the DuckDB query
 	result, err := conn.ExecContext(ctx.Context, duckSQL)
