@@ -46,7 +46,7 @@ jobs:
 
       - name: Setup test data in source MySQL
         run: |
-          mysqlsh -hlocalhost -P13306 -uroot -proot --sql -e "
+          mysqlsh -hlocalhost -P13306 -uroot -proot --sql <<'EOF'
             CREATE DATABASE testdb;
             USE testdb;
             -- Normal table, which should be copied to MyDuck via duckdb's csv import
@@ -74,18 +74,19 @@ jobs:
 
             -- Table with UUID primary key
             -- For such tables, MySQL Shell generates nontrivial LOAD DATA statements
-            -- to copy the data to MyDuck: `LOAD DATA ... (@id, title, created_at) SET id = FROM_BASE64(@id)`,
+            -- to copy the data to MyDuck: LOAD DATA ... (@id, title, created_at) SET id = FROM_BASE64(@id),
             -- which can only be executed by the go-mysql-server framework for now.
             CREATE TABLE documents (
               id BINARY(16) PRIMARY KEY,
               title VARCHAR(200),
+              status ENUM('draft', 'published', 'archived') DEFAULT 'draft',
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            INSERT INTO documents (id, title) VALUES
-              (UUID_TO_BIN(UUID()), 'Document 1'),
-              (UUID_TO_BIN(UUID()), 'Document 2');
-          "
+            INSERT INTO documents (id, title, status) VALUES
+              (UUID_TO_BIN(UUID()), 'Document 1', 'published'),
+              (UUID_TO_BIN(UUID()), 'Document 2', 'draft');
+          EOF
 
       - name: Build and start MyDuck Server
         run: |
