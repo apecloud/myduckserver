@@ -51,12 +51,16 @@ jobs:
             USE testdb;
             CREATE TABLE users (
               id INT AUTO_INCREMENT PRIMARY KEY,
-              name VARCHAR(100)
+              name VARCHAR(100),
+              status ENUM('active', 'inactive', 'pending') DEFAULT 'pending'
             );
-            INSERT INTO users (name) VALUES ('test1'), ('test2'), ('test3');
+            INSERT INTO users (name, status) VALUES
+              ('test1', 'active'),
+              ('test2', 'inactive'),
+              ('test3', 'pending');
             -- Make a gap in the id sequence
-            INSERT INTO users VALUES (100, 'test100');
-            INSERT INTO users (name) VALUES ('test101');
+            INSERT INTO users VALUES (100, 'test100', 'active');
+            INSERT INTO users (name, status) VALUES ('test101', 'inactive');
 
             -- A table with non-default starting auto_increment value
             CREATE TABLE items (
@@ -96,4 +100,4 @@ jobs:
             diff source_data_$table.tsv copied_data_$table.tsv
           done
 
-          
+
