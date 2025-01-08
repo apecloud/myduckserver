@@ -143,12 +143,19 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 		}
 		return b.base.Build(ctx, root, r)
 	// ResolvedTable is for `SELECT * FROM table` and `TABLE table`
-	// SubqueryAlias is for `SELECT * FROM view``
+	// SubqueryAlias is for `SELECT * FROM view`
 	case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.TableAlias:
 		return b.executeQuery(ctx, node, conn)
 	case *plan.Distinct, *plan.OrderedDistinct:
 		return b.executeQuery(ctx, node, conn)
 	case *plan.TableCopier:
+		// We preserve the table schema in a best-effort manner.
+		// For simple `CREATE TABLE t AS SELECT * FROM t`,
+		// we fall back to the framework to create the table and copy the data.
+		// For more complex cases, we directly execute the CTAS statement in DuckDB.
+		if _, ok := node.Source.(*plan.ResolvedTable); ok {
+			return b.base.Build(ctx, root, r)
+		}
 		return b.executeDML(ctx, node, conn)
 	case sql.Expressioner:
 		return b.executeExpressioner(ctx, node, conn)

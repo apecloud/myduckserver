@@ -446,3 +446,25 @@ func (d *Database) GetCollation(ctx *sql.Context) sql.CollationID {
 func (d *Database) SetCollation(ctx *sql.Context, collation sql.CollationID) error {
 	return nil
 }
+
+// CopyTableData implements sql.TableCopierDatabase interface.
+func (d *Database) CopyTableData(ctx *sql.Context, sourceTable string, destinationTable string) (uint64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Use INSERT INTO ... SELECT to copy data
+	sql := `INSERT INTO ` + FullTableName(d.catalog, d.name, destinationTable) + ` FROM ` + FullTableName(d.catalog, d.name, sourceTable)
+
+	res, err := adapter.Exec(ctx, sql)
+	if err != nil {
+		return 0, ErrDuckDB.New(err)
+	}
+
+	// Get count of affected rows
+	count, err := res.RowsAffected()
+	if err != nil {
+		return 0, ErrDuckDB.New(err)
+	}
+
+	return uint64(count), nil
+}
