@@ -339,17 +339,29 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 					return false, fmt.Errorf("error: invalid set statement: %v", query.String)
 				}
 				return true, nil
+			case *tree.SetSessionCharacteristics:
+				// This is a statement of `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL xxx`.
+				return true, nil
 			}
 			return false, nil
 		},
 		Handler: func(h *ConnectionHandler, query ConvertedStatement) (bool, error) {
-			setVar, ok := query.AST.(*tree.SetVar)
-			if !ok {
+			var key string
+			var value any
+			var isDefault bool
+			switch stmt := query.AST.(type) {
+			case *tree.SetVar:
+				key = strings.ToLower(stmt.Name)
+				value = stmt.Values[0]
+				_, isDefault = value.(tree.DefaultVal)
+			case *tree.SetSessionCharacteristics:
+				// This is a statement of `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL xxx`.
+				key = "default_transaction_isolation"
+				value = strings.ReplaceAll(stmt.Modes.Isolation.String(), " ", "-")
+				isDefault = false
+			default:
 				return false, fmt.Errorf("error: invalid set statement: %v", query.String)
 			}
-			key := strings.ToLower(setVar.Name)
-			value := setVar.Values[0]
-			_, isDefault := value.(tree.DefaultVal)
 
 			if key == "database" {
 				// This is the statement of `USE xxx`, which is used for changing the schema.
@@ -371,7 +383,7 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 			case *tree.StrVal:
 				v = val.RawString()
 			default:
-				v = val.String()
+				v = fmt.Sprintf("%v", val)
 			}
 
 			return h.setPgSessionVar(key, v, isDefault, "SET")

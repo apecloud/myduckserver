@@ -96,7 +96,7 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 		encodeLoggedQuery: false, // cfg.EncodeLoggedQuery,
 	}
 
-	return &ConnectionHandler{
+	connectionHandler := ConnectionHandler{
 		mysqlConn:          mysqlConn,
 		preparedStatements: preparedStatements,
 		portals:            portals,
@@ -110,6 +110,8 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 			"protocol":     "pg",
 		}),
 	}
+	connectionHandler.duckHandler.SetConnectionHandler(&connectionHandler)
+	return &connectionHandler
 }
 
 func (h *ConnectionHandler) closeBackendConn() {

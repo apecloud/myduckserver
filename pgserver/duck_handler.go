@@ -84,6 +84,11 @@ type DuckHandler struct {
 	sm                *server.SessionManager
 	readTimeout       time.Duration
 	encodeLoggedQuery bool
+	connectionHandler *ConnectionHandler
+}
+
+func (h *DuckHandler) SetConnectionHandler(handler *ConnectionHandler) {
+	h.connectionHandler = handler
 }
 
 var _ Handler = &DuckHandler{}
@@ -367,7 +372,7 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 		r, err = resultForEmptyIter(sqlCtx, rowIter)
 	} else if analyzer.FlagIsSet(qFlags, sql.QFlagMax1Row) {
 		resultFields := schemaToFieldDescriptions(sqlCtx, schema, resultFormatCodes, mode)
-		r, err = resultForMax1RowIter(sqlCtx, schema, rowIter, resultFields)
+		r, err = h.resultForMax1RowIter(sqlCtx, schema, rowIter, resultFields)
 	} else {
 		resultFields := schemaToFieldDescriptions(sqlCtx, schema, resultFormatCodes, mode)
 		r, processedAtLeastOneBatch, err = h.resultForDefaultIter(sqlCtx, schema, rowIter, callback, resultFields)
@@ -692,7 +697,7 @@ func resultForEmptyIter(ctx *sql.Context, iter sql.RowIter) (*Result, error) {
 }
 
 // resultForMax1RowIter ensures that an empty iterator returns at most one row
-func resultForMax1RowIter(ctx *sql.Context, schema sql.Schema, iter sql.RowIter, resultFields []pgproto3.FieldDescription) (*Result, error) {
+func (h *DuckHandler) resultForMax1RowIter(ctx *sql.Context, schema sql.Schema, iter sql.RowIter, resultFields []pgproto3.FieldDescription) (*Result, error) {
 	defer trace.StartRegion(ctx, "DuckHandler.resultForMax1RowIter").End()
 	row, err := iter.Next(ctx)
 	if err == io.EOF {
@@ -708,7 +713,7 @@ func resultForMax1RowIter(ctx *sql.Context, schema sql.Schema, iter sql.RowIter,
 		return nil, err
 	}
 
-	outputRow, err := rowToBytes(ctx, schema, resultFields, row)
+	outputRow, err := h.rowToBytes(ctx, schema, resultFields, row)
 	if err != nil {
 		return nil, err
 	}
@@ -809,7 +814,7 @@ func (h *DuckHandler) resultForDefaultIter(ctx *sql.Context, schema sql.Schema, 
 					continue
 				}
 
-				outputRow, err := rowToBytes(ctx, schema, resultFields, row)
+				outputRow, err := h.rowToBytes(ctx, schema, resultFields, row)
 				if err != nil {
 					return err
 				}
@@ -848,9 +853,9 @@ func (h *DuckHandler) resultForDefaultIter(ctx *sql.Context, schema sql.Schema, 
 	return
 }
 
-func rowToBytes(ctx *sql.Context, s sql.Schema, fields []pgproto3.FieldDescription, row sql.Row) ([][]byte, error) {
+func (h *DuckHandler) rowToBytes(ctx *sql.Context, s sql.Schema, fields []pgproto3.FieldDescription, row sql.Row) ([][]byte, error) {
 	if logger := ctx.GetLogger(); logger.Logger.Level >= logrus.TraceLevel {
-		logger = logger.WithField("func", rowToBytes)
+		logger = logger.WithField("func", "rowToBytes")
 		logger.Tracef("row: %+v\n", row)
 		types := make([]sql.Type, len(s))
 		for i, c := range s {
@@ -875,7 +880,7 @@ func rowToBytes(ctx *sql.Context, s sql.Schema, fields []pgproto3.FieldDescripti
 
 		// TODO(fan): Preallocate the buffer
 		if _, ok := s[i].Type.(pgtypes.PostgresType); ok {
-			bytes, err := pgtypes.DefaultTypeMap.Encode(fields[i].DataTypeOID, fields[i].Format, v, nil)
+			bytes, err := h.connectionHandler.pgTypeMap.Encode(fields[i].DataTypeOID, fields[i].Format, v, nil)
 			if err != nil {
 				return nil, err
 			}
