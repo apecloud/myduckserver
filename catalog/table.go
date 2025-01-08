@@ -754,7 +754,10 @@ func queryColumns(ctx *sql.Context, catalogName, schemaName, tableName string) (
 		}
 
 		decodedComment := DecodeComment[MySQLType](comment.String)
-		dataType := mysqlDataType(AnnotatedDuckType{dataTypes, decodedComment.Meta}, uint8(numericPrecision.Int32), uint8(numericScale.Int32))
+		dataType, err := mysqlDataType(AnnotatedDuckType{dataTypes, decodedComment.Meta}, uint8(numericPrecision.Int32), uint8(numericScale.Int32))
+		if err != nil {
+			return nil, err
+		}
 
 		columnInfo := &ColumnInfo{
 			ColumnName:    columnName,

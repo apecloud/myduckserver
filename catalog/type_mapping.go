@@ -198,7 +198,7 @@ func DuckdbDataType(mysqlType sql.Type) (AnnotatedDuckType, error) {
 	}
 }
 
-func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericScale uint8) sql.Type {
+func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericScale uint8) (sql.Type, error) {
 	// TODO: The current type mappings are not lossless. We need to store the original type in the column comments.
 	duckName := strings.TrimSpace(strings.ToUpper(duckType.name))
 
@@ -219,7 +219,7 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 		intBaseType = sqltypes.Uint8
 	case "SMALLINT":
 		if mysqlName == "YEAR" {
-			return types.Year
+			return types.Year, nil
 		}
 		intBaseType = sqltypes.Int16
 	case "USMALLINT":
@@ -240,13 +240,13 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 		intBaseType = sqltypes.Int64
 	case "UBIGINT":
 		if mysqlName == "BIT" {
-			return types.MustCreateBitType(duckType.mysql.Precision)
+			return types.CreateBitType(duckType.mysql.Precision)
 		}
 		intBaseType = sqltypes.Uint64
 	}
 
 	if intBaseType != sqltypes.Null {
-		return types.MustCreateNumberTypeWithDisplayWidth(intBaseType, int(duckType.mysql.Display))
+		return types.CreateNumberTypeWithDisplayWidth(intBaseType, int(duckType.mysql.Display))
 	}
 
 	length := int64(duckType.mysql.Length)
@@ -255,70 +255,79 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 
 	switch duckName {
 	case "FLOAT":
-		return types.Float32
+		return types.Float32, nil
 	case "DOUBLE":
-		return types.Float64
+		return types.Float64, nil
 
 	case "TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS":
 		if mysqlName == "DATETIME" {
-			return types.MustCreateDatetimeType(sqltypes.Datetime, precision)
+			return types.CreateDatetimeType(sqltypes.Datetime, precision)
 		}
-		return types.MustCreateDatetimeType(sqltypes.Timestamp, precision)
+		return types.CreateDatetimeType(sqltypes.Timestamp, precision)
 
 	case "DATE":
-		return types.Date
+		return types.Date, nil
 	case "INTERVAL", "TIME":
-		return types.Time
+		return types.Time, nil
 
 	case "DECIMAL":
-		return types.MustCreateDecimalType(numericPrecision, numericScale)
+		return types.CreateDecimalType(numericPrecision, numericScale)
+
+	case "UHUGEINT", "HUGEINT":
+		// MySQL does not have these types. We store them as DECIMAL.
+		return types.CreateDecimalType(39, 0)
+
+	case "VARINT":
+		// MySQL does not have this type. We store it as DECIMAL.
+		// Here we use the maximum supported precision for DECIMAL in MySQL.
+		return types.CreateDecimalType(65, 0)
 
 	case "VARCHAR":
 		if mysqlName == "TEXT" {
 			if length <= types.TinyTextBlobMax {
-				return types.TinyText
+				return types.TinyText, nil
 			} else if length <= types.TextBlobMax {
-				return types.Text
+				return types.Text, nil
 			} else if length <= types.MediumTextBlobMax {
-				return types.MediumText
+				return types.MediumText, nil
 			} else {
-				return types.LongText
+				return types.LongText, nil
 			}
 		} else if mysqlName == "VARCHAR" {
-			return types.MustCreateString(sqltypes.VarChar, length, collation)
+			return types.CreateString(sqltypes.VarChar, length, collation)
 		} else if mysqlName == "CHAR" {
-			return types.MustCreateString(sqltypes.Char, length, collation)
+			return types.CreateString(sqltypes.Char, length, collation)
 		} else if mysqlName == "SET" {
-			return types.MustCreateSetType(duckType.mysql.Values, collation)
+			return types.CreateSetType(duckType.mysql.Values, collation)
 		}
-		return types.Text
+		return types.Text, nil
 
 	case "BLOB":
 		if mysqlName == "BLOB" {
 			if length <= types.TinyTextBlobMax {
-				return types.TinyBlob
+				return types.TinyBlob, nil
 			} else if length <= types.TextBlobMax {
-				return types.Blob
+				return types.Blob, nil
 			} else if length <= types.MediumTextBlobMax {
-				return types.MediumBlob
+				return types.MediumBlob, nil
 			} else {
-				return types.LongBlob
+				return types.LongBlob, nil
 			}
 		} else if mysqlName == "VARBINARY" {
-			return types.MustCreateBinary(sqltypes.VarBinary, length)
+			return types.CreateBinary(sqltypes.VarBinary, length)
 		} else if mysqlName == "BINARY" {
-			return types.MustCreateBinary(sqltypes.Binary, length)
+			return types.CreateBinary(sqltypes.Binary, length)
 		}
-		return types.Blob
+		return types.Blob, nil
 
 	case "JSON":
-		return types.JSON
+		return types.JSON, nil
 	case "ENUM":
-		return types.MustCreateEnumType(duckType.mysql.Values, collation)
+		return types.CreateEnumType(duckType.mysql.Values, collation)
 	case "SET":
-		return types.MustCreateSetType(duckType.mysql.Values, collation)
+		return types.CreateSetType(duckType.mysql.Values, collation)
 	default:
-		panic(fmt.Sprintf("encountered unknown DuckDB type(%v). This is likely a bug - please check the duckdbDataType function for missing type mappings", duckType))
+		return nil, fmt.Errorf("encountered unknown DuckDB type(%v)", duckType)
 	}
 }
 
