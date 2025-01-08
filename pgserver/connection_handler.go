@@ -753,16 +753,18 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	}
 
 	// Certain statement types get handled directly by the handler instead of being passed to the engine
-	handled, _, err := h.handleStatementOutsideEngine(query)
-	if handled {
-		return err
+	if strings.ToUpper(query.Tag) != "SELECT" || portalData.Stmt == nil {
+		handled, _, err := h.handleStatementOutsideEngine(query)
+		if handled {
+			return err
+		}
 	}
 
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
 
 	callback := h.spoolRowsCallback(query, &rowsAffected, true)
-	err = h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, portalData, callback)
+	err := h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, portalData, callback)
 	if err != nil {
 		return err
 	}
