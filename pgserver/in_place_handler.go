@@ -122,22 +122,22 @@ func (h *ConnectionHandler) setPgSessionVar(name string, value any, useDefault b
 }
 
 type InPlaceHandler struct {
-	// ShouldHandledInPlace is a function that determines if the query should be
+	// ShouldBeHandledInPlace is a function that determines if the query should be
 	// handled in place and not passed to the engine.
-	ShouldHandledInPlace func(*ConnectionHandler, *ConvertedStatement) (bool, error)
-	Handler              func(*ConnectionHandler, ConvertedStatement) (bool, error)
+	ShouldBeHandledInPlace func(*ConnectionHandler, *ConvertedStatement) (bool, error)
+	Handler                func(*ConnectionHandler, ConvertedStatement) (bool, error)
 }
 
 type SelectionConversion struct {
 	needConvert func(*ConvertedStatement) bool
 	doConvert   func(*ConnectionHandler, *ConvertedStatement) error
-	// Indicate that the query will be converted to a constant snapshot query.
+	// Indicate that the query will be converted to a constant query.
 	// The data will be fetched internally and used as a constant value for query.
 	// e.g. SELECT current_setting('application_name'); -> SELECT 'myDUCK' AS "current_setting";
 	// Be careful while handling extended queries, as the SQL statement requested by the client
-	// is a prepared statement. If we convert the query to a constant snapshot query, the client
+	// is a prepared statement. If we convert the query to a constant query, the client
 	// will not be able to fetch the fresh data from the server.
-	isConstSnapshot bool
+	isConstQuery bool
 }
 
 var selectionConversions = []SelectionConversion{
@@ -201,7 +201,7 @@ var selectionConversions = []SelectionConversion{
 			query.String = sqlStr
 			return nil
 		},
-		isConstSnapshot: true,
+		isConstQuery: true,
 	},
 	{
 		needConvert: func(query *ConvertedStatement) bool {
@@ -251,12 +251,12 @@ var selectionConversions = []SelectionConversion{
 // The key is the statement tag of the query.
 var inPlaceHandlers = map[string]InPlaceHandler{
 	"SELECT": {
-		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
+		ShouldBeHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
 			for _, conv := range selectionConversions {
 				if conv.needConvert(query) {
 					var err error
-					if conv.isConstSnapshot {
-						// Since the query is a constant snapshot query, we should not modify the query before
+					if conv.isConstQuery {
+						// Since the query is a constant query, we should not modify the query before
 						// it's executed. Instead, we mark it as a query that should be handled in place.
 						return true, nil
 					}
@@ -291,7 +291,7 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 		},
 	},
 	"SHOW": {
-		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
+		ShouldBeHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
 			switch query.AST.(type) {
 			case *tree.ShowVar:
 				return true, nil
@@ -324,7 +324,7 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 		},
 	},
 	"SET": {
-		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
+		ShouldBeHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				key := strings.ToLower(stmt.Name)
@@ -392,7 +392,7 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 		},
 	},
 	"RESET": {
-		ShouldHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
+		ShouldBeHandledInPlace: func(h *ConnectionHandler, query *ConvertedStatement) (bool, error) {
 			switch stmt := query.AST.(type) {
 			case *tree.SetVar:
 				if !stmt.Reset && !stmt.ResetAll {
@@ -438,7 +438,7 @@ func shouldQueryBeHandledInPlace(h *ConnectionHandler, sql *ConvertedStatement) 
 	if !ok {
 		return false, nil
 	}
-	handledInPlace, err := handler.ShouldHandledInPlace(h, sql)
+	handledInPlace, err := handler.ShouldBeHandledInPlace(h, sql)
 	if err != nil {
 		return false, err
 	}

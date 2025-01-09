@@ -64,9 +64,9 @@ type ConvertedStatement struct {
 	RestoreConfig      *RestoreConfig
 }
 
-func (cs ConvertedStatement) WithString(s string) ConvertedStatement {
+func (cs ConvertedStatement) WithQueryString(queryString string) ConvertedStatement {
 	return ConvertedStatement{
-		String:             s,
+		String:             queryString,
 		AST:                cs.AST,
 		Tag:                cs.Tag,
 		PgParsable:         cs.PgParsable,
