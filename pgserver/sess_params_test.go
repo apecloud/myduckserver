@@ -417,6 +417,31 @@ func TestSessParam(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "Test Session Characteristics Setting",
+			executions: []Execution{
+				{
+					SQL:      "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+					Expected: nil,
+					WantErr:  false,
+				},
+				{
+					SQL:      "SELECT CURRENT_SETTING('default_transaction_isolation');",
+					Expected: [][]string{{"serializable"}},
+					WantErr:  false,
+				},
+				{
+					SQL:      "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;",
+					Expected: nil,
+					WantErr:  false,
+				},
+				{
+					SQL:      "SELECT CURRENT_SETTING('default_transaction_isolation');",
+					Expected: [][]string{{"read-uncommitted"}},
+					WantErr:  false,
+				},
+			},
+		},
 	}
 
 	// Setup MyDuck Server

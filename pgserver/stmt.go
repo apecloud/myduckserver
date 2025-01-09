@@ -295,6 +295,35 @@ func ConvertToSys(sql string) string {
 }
 
 var (
+	typeCastRegex     *regexp.Regexp
+	initTypeCastRegex sync.Once
+)
+
+// The Key must be in lowercase. Because the key used for value retrieval is in lowercase.
+var typeCastConversion = map[string]string{
+	"::regclass": "::varchar",
+}
+
+// This function will return a regex that matches all type casts in the query.
+func getTypeCastRegex() *regexp.Regexp {
+	initTypeCastRegex.Do(func() {
+		var typeCasts []string
+		for typeCast := range typeCastConversion {
+			typeCasts = append(typeCasts, regexp.QuoteMeta(typeCast))
+		}
+		typeCastRegex = regexp.MustCompile(`(?i)(` + strings.Join(typeCasts, "|") + `)`)
+	})
+	return typeCastRegex
+}
+
+// This function will replace all type casts in the query with the corresponding type cast in the typeCastConversion map.
+func ConvertTypeCast(sql string) string {
+	return getTypeCastRegex().ReplaceAllStringFunc(sql, func(m string) string {
+		return typeCastConversion[strings.ToLower(m)]
+	})
+}
+
+var (
 	renameMacroRegex     *regexp.Regexp
 	initRenameMacroRegex sync.Once
 	macroRegex           *regexp.Regexp

@@ -128,13 +128,16 @@ type InPlaceHandler struct {
 	Handler              func(*ConnectionHandler, ConvertedStatement) (bool, error)
 }
 
-var typeCastConversion = map[string]string{
-	"::regclass": "::varchar",
-}
-
 type SelectionConversion struct {
 	needConvert func(*ConvertedStatement) bool
 	doConvert   func(*ConnectionHandler, *ConvertedStatement) error
+	// Indicate that the query will be converted to a constant snapshot query.
+	// The data will be fetched internally and used as a constant value for query.
+	// e.g. SELECT current_setting('application_name'); -> SELECT 'myDUCK' AS "current_setting";
+	// Be careful while handling extended queries, as the SQL statement requested by the client
+	// is a prepared statement. If we convert the query to a constant snapshot query, the client
+	// will not be able to fetch the fresh data from the server.
+	isConstSnapshot bool
 }
 
 var selectionConversions = []SelectionConversion{
@@ -198,6 +201,7 @@ var selectionConversions = []SelectionConversion{
 			query.String = sqlStr
 			return nil
 		},
+		isConstSnapshot: true,
 	},
 	{
 		needConvert: func(query *ConvertedStatement) bool {
@@ -233,18 +237,11 @@ var selectionConversions = []SelectionConversion{
 		needConvert: func(query *ConvertedStatement) bool {
 			sqlStr := RemoveComments(query.String)
 			// TODO(sean): Evaluate the conditions by iterating over the AST.
-			for k := range typeCastConversion {
-				if strings.Contains(sqlStr, k) {
-					return true
-				}
-			}
-			return false
+			return getTypeCastRegex().MatchString(sqlStr)
 		},
 		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
 			sqlStr := RemoveComments(query.String)
-			for k, v := range typeCastConversion {
-				sqlStr = strings.ReplaceAll(sqlStr, k, v)
-			}
+			sqlStr = ConvertTypeCast(sqlStr)
 			query.String = sqlStr
 			return nil
 		},
@@ -258,6 +255,11 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 			for _, conv := range selectionConversions {
 				if conv.needConvert(query) {
 					var err error
+					if conv.isConstSnapshot {
+						// Since the query is a constant snapshot query, we should not modify the query before
+						// it's executed. Instead, we mark it as a query that should be handled in place.
+						return true, nil
+					}
 					// Do not execute this query here. Instead, fallback to the original processing.
 					// So we don't have to deal with the dynamic SQL with placeholders here.
 					err = conv.doConvert(h, query)
