@@ -211,11 +211,7 @@ func (iter *SqlRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		case nil:
 			continue
 		case *big.Int:
-			var n pgtype.Numeric
-			if err := n.Scan(v.String()); err != nil {
-				return nil, err
-			}
-			iter.buffer[idx] = n
+			iter.buffer[idx] = pgtype.Numeric{Int: v, Valid: true}
 		default:
 			return nil, fmt.Errorf("unexpected type %T for big.Int value", v)
 		}
