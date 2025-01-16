@@ -7,6 +7,9 @@ type MacroDefinition struct {
 	DDL    string
 }
 
+var SchemaNameMyListContains string = "__sys__"
+var MacroNameMyListContains string = "my_list_contains"
+
 type InternalMacro struct {
 	Schema       string
 	Name         string
@@ -52,6 +55,22 @@ var InternalMacros = []InternalMacro{
 				Params: []string{"index_oid", "column_no", "pretty_bool"},
 				// Do nothing currently
 				DDL: `''`,
+			},
+		},
+	},
+	{
+		Schema:       SchemaNameMyListContains,
+		Name:         MacroNameMyListContains,
+		IsTableMacro: false,
+		Definitions: []MacroDefinition{
+			{
+				Params: []string{"l", "v"},
+				DDL: `CASE
+    WHEN typeof(l) = 'VARCHAR' THEN
+        list_contains(regexp_split_to_array(l::VARCHAR, '[{},\s]+'), v)
+    ELSE
+        list_contains(l::text[], v)
+    END`,
 			},
 		},
 	},

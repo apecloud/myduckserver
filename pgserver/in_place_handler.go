@@ -246,6 +246,19 @@ var selectionConversions = []SelectionConversion{
 			return nil
 		},
 	},
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			sqlStr := RemoveComments(query.String)
+			// TODO: Evaluate the conditions by iterating over the AST.
+			return getPgAnyOpRegex().MatchString(sqlStr)
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			sqlStr := RemoveComments(query.String)
+			sqlStr = ConvertAnyOp(sqlStr)
+			query.String = sqlStr
+			return nil
+		},
+	},
 }
 
 // The key is the statement tag of the query.

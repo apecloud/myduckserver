@@ -295,6 +295,25 @@ func ConvertToSys(sql string) string {
 }
 
 var (
+	pgAnyOpRegex     *regexp.Regexp
+	initPgAnyOpRegex sync.Once
+)
+
+// get the regex to match the operator 'ANY'
+func getPgAnyOpRegex() *regexp.Regexp {
+	initPgAnyOpRegex.Do(func() {
+		pgAnyOpRegex = regexp.MustCompile(`(?i)([^\s(]+)\s*=\s*any\s*\(\s*([^)]*)\s*\)`)
+	})
+	return pgAnyOpRegex
+}
+
+// Replace the operator 'ANY' with a function call.
+func ConvertAnyOp(sql string) string {
+	re := getPgAnyOpRegex()
+	return re.ReplaceAllString(sql, catalog.SchemaNameMyListContains+"."+catalog.MacroNameMyListContains+"($2, $1)")
+}
+
+var (
 	typeCastRegex     *regexp.Regexp
 	initTypeCastRegex sync.Once
 )
