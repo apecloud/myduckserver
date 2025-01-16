@@ -321,6 +321,7 @@ var (
 // The Key must be in lowercase. Because the key used for value retrieval is in lowercase.
 var typeCastConversion = map[string]string{
 	"::regclass": "::varchar",
+	"::regtype":  "::integer",
 }
 
 // This function will return a regex that matches all type casts in the query.

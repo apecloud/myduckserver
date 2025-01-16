@@ -59,6 +59,23 @@ var InternalMacros = []InternalMacro{
 		},
 	},
 	{
+		Schema:       "pg_catalog",
+		Name:         "pg_get_expr",
+		IsTableMacro: false,
+		Definitions: []MacroDefinition{
+			{
+				Params: []string{"pg_node_tree", "relation_oid"},
+				// Do nothing currently
+				DDL: `pg_catalog.pg_get_expr(pg_node_tree, relation_oid)`,
+			},
+			{
+				Params: []string{"pg_node_tree", "relation_oid", "pretty_bool"},
+				// Do nothing currently
+				DDL: `pg_catalog.pg_get_expr(pg_node_tree, relation_oid)`,
+			},
+		},
+	},
+	{
 		Schema:       SchemaNameMyListContains,
 		Name:         MacroNameMyListContains,
 		IsTableMacro: false,
