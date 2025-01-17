@@ -7,8 +7,12 @@ type MacroDefinition struct {
 	DDL    string
 }
 
-var SchemaNameMyListContains string = "__sys__"
-var MacroNameMyListContains string = "my_list_contains"
+var (
+	SchemaNameSYS           string = "__sys__"
+	MacroNameMyListContains string = "my_list_contains"
+
+	MacroNameMySplitListStr string = "my_split_list_str"
+)
 
 type InternalMacro struct {
 	Schema       string
@@ -76,7 +80,7 @@ var InternalMacros = []InternalMacro{
 		},
 	},
 	{
-		Schema:       SchemaNameMyListContains,
+		Schema:       SchemaNameSYS,
 		Name:         MacroNameMyListContains,
 		IsTableMacro: false,
 		Definitions: []MacroDefinition{
@@ -88,6 +92,17 @@ var InternalMacros = []InternalMacro{
     ELSE
         list_contains(l::text[], v)
     END`,
+			},
+		},
+	},
+	{
+		Schema:       SchemaNameSYS,
+		Name:         MacroNameMySplitListStr,
+		IsTableMacro: false,
+		Definitions: []MacroDefinition{
+			{
+				Params: []string{"l"},
+				DDL:    `regexp_split_to_array(l::VARCHAR, '[{},\s]+')`,
 			},
 		},
 	},

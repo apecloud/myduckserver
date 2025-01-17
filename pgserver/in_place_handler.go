@@ -237,11 +237,11 @@ var selectionConversions = []SelectionConversion{
 		needConvert: func(query *ConvertedStatement) bool {
 			sqlStr := RemoveComments(query.String)
 			// TODO(sean): Evaluate the conditions by iterating over the AST.
-			return getTypeCastRegex().MatchString(sqlStr)
+			return getSimpleStringMatchingRegex().MatchString(sqlStr)
 		},
 		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
 			sqlStr := RemoveComments(query.String)
-			sqlStr = ConvertTypeCast(sqlStr)
+			sqlStr = SimpleStrReplacement(sqlStr)
 			query.String = sqlStr
 			return nil
 		},

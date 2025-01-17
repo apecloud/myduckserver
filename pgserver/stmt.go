@@ -310,36 +310,42 @@ func getPgAnyOpRegex() *regexp.Regexp {
 // Replace the operator 'ANY' with a function call.
 func ConvertAnyOp(sql string) string {
 	re := getPgAnyOpRegex()
-	return re.ReplaceAllString(sql, catalog.SchemaNameMyListContains+"."+catalog.MacroNameMyListContains+"($2, $1)")
+	return re.ReplaceAllString(sql, catalog.SchemaNameSYS+"."+catalog.MacroNameMyListContains+"($2, $1)")
 }
 
 var (
-	typeCastRegex     *regexp.Regexp
-	initTypeCastRegex sync.Once
+	simpleStrMatchingRegex     *regexp.Regexp
+	initSimpleStrMatchingRegex sync.Once
 )
 
+// TODO(sean): This is a temporary solution. We need to find a better way to handle type cast conversion and column conversion. e.g. Iterating the AST with a visitor pattern.
 // The Key must be in lowercase. Because the key used for value retrieval is in lowercase.
-var typeCastConversion = map[string]string{
+var simpleStringsConversion = map[string]string{
+	// type cast conversion
 	"::regclass": "::varchar",
-	"::regtype":  "::integer",
+	"::regtype":  "::varchar",
+
+	// column conversion
+	"proallargtypes": catalog.SchemaNameSYS + "." + catalog.MacroNameMySplitListStr + "(proallargtypes)",
+	"proargtypes":    catalog.SchemaNameSYS + "." + catalog.MacroNameMySplitListStr + "(proargtypes)",
 }
 
 // This function will return a regex that matches all type casts in the query.
-func getTypeCastRegex() *regexp.Regexp {
-	initTypeCastRegex.Do(func() {
-		var typeCasts []string
-		for typeCast := range typeCastConversion {
-			typeCasts = append(typeCasts, regexp.QuoteMeta(typeCast))
+func getSimpleStringMatchingRegex() *regexp.Regexp {
+	initSimpleStrMatchingRegex.Do(func() {
+		var simpleStrings []string
+		for simpleString := range simpleStringsConversion {
+			simpleStrings = append(simpleStrings, regexp.QuoteMeta(simpleString))
 		}
-		typeCastRegex = regexp.MustCompile(`(?i)(` + strings.Join(typeCasts, "|") + `)`)
+		simpleStrMatchingRegex = regexp.MustCompile(`(?i)(` + strings.Join(simpleStrings, "|") + `)`)
 	})
-	return typeCastRegex
+	return simpleStrMatchingRegex
 }
 
-// This function will replace all type casts in the query with the corresponding type cast in the typeCastConversion map.
-func ConvertTypeCast(sql string) string {
-	return getTypeCastRegex().ReplaceAllStringFunc(sql, func(m string) string {
-		return typeCastConversion[strings.ToLower(m)]
+// This function will replace all type casts in the query with the corresponding type cast in the simpleStringsConversion map.
+func SimpleStrReplacement(sql string) string {
+	return getSimpleStringMatchingRegex().ReplaceAllStringFunc(sql, func(m string) string {
+		return simpleStringsConversion[strings.ToLower(m)]
 	})
 }
 
