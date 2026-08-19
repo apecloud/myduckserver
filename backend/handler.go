@@ -17,11 +17,13 @@ package backend
 import (
 	"context"
 	"fmt"
-	"github.com/apecloud/myduckserver/catalog"
 
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/server"
+	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
 	"github.com/dolthub/vitess/go/sqltypes"
+	"github.com/sirupsen/logrus"
 )
 
 type MyHandler struct {
@@ -62,7 +64,17 @@ func (h *MyHandler) ComMultiQuery(
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
 
-	return h.Handler.ComMultiQuery(ctx, c, query, wrapResultCallback(callback, modifiers...))
+	called := false
+	cb := func(res *sqltypes.Result, more bool) error {
+		called = true
+		return wrapResultCallback(callback, modifiers...)(res, more)
+	}
+	rest, err := h.Handler.ComMultiQuery(ctx, c, query, cb)
+	if err != nil && !called && shouldIgnoreFailedView(query, isReplicaLoadingSnapshot()) {
+		logrus.WithError(err).Warn("skipping CREATE VIEW during replica snapshot")
+		return rest, callback(&sqltypes.Result{}, false)
+	}
+	return rest, err
 }
 
 // Naive query rewriting. This is just a temporary solution
@@ -76,7 +88,32 @@ func (h *MyHandler) ComQuery(
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
 
-	return h.Handler.ComQuery(ctx, c, query, wrapResultCallback(callback, modifiers...))
+	called := false
+	cb := func(res *sqltypes.Result, more bool) error {
+		called = true
+		return wrapResultCallback(callback, modifiers...)(res, more)
+	}
+	err := h.Handler.ComQuery(ctx, c, query, cb)
+	if err != nil && !called && shouldIgnoreFailedView(query, isReplicaLoadingSnapshot()) {
+		logrus.WithError(err).Warn("skipping CREATE VIEW during replica snapshot")
+		return callback(&sqltypes.Result{}, false)
+	}
+	return err
+}
+
+func isReplicaLoadingSnapshot() bool {
+	_, vv, ok := sql.SystemVariables.GetGlobal("replica_is_loading_snapshot")
+	if !ok {
+		return false
+	}
+	switch v := vv.(type) {
+	case int8:
+		return v != 0
+	case bool:
+		return v
+	default:
+		return false
+	}
 }
 
 func WrapHandler(provider *catalog.DatabaseProvider) server.HandlerWrapper {
