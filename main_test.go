@@ -838,8 +838,71 @@ func TestAmbiguousColumnResolution(t *testing.T) {
 }
 
 func TestInsertInto(t *testing.T) {
-	t.Skip("wait for fix")
 	harness := NewDefaultDuckHarness()
+	// First enablement of #64: run the suite, skip cases that still need
+	// MySQL-identical errors, ON DUPLICATE KEY, AUTO_INCREMENT, or FK.
+	harness.QueriesToSkip(
+		// insert_queries
+		"INSERT_INTO_auto_increment_tbl_VALUES_('4',_44)",
+		"INSERT_INTO_auto_increment_tbl_values_(0,_44)",
+		"INSERT_INTO_auto_increment_tbl_values_(5,_44)",
+		"INSERT_INTO_auto_increment_tbl_values_(NULL,_44),_(NULL,_55),_(9,_99),_(NULL,_110),_(NULL,_121)",
+		"INSERT_INTO_keyless_()_VALUES_();",
+		"INSERT_INTO_keyless_VALUES_();",
+		"INSERT_INTO_mytable_(i,s)_values_(1,'hi')_ON_DUPLICATE_KEY_UPDATE_s=VALUES(s)",
+		"INSERT_INTO_mytable_(i,s)_values_(1,'mar'),_(2,'par')_ON_DUPLICATE_KEY_UPDATE_s=CONCAT(VALUES(s),_'tial')",
+		"INSERT_INTO_mytable_(i,s)_values_(1,'maybe')_ON_DUPLICATE_KEY_UPDATE_i=VALUES(i)+8000,_s=VALUES(s)",
+		"INSERT_INTO_mytable_(i,s)_values_(1,_'hello')_ON_DUPLICATE_KEY_UPDATE_i=10",
+		"INSERT_INTO_mytable_(i,s)_values_(1,_'hello')_ON_DUPLICATE_KEY_UPDATE_s='hello'",
+		"INSERT_INTO_mytable_(i,s)_values_(1,_'hello2'),_(2,_'hello3'),_(4,_'no_conflict')_ON_DUPLICATE_KEY_UPDATE_s='hello4'",
+		"INSERT_INTO_mytable_(i,s)_values_(1,_'hello2')_ON_DUPLICATE_KEY_UPDATE_s='hello3'",
+		"INSERT_INTO_mytable_(i,s)_values_(1,_'hello2')_ON_DUPLICATE_KEY_UPDATE_s='hello3'#01",
+		"INSERT_INTO_mytable_(i,s)_values_(10,_'hello')_ON_DUPLICATE_KEY_UPDATE_s='hello'",
+		"INSERT_INTO_mytable_(s,i)_values_('dup',1)_ON_DUPLICATE_KEY_UPDATE_s=CONCAT(VALUES(s),_'licate')",
+		"INSERT_INTO_mytable_SET_i_=_999,_s_=__binary_'x';",
+		"INSERT_INTO_mytable_VALUES_(999,__binary_'x');",
+		"INSERT_INTO_othertable_VALUES_(\"fourth\",_1)_ON_DUPLICATE_KEY_UPDATE_s2=\"fourth\"",
+		"INSERT_INTO_typestable_SET____id_=_999,_i8_=_-128,_i16_=_-32768,_i32_=_-2147483648,_i64_=_-9223372036854775808,____u8_=_0,_u16_=_0,_u32_=_0,_u64_=_0,____f32_=_1.401298464324817070923729583289916131280e-45,_f64_=_4.940656458412465441765687928682213723651e-324,____ti_=_'0000-00-00_00:00:00',_da_=_'0000-00-00',____te_=_'',_bo_=_false,_js_=_'\"\"',_bl_=_'',_e1_=_'v1',_s1_=_'v2'____;",
+		"INSERT_INTO_typestable_SET____id_=_999,_i8_=_-128,_i16_=_-32768,_i32_=_-2147483648,_i64_=_-9223372036854775808,____u8_=_0,_u16_=_0,_u32_=_0,_u64_=_0,____f32_=_1.401298464324817070923729583289916131280e-45,_f64_=_4.940656458412465441765687928682213723651e-324,____ti_=_'2037-04-05_12:51:36_-0000_UTC',_da_=_'0000-00-00',____te_=_'',_bo_=_false,_js_=_'\"\"',_bl_=_'',_e1_=_'v1',_s1_=_'v2'____;",
+		"INSERT_INTO_typestable_VALUES_(____999,_-128,_-32768,_-2147483648,_-9223372036854775808,____0,_0,_0,_0,____1.401298464324817070923729583289916131280e-45,_4.940656458412465441765687928682213723651e-324,____'0000-00-00_00:00:00',_'0000-00-00',____'',_false,_'\"\"',_'',_'',_''____);",
+		"with_recursive_t_(i,f)_as_(select_4,4_from_dual_union_all_select_i_+_1,_i_+_1_from_t_where_i_<_5)_insert_into_mytable_select_i,f_from_t",
+		"with_t_(i,f)_as_(select_4,'fourth_row'_from_dual)_insert_into_mytable_select_i,f_from_t",
+		// insert_scripts (skipped by script name)
+		"Explicit_default_with_column_reference",
+		"INSERT_Accumulator_tests",
+		"INSERT_IGNORE_works_with_FK_Violations",
+		"INSERT_INTO_..._SELECT_with_TEXT_types",
+		"Insert_into_unique_key_that_overlaps_with_primary_key",
+		"Insert_on_duplicate_key",
+		"Insert_on_duplicate_key_references_table_in_aliased_subquery",
+		"Insert_on_duplicate_key_references_table_in_cte",
+		"Insert_on_duplicate_key_references_table_in_subquery",
+		"Insert_on_duplicate_key_references_table_in_subquery_with_join",
+		"Insert_throws_primary_key_violations",
+		"Insert_throws_unique_key_violations",
+		"Insert_throws_unique_key_violations_for_keyless_tables",
+		"Try_INSERT_IGNORE_with_primary_key,_non_null,_and_single_row_violations",
+		"auto_increment_on_bigint",
+		"auto_increment_on_bigint_unsigned",
+		"auto_increment_on_double",
+		"auto_increment_on_float",
+		"auto_increment_on_int",
+		"auto_increment_on_int_unsigned",
+		"auto_increment_on_mediumint",
+		"auto_increment_on_mediumint_unsigned",
+		"auto_increment_on_smallint",
+		"auto_increment_on_smallint_unsigned",
+		"auto_increment_on_tinyint",
+		"auto_increment_on_tinyint_unsigned",
+		"auto_increment_table_handles_deletes",
+		"explicit_DEFAULT",
+		"insert_duplicate_key_doesn't_prevent_other_updates",
+		"insert_duplicate_key_doesn't_prevent_other_updates,_autocommit_off",
+		"insert_into_sparse_auto_increment_table",
+		"insert_negative_values_into_auto_increment_values",
+		"issue_6675:_on_duplicate_rearranged_getfield_indexes_from_select_source",
+		"issue_7322:_values_expression_is_subquery",
+	)
 	enginetest.TestInsertInto(t, harness)
 }
 
@@ -946,8 +1009,47 @@ func TestReplaceIntoErrors(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestUpdate(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	harness.QueriesToSkip(
+		"UPDATE_IGNORE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_two_pk.c1_=_two_pk.c1_+_1",
+		"UPDATE_IGNORE_one_pk_JOIN_one_pk_one_pk2_on_one_pk.pk_=_one_pk2.pk_SET_one_pk.pk_=_10",
+		"UPDATE_floattable_SET_f32_=_5,_f32_=_4_WHERE_i_=_1;",
+		"UPDATE_floattable_SET_f32_=_f32_+_f32,_f64_=_f32_*_f64_WHERE_i_=_2;",
+		"UPDATE_mytable_INNER_JOIN_one_pk_ON_mytable.i_=_one_pk.c5_SET_mytable.i_=_mytable.i_*_10",
+		"UPDATE_mytable_SET_s_=_'first_row'_WHERE_i_=_1;",
+		"UPDATE_mytable_SET_s_=_'updated'_ORDER_BY_i_ASC_LIMIT_2;",
+		"UPDATE_mytable_SET_s_=_'updated'_ORDER_BY_i_DESC_LIMIT_2;",
+		"UPDATE_mytable_SET_s_=_'updated'_ORDER_BY_i_LIMIT_1_OFFSET_1;",
+		"UPDATE_mytable_SET_s_=__binary_'updated'_WHERE_i_=_3;",
+		"UPDATE_niltable_SET_b_=_NULL_WHERE_f_IS_NULL;",
+		"UPDATE_one_pk_INNER_JOIN_(SELECT_*_FROM_two_pk_order_by_pk1,_pk2)_as_t2_on_one_pk.pk_=_t2.pk1_SET_one_pk.c1_=_t2.c1_+_1_where_one_pk.pk_<_1",
+		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_INNER_JOIN_othertable_on_othertable.i2_=_two_pk.pk2_SET_one_pk.c1_=_one_pk.c1_+_1",
+		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_INNER_JOIN_two_pk_a1_on_one_pk.pk_=_two_pk.pk2_SET_two_pk.c1_=_two_pk.c1_+_1",
+		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_one_pk.c1_=_one_pk.c1_+_1",
+		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_one_pk.c1_=_one_pk.c1_+_1,_one_pk.c2_=_one_pk.c2_+_1_ORDER_BY_one_pk.pk",
+		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_one_pk.c1_=_one_pk.c1_+_1,_two_pk.c1_=_two_pk.c2_+_1",
+		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_two_pk.c1_=_two_pk.c1_+_1",
+		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_two_pk.c1_=_two_pk.c1_+_1_WHERE_one_pk.c5_<_10",
+		"UPDATE_othertable_CROSS_JOIN_tabletest_set_othertable.i2_=_othertable.i2_*_10",
+		"UPDATE_othertable_INNER_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.s2_=_'fourth'",
+		"UPDATE_othertable_LEFT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_LEFT_JOIN_one_pk_on_othertable.i2_=_1_and_one_pk.pk_=_1_SET_one_pk.c1_=_one_pk.c1_+_1",
+		"UPDATE_othertable_LEFT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_LEFT_JOIN_one_pk_on_othertable.i2_=_one_pk.pk_SET_one_pk.c1_=_one_pk.c1_+_1",
+		"UPDATE_othertable_LEFT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_LEFT_JOIN_one_pk_on_othertable.i2_=_one_pk.pk_SET_one_pk.c1_=_one_pk.c1_+_1_where_one_pk.pk_>_4",
+		"UPDATE_othertable_LEFT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.s2_=_'fourth'",
+		"UPDATE_othertable_LEFT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_tabletest.s_=_'fourth_row',_tabletest.i_=_tabletest.i_+_1",
+		"UPDATE_othertable_LEFT_JOIN_tabletest_on_othertable.i2=tabletest.i_RIGHT_JOIN_one_pk_on_othertable.i2_=_1_and_one_pk.pk_=_1_SET_tabletest.s_=_'updated';",
+		"UPDATE_othertable_LEFT_JOIN_tabletest_t3_on_othertable.i2=3_and_t3.i=3_SET_t3.s_=_'fourth_row',_t3.i_=_t3.i_+_1",
+		"UPDATE_othertable_RIGHT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.i2_=_othertable.i2_+_1",
+		"UPDATE_othertable_RIGHT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.s2_=_'fourth'",
+		"UPDATE_othertable_cross_join_tabletest_set_tabletest.i_=_tabletest.i_*_10",
+		"UPDATE_tabletest_cross_join_tabletest_as_t2_set_t2.i_=_t2.i_*_10",
+		"UPDATE_tabletest_cross_join_tabletest_as_t2_set_tabletest.i_=_tabletest.i_*_10",
+		"UPDATE_typestable_SET_da_=_'0000-00-00',_ti_=_'0000-00-00_00:00:00';",
+		"update_mytable_h_join_mytable_on_h.i_=_mytable.i_and_h.s_<>_mytable.s_set_h.i_=_mytable.i+1;",
+		"with_recursive_t_(n)_as_(select_(1)_from_dual_union_all_select_n_+_1_from_t_where_n_<_2)_UPDATE_mytable_set_s_=_concat('updated_',_i)_where_i_in_(select_n_from_t)",
+		"with_t_(n)_as_(select_(1)_from_dual)_UPDATE_mytable_set_s_=_concat('updated_',_i)_where_i_in_(select_n_from_t)",
+	)
+	enginetest.TestUpdate(t, harness)
 }
 
 func TestUpdateIgnore(t *testing.T) {
@@ -987,7 +1089,7 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestDeleteFrom(t *testing.T) {
-	t.Skip("wait for fix")
+	t.Skip("wait for fix: MySQL multi-table DELETE / DELETE JOIN")
 	enginetest.TestDelete(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
 }
 
