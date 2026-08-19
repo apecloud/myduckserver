@@ -377,6 +377,9 @@ def rewrite_mysql_for_duckdb(node):
             exp.Anonymous(this="json_contains", expressions=[aj, bj]),
             exp.Anonymous(this="json_contains", expressions=[bj, aj]),
         )
+    # MySQL DATETIME('...') is a timestamp constructor. DuckDB has no DATETIME().
+    if isinstance(node, exp.Datetime):
+        return exp.Cast(this=node.this, to=exp.DataType.build("TIMESTAMP"))
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

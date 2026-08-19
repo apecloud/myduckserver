@@ -241,6 +241,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT s, i FROM mytable GROUP BY i",
 			expected: "SELECT ANY_VALUE(s), i FROM mytable GROUP BY i",
 		},
+		{
+			name:     "DATETIME string becomes timestamp cast",
+			input:    "SELECT DATETIME('2020-01-01T12:00:00')",
+			expected: "SELECT CAST('2020-01-01T12:00:00' AS TIMESTAMP)",
+		},
 	}
 
 	// Loop over each test case
