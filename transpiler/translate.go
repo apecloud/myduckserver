@@ -829,6 +829,9 @@ def rewrite_mysql_for_duckdb(node):
         inner = node.this
         if to is not None and not isinstance(inner, (exp.If, exp.Case)):
             to_sql = to.sql(dialect="duckdb").upper()
+            # MySQL CAST(x AS DECIMAL) is integer-scale. DuckDB DECIMAL is (18,3).
+            if to_sql in ("DECIMAL", "NUMERIC"):
+                return exp.Cast(this=inner, to=exp.DataType.build("DECIMAL(38, 0)"))
             if to_sql.startswith("U") and "INT" in to_sql:
                 wrapped = exp.If(
                     this=exp.LT(this=inner, expression=exp.Literal.number(0)),

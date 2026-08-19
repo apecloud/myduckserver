@@ -372,6 +372,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT __SYS__.MYSQL_CRC32(CAST(i AS TEXT)) FROM mytable",
 		},
 		{
+			name:     "CAST AS DECIMAL is integer scale",
+			input:    "SELECT DISTINCT CAST(i AS DECIMAL) FROM mytable",
+			expected: "SELECT DISTINCT CAST(i AS DECIMAL(38, 0)) FROM mytable",
+		},
+		{
 			name:     "DELETE JOIN becomes DELETE USING",
 			input:    "DELETE mytable FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
 			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",
