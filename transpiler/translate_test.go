@@ -186,6 +186,21 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT TIME_FORMAT(time_col, '%h%p') FROM datetime_table",
 			expected: "SELECT STRFTIME(CAST(time_col AS TIMESTAMP), '%I%p') FROM datetime_table",
 		},
+		{
+			name:     "SPACE becomes REPEAT",
+			input:    "SELECT SPACE(i) FROM mytable",
+			expected: "SELECT REPEAT(' ', CAST(i AS BIGINT)) FROM mytable",
+		},
+		{
+			name:     "FROM_UNIXTIME becomes TO_TIMESTAMP",
+			input:    "SELECT FROM_UNIXTIME(i) FROM mytable",
+			expected: "SELECT TO_TIMESTAMP(i) FROM mytable",
+		},
+		{
+			name:     "MOD becomes percent",
+			input:    "SELECT MOD(i, 2) FROM mytable",
+			expected: "SELECT i % 2 FROM mytable",
+		},
 	}
 
 	// Loop over each test case
