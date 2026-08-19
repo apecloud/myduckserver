@@ -255,10 +255,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_i_from_datetime_table_where_datetime_col_>_datetime('2020-01-01T12:00:00')_order_by_1",
 		"select_i_from_datetime_table_where_timestamp_col_=_datetime('2020-01-02T12:00:00')",
 		"select_i_from_datetime_table_where_timestamp_col_>_datetime('2020-01-02T12:00:00')_order_by_1",
-		"SELECT_SUBSTRING_INDEX(mytable.s,_\"d\",_1)_AS_s_FROM_mytable_INNER_JOIN_othertable_ON_(SUBSTRING_INDEX(mytable.s,_\"d\",_1)_=_SUBSTRING_INDEX(othertable.s2,_\"d\",_1))_GROUP_BY_1_HAVING_s_=_'secon';",
-		"SELECT_SUBSTRING_INDEX(mytable.s,_\"d\",_1)_AS_s_FROM_mytable_INNER_JOIN_othertable_ON_(SUBSTRING_INDEX(mytable.s,_\"d\",_1)_=_SUBSTRING_INDEX(othertable.s2,_\"d\",_1))_GROUP_BY_s_HAVING_s_=_'secon';",
-		"SELECT_SUBSTRING_INDEX(mytable.s,_\"d\",_1)_AS_ss_FROM_mytable_INNER_JOIN_othertable_ON_(SUBSTRING_INDEX(mytable.s,_\"d\",_1)_=_SUBSTRING_INDEX(othertable.s2,_\"d\",_1))_GROUP_BY_s_HAVING_s_=_'secon';",
-		"SELECT_SUBSTRING_INDEX(mytable.s,_\"d\",_1)_AS_ss_FROM_mytable_INNER_JOIN_othertable_ON_(SUBSTRING_INDEX(mytable.s,_\"d\",_1)_=_SUBSTRING_INDEX(othertable.s2,_\"d\",_1))_GROUP_BY_ss_HAVING_ss_=_'secon';",
+
 		"SELECT_TRIM(mytable.s_from_\"first_row\")_AS_s_FROM_mytable",
 		"SELECT_HOUR('2007-12-11_20:21:22')_FROM_mytable",
 		"SELECT_MINUTE('2007-12-11_20:21:22')_FROM_mytable",
