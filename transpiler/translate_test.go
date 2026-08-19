@@ -316,6 +316,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT ACOS(i) FROM mytable",
 			expected: "SELECT CASE WHEN ABS(i) > 1 THEN NULL ELSE ACOS(i) END FROM mytable",
 		},
+		{
+			name:     "string column compared to number is numeric",
+			input:    "SELECT s > 2 FROM tabletest",
+			expected: "SELECT COALESCE(TRY_CAST(s AS DOUBLE), 0) > 2 FROM tabletest",
+		},
+		{
+			name:     "id = 1 is left alone",
+			input:    "SELECT i FROM mytable WHERE id = 1",
+			expected: "SELECT i FROM mytable WHERE id = 1",
+		},
 	}
 
 	// Loop over each test case

@@ -436,6 +436,24 @@ def rewrite_mysql_for_duckdb(node):
         )
     if isinstance(node, exp.Not) and isinstance(node.this, exp.Column):
         return exp.EQ(this=_mysql_string_as_number(node.this), expression=exp.Literal.number(0))
+    # MySQL compares strings to numbers by coercing the string (invalid -> 0).
+    # Do not rewrite id = 1; only inequalities may coerce a column.
+    if isinstance(node, (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.NEQ)):
+        left, right = node.this, node.expression
+        def _is_num_lit(e):
+            return isinstance(e, exp.Literal) and e.is_number
+        def _is_str_lit(e):
+            return isinstance(e, exp.Literal) and e.is_string
+        def _needs_num(e):
+            if _is_str_lit(e):
+                return True
+            if isinstance(e, exp.Column) and isinstance(node, (exp.GT, exp.GTE, exp.LT, exp.LTE)):
+                return True
+            return False
+        if _needs_num(left) and _is_num_lit(right):
+            return node.__class__(this=_mysql_string_as_number(left), expression=right)
+        if _is_num_lit(left) and _needs_num(right):
+            return node.__class__(this=left, expression=_mysql_string_as_number(right))
     def _mysql_truthy(e):
         # MySQL AND/OR coerce strings and numbers: invalid strings are 0.
         if isinstance(e, exp.Column) or (isinstance(e, exp.Literal) and (e.is_string or e.is_number)):
