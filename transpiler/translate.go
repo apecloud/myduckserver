@@ -179,6 +179,22 @@ def rewrite_mysql_for_duckdb(node):
                     ],
                 )
         return formatted
+    # MySQL FIND_IN_SET(str, list) -> 1-based index or 0. DuckDB has no native function.
+    if isinstance(node, exp.Anonymous) and str(node.this).lower() == "find_in_set" and len(node.expressions) == 2:
+        needle, hay = node.expressions
+        return exp.Anonymous(
+            this="coalesce",
+            expressions=[
+                exp.Anonymous(
+                    this="list_position",
+                    expressions=[
+                        exp.Anonymous(this="string_split", expressions=[hay, exp.Literal.string(",")]),
+                        needle,
+                    ],
+                ),
+                exp.Literal.number(0),
+            ],
+        )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

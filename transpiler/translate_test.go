@@ -86,6 +86,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT pk1, SUM(c1) FROM two_pk GROUP BY pk1",
 			expected: "SELECT pk1, SUM(c1) FROM two_pk GROUP BY pk1",
 		},
+		{
+			name:     "FIND_IN_SET becomes list_position",
+			input:    "SELECT FIND_IN_SET(s, 'first_row,second_row,third_row') FROM mytable",
+			expected: "SELECT COALESCE(LIST_POSITION(STRING_SPLIT('first_row,second_row,third_row', ','), s), 0) FROM mytable",
+		},
 	}
 
 	// Loop over each test case
