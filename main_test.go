@@ -287,7 +287,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_ASIN(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_ACOS(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
-		"SELECT_ASCII(s)_from_mytable_order_by_i_limit_1",
+
 
 		"select_date_format(datetime_col,_'%D')_from_datetime_table_order_by_1",
 		"select_time_format(time_col,_'%h%p')_from_datetime_table_order_by_1",
@@ -298,9 +298,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_s,_i_FROM_mytable_GROUP_BY_i_ORDER_BY_SUBSTRING(s,_1,_1)_DESC",
 		"SELECT_s,_i_FROM_mytable_GROUP_BY_i_HAVING_count(*)_>_0_ORDER_BY_SUBSTRING(s,_1,_1)_DESC",
 		"SELECT_GREATEST(i,_s)_FROM_mytable",
-		"select_md5(i)_from_mytable_order_by_1",
-		"select_sha1(i)_from_mytable_order_by_1",
-		"select_sha2(i,_256)_from_mytable_order_by_1",
+
 
 		"select_locate(upper(\"roW\"),_upper(s),_power(10,_0))_from_mytable_order_by_i",
 		"select_log2(i)_from_mytable_order_by_i",

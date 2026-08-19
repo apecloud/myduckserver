@@ -294,6 +294,29 @@ def rewrite_mysql_for_duckdb(node):
     # MySQL UNHEX -> DuckDB from_hex.
     if isinstance(node, exp.Unhex):
         return exp.Anonymous(this="from_hex", expressions=[node.this])
+    def _as_text(e):
+        if isinstance(e, exp.Cast):
+            return e
+        return exp.Cast(this=e, to=exp.DataType.build("TEXT"))
+    # MySQL MD5/SHA* hash strings; integers must be cast first.
+    if isinstance(node, exp.MD5):
+        return exp.MD5(this=_as_text(node.this))
+    if isinstance(node, exp.SHA):
+        return exp.Anonymous(this="sha1", expressions=[_as_text(node.this)])
+    if isinstance(node, exp.SHA2):
+        length = node.args.get("length")
+        bits = int(length.this) if isinstance(length, exp.Literal) and length.is_int else 256
+        fn = {224: "sha224", 256: "sha256", 384: "sha384", 512: "sha512"}.get(bits, "sha256")
+        return exp.Anonymous(this=fn, expressions=[_as_text(node.this)])
+    # MySQL ASCII is the first byte, not the Unicode code point.
+    if isinstance(node, exp.Ascii):
+        return exp.Anonymous(
+            this="get_byte",
+            expressions=[
+                exp.Cast(this=node.this, to=exp.DataType.build("BLOB")),
+                exp.Literal.number(0),
+            ],
+        )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

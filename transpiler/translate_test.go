@@ -146,6 +146,21 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT UNHEX(s) FROM mytable",
 			expected: "SELECT FROM_HEX(s) FROM mytable",
 		},
+		{
+			name:     "MD5 casts integers to text",
+			input:    "SELECT MD5(i) FROM mytable",
+			expected: "SELECT MD5(CAST(i AS TEXT)) FROM mytable",
+		},
+		{
+			name:     "SHA2 256 becomes sha256 of text",
+			input:    "SELECT SHA2(i, 256) FROM mytable",
+			expected: "SELECT SHA256(CAST(i AS TEXT)) FROM mytable",
+		},
+		{
+			name:     "ASCII is first byte",
+			input:    "SELECT ASCII(s) FROM mytable",
+			expected: "SELECT GET_BYTE(CAST(s AS BLOB), 0) FROM mytable",
+		},
 	}
 
 	// Loop over each test case
