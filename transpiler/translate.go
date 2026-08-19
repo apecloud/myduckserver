@@ -332,6 +332,13 @@ def rewrite_mysql_for_duckdb(node):
             this="json_pretty",
             expressions=[exp.Cast(this=node.expressions[0], to=exp.DataType.build("JSON"))],
         )
+    # MySQL JSON_KEYS returns NULL on bad JSON. DuckDB json_keys errors.
+    if isinstance(node, exp.JSONKeys):
+        inner = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+        return exp.Anonymous(
+            this="json_keys",
+            expressions=[exp.TryCast(this=inner, to=exp.DataType.build("JSON"))],
+        )
     # MySQL accepts YYYYMMDD date strings; DuckDB DATE needs YYYY-MM-DD.
     def _compact_date_literal(e):
         if isinstance(e, exp.Literal) and e.is_string:

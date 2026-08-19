@@ -356,6 +356,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT DAYNAME(i) FROM mytable",
 			expected: "SELECT DAYNAME(COALESCE(TRY_CAST(i AS TIMESTAMP), TRY_STRPTIME(LPAD(TRY_CAST(i AS TEXT), 8, '0'), '%Y%m%d'))) FROM mytable",
 		},
+		{
+			name:     "JSON_KEYS uses TRY_CAST",
+			input:    "SELECT JSON_KEYS(c3) FROM jsontable",
+			expected: "SELECT JSON_KEYS(TRY_CAST(c3 AS JSON)) FROM jsontable",
+		},
 	}
 
 	// Loop over each test case
