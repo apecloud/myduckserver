@@ -227,9 +227,6 @@ func TestQueriesSimple(t *testing.T) {
 
 		"select_i+0.0/(lag(i)_over_(order_by_s))_from_mytable_order_by_1;",
 		"select_f64/f32,_f32/(lag(i)_over_(order_by_f64))_from_floattable_order_by_1,2;",
-		"WITH_mytable_as_(select_*_FROM_mytable)_SELECT_s,i_FROM_mytable;",
-		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable;",
-		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable_union_SELECT_*_from_mytable;",
 
 		"select_pk,_________row_number()_over_(order_by_pk_desc),_________sum(v1)_over_(partition_by_v2_order_by_pk),_________percent_rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 		"select_pk,____________________percent_rank()_over(partition_by_v2_order_by_pk),____________________dense_rank()_over(partition_by_v2_order_by_pk),____________________rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",

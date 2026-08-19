@@ -221,6 +221,55 @@ def rewrite_mysql_for_duckdb(node):
             this=exp.Select(expressions=[exp.Literal.number(1)]),
             alias="dual",
         )
+    # MySQL WITH t AS (SELECT * FROM t) uses the base table inside. DuckDB treats it as circular.
+    if isinstance(node, (exp.Select, exp.Union, exp.Except, exp.Intersect)) and node.args.get("with_"):
+        w = node.args.get("with_")
+        if not w.args.get("recursive"):
+            renames = {}
+            new_ctes = []
+            changed = False
+            for cte in list(w.expressions or []):
+                alias = cte.args.get("alias")
+                cname = ""
+                if isinstance(alias, exp.TableAlias) and alias.this:
+                    cname = str(alias.this).lower()
+                shadows = False
+                if cname and cte.this is not None:
+                    for t in cte.this.find_all(exp.Table):
+                        if not t.args.get("db") and (t.name or "").lower() == cname:
+                            shadows = True
+                            break
+                if shadows:
+                    new_name = cname + "__mds"
+                    renames[cname] = new_name
+                    cte = cte.copy()
+                    cte.set("alias", exp.TableAlias(this=exp.to_identifier(new_name)))
+                    changed = True
+                new_ctes.append(cte)
+            if changed:
+                def _rename_outer(n):
+                    if isinstance(n, exp.Table) and not n.args.get("db"):
+                        nm = (n.name or "").lower()
+                        if nm in renames:
+                            copied = n.copy()
+                            copied.set("this", exp.to_identifier(renames[nm]))
+                            return copied
+                    return n
+                updated = node.copy()
+                new_w = w.copy()
+                new_w.set("expressions", new_ctes)
+                updated.set("with_", new_w)
+                if isinstance(updated, exp.Select):
+                    if updated.args.get("from_"):
+                        updated.set("from_", updated.args.get("from_").transform(_rename_outer))
+                    if updated.args.get("joins"):
+                        updated.set("joins", [j.transform(_rename_outer) for j in updated.args.get("joins")])
+                else:
+                    if updated.this is not None:
+                        updated.set("this", updated.this.transform(_rename_outer))
+                    if updated.args.get("expression") is not None:
+                        updated.set("expression", updated.args.get("expression").transform(_rename_outer))
+                return updated
     # MySQL VALUES ROW(1, '1') -> DuckDB VALUES (1, '1') AS t(column_0, column_1).
     if isinstance(node, exp.Values):
         new_exprs = []
