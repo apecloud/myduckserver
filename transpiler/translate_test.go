@@ -362,6 +362,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT i FROM mytable WHERE id = 1",
 		},
 		{
+			name:     "RAND seed uses mysql_rand",
+			input:    "SELECT RAND(i) FROM mytable ORDER BY i",
+			expected: "SELECT MYSQL_RAND(i) FROM mytable ORDER BY i NULLS FIRST",
+		},
+		{
 			name:     "string column equal to zero is numeric",
 			input:    "SELECT * FROM tabletest WHERE s = 0",
 			expected: "SELECT * FROM tabletest WHERE COALESCE(TRY_CAST(s AS DOUBLE), 0) = 0",

@@ -87,6 +87,10 @@ func (p *ConnectionPool) GetConn(ctx context.Context, id uint32) (*stdsql.Conn, 
 		if err != nil {
 			return nil, err
 		}
+		if err := registerMySQLRand(c); err != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("register mysql_rand: %w", err)
+		}
 		p.conns.Store(id, c)
 		conn = c
 	} else {

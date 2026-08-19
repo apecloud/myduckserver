@@ -603,6 +603,13 @@ def rewrite_mysql_for_duckdb(node):
                     ],
                 )
         return formatted
+    # MySQL RAND(seed) is deterministic. DuckDB random() has no seed.
+    if isinstance(node, exp.Rand) and node.this is not None:
+        seed = node.this.transform(rewrite_mysql_for_duckdb)
+        return exp.Anonymous(this="mysql_rand", expressions=[seed])
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "RAND" and node.expressions:
+        seed = node.expressions[0].transform(rewrite_mysql_for_duckdb)
+        return exp.Anonymous(this="mysql_rand", expressions=[seed])
     # MySQL CRC32 is IEEE of the string bytes. DuckDB has no CRC32; use __sys__.mysql_crc32.
     if isinstance(node, exp.Anonymous) and str(node.this).upper() == "CRC32" and node.expressions:
         return exp.Anonymous(
