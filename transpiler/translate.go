@@ -368,6 +368,15 @@ def rewrite_mysql_for_duckdb(node):
                 fmt,
             ],
         )
+    # MySQL JSON_OVERLAPS: documents share a value. json_contains either way is the closest builtin.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "JSON_OVERLAPS" and len(node.expressions) == 2:
+        a, b = node.expressions
+        aj = exp.Cast(this=a, to=exp.DataType.build("JSON"))
+        bj = exp.Cast(this=b, to=exp.DataType.build("JSON"))
+        return exp.or_(
+            exp.Anonymous(this="json_contains", expressions=[aj, bj]),
+            exp.Anonymous(this="json_contains", expressions=[bj, aj]),
+        )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:
