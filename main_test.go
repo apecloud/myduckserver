@@ -225,7 +225,7 @@ func TestQueriesSimple(t *testing.T) {
 	waitForFixQueries := []string{
 		"_Select_x_from_(select_*_from_xy)_sq1_union_all_select_u_from_(select_*_from_uv)_sq2_limit_1_offset_1;",
 
-		"SELECT_count(*),_i,_concat(i,_i),_123,_'abc',_concat('abc',_'def')_FROM_emptytable;",
+
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_emptytable);",
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_mytable_WHERE_false);",
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_emptytable);",
@@ -253,7 +253,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_SUM(i)_FROM_mytable",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
 
-		"SELECT_sum(i)_as_isum,_s_FROM_mytable_GROUP_BY_i_ORDER_BY_isum_ASC_LIMIT_0,_200",
+
 
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_FROM_one_pk_opk_GROUP_BY_x_ORDER_BY_x",
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_______FROM_one_pk_opk_WHERE_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_>_0_______GROUP_BY_x_ORDER_BY_x",
