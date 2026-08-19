@@ -494,6 +494,23 @@ def rewrite_mysql_for_duckdb(node):
             return node.__class__(this=_mysql_string_as_number(left), expression=right)
         if _is_num_lit(left) and _needs_num(right):
             return node.__class__(this=left, expression=_mysql_string_as_number(right))
+        # MySQL DATE vs '2019-12-31T00:00:01' keeps the time. DuckDB casts the
+        # string to DATE and drops it, so equality is wrongly true.
+        def _is_iso_dt(e):
+            if isinstance(e, exp.Literal) and e.is_string:
+                s = str(e.this)
+                return "T" in s and ":" in s
+            return False
+        if _is_iso_dt(right):
+            return node.__class__(
+                this=left,
+                expression=exp.Cast(this=right, to=exp.DataType.build("TIMESTAMP")),
+            )
+        if _is_iso_dt(left):
+            return node.__class__(
+                this=exp.Cast(this=left, to=exp.DataType.build("TIMESTAMP")),
+                expression=right,
+            )
     # MySQL BETWEEN / IN coerce mixed strings, numbers, and booleans to numbers.
     def _unwrap_paren(e):
         while isinstance(e, exp.Paren):
@@ -540,7 +557,8 @@ def rewrite_mysql_for_duckdb(node):
         ]
         parts = [this] + exprs
         has_bool = any(isinstance(e, exp.Boolean) for e in parts)
-        has_str = any(isinstance(e, exp.Literal) and e.is_string for e in parts)
+        has_str = any(isinstance(e, exp.Literal) and e.is_string for e in exprs)
+        has_num = any(isinstance(e, exp.Literal) and e.is_number for e in exprs)
         if has_bool and has_str:
             this = _lit_str_to_num(this)
             exprs = [_lit_str_to_num(e) for e in exprs]
@@ -548,6 +566,18 @@ def rewrite_mysql_for_duckdb(node):
                 this=exp.In(this=this, expressions=exprs),
                 to=exp.DataType.build("INT"),
             )
+        # s IN (1, 'first_row'): compare each item with MySQL's pairwise coercion.
+        if has_str and has_num:
+            parts_eq = []
+            for e in exprs:
+                if isinstance(e, exp.Literal) and e.is_number:
+                    parts_eq.append(exp.EQ(this=_mysql_string_as_number(this), expression=e))
+                else:
+                    parts_eq.append(exp.EQ(this=this, expression=e))
+            cond = parts_eq[0]
+            for p in parts_eq[1:]:
+                cond = exp.Or(this=cond, expression=p)
+            return cond
         return exp.In(this=this, expressions=exprs)
     def _mysql_truthy(e):
         # MySQL AND/OR coerce strings and numbers: invalid strings are 0.

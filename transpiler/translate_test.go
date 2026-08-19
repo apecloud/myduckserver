@@ -341,6 +341,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT * FROM mytable WHERE (i BETWEEN ('' BETWEEN '' AND ('' OR '#')) AND i)",
 			expected: "SELECT * FROM mytable WHERE (i BETWEEN (CAST(COALESCE(TRY_CAST('' AS DOUBLE), 0) BETWEEN COALESCE(TRY_CAST('' AS DOUBLE), 0) AND CAST(COALESCE(TRY_CAST('' AS DOUBLE), 0) <> 0 OR COALESCE(TRY_CAST('#' AS DOUBLE), 0) <> 0 AS INT) AS INT)) AND i)",
 		},
+		{
+			name:     "mixed IN is pairwise compare",
+			input:    "SELECT COUNT(*) FROM mytable WHERE s IN (1, 'first_row')",
+			expected: "SELECT COUNT(*) FROM mytable WHERE COALESCE(TRY_CAST(s AS DOUBLE), 0) = 1 OR s = 'first_row'",
+		},
+		{
+			name:     "DATE vs ISO datetime keeps time",
+			input:    "SELECT i FROM datetime_table WHERE date_col = '2019-12-31T00:00:01'",
+			expected: "SELECT i FROM datetime_table WHERE date_col = CAST('2019-12-31T00:00:01' AS TIMESTAMP)",
+		},
 	}
 
 	// Loop over each test case
