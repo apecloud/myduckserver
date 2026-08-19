@@ -179,6 +179,30 @@ def rewrite_mysql_for_duckdb(node):
                     ],
                 )
         return formatted
+    # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
+    # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
+    if isinstance(node, exp.Select) and node.args.get("group") is None:
+        exprs = list(node.expressions or [])
+        def _has_agg(e):
+            return any(isinstance(x, exp.AggFunc) for x in e.walk())
+        def _already_any_value(e):
+            inner = e.this if isinstance(e, exp.Alias) else e
+            return isinstance(inner, exp.Anonymous) and str(inner.this).lower() == "any_value"
+        if exprs and any(_has_agg(e) for e in exprs) and any(not _has_agg(e) for e in exprs):
+            new_exprs = []
+            for e in exprs:
+                if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e):
+                    new_exprs.append(e)
+                    continue
+                alias = e.alias if isinstance(e, exp.Alias) else None
+                inner = e.this if isinstance(e, exp.Alias) else e
+                wrapped = exp.Anonymous(this="any_value", expressions=[inner])
+                if alias:
+                    wrapped = exp.alias_(wrapped, alias)
+                new_exprs.append(wrapped)
+            updated = node.copy()
+            updated.set("expressions", new_exprs)
+            return updated
     return node
 
 def transpile_mysql_to_duckdb(sql: str) -> str:
