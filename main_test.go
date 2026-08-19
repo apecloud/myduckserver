@@ -277,8 +277,6 @@ func TestQueriesSimple(t *testing.T) {
 		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_keyless_U0,_cte___WHERE_cte.j_=_keyless.c0____)_____ORDER_BY_c0;_",
 		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_cte,_keyless_U0____WHERE_cte.j_=_keyless.c0_____)_____ORDER_BY_c0;_",
 		"_select_*_from_mytable,__lateral_(__with_recursive_cte(a)_as_(___select_y_from_xy___union___select_x_from_cte___join___(____select_*_____from_xy____where_x_=_1____)_sqa1___on_x_=_a___limit_3___)__select_*_from_cte_)_sqa2_where_i_=_a_order_by_i;",
-		"_select____dayname(id),____dayname(i8),____dayname(i16),____dayname(i32),____dayname(i64),____dayname(u8),____dayname(u16),____dayname(u32),____dayname(u64),____dayname(f32),____dayname(f64),____dayname(ti),____dayname(da),____dayname(te),____dayname(bo),____dayname(js),____dayname(bl),____dayname(e1),____dayname(s1)_from_typestable",
-		"select_*_from_mytable_order_by_dayname(i)",
 
 		"select_length(random_bytes(i))_from_mytable;",
 	}
