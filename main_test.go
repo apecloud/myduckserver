@@ -1076,8 +1076,6 @@ func TestCreateTable(t *testing.T) {
 		"CREATE_TABLE_t1_as_select_s,_sum(i)_from_mytable_group_by_s_having_sum(i)_>_2",
 		"display_width_for_numeric_types",
 		"SHOW_FULL_FIELDS_FROM_numericDisplayWidthTest;",
-		"datetime_precision",
-		"CREATE_TABLE_tt_(pk_int_primary_key,_d_datetime(6)_default_current_timestamp(6))",
 		"Identifier_lengths",
 		"table_charset_options",
 		"event_contains_CREATE_TABLE_AS",
