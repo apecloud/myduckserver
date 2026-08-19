@@ -377,6 +377,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT DISTINCT CAST(i AS DECIMAL(38, 0)) FROM mytable",
 		},
 		{
+			name:     "VALUES ROW becomes VALUES tuple",
+			input:    "SELECT a.column_0 FROM (VALUES ROW(1, '1'), ROW(2, '2')) a",
+			expected: "SELECT a.column_0 FROM (VALUES (1, '1'), (2, '2')) AS a(column_0, column_1)",
+		},
+		{
 			name:     "DELETE JOIN becomes DELETE USING",
 			input:    "DELETE mytable FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
 			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",

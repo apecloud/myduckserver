@@ -230,8 +230,6 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_emptytable);",
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_mytable_WHERE_false);",
 
-		"SELECT_a.column_0,_mt.s_from_(values_row(1,\"1\"),_row(2,\"2\"),_row(4,\"4\"))_a____left_join_mytable_mt_on_column_0_=_mt.i____order_by_1",
-
 		"select_i+0.0/(lag(i)_over_(order_by_s))_from_mytable_order_by_1;",
 		"select_f64/f32,_f32/(lag(i)_over_(order_by_f64))_from_floattable_order_by_1,2;",
 		"SELECT_s2,_i2,_i____FROM_(SELECT_*_FROM_mytable)_mytable____RIGHT_JOIN_____((SELECT_i2,_s2_FROM_othertable_ORDER_BY_i2_ASC)______UNION_ALL______SELECT_CAST(4_AS_SIGNED)_AS_i2,_\"not_found\"_AS_s2_FROM_DUAL)_othertable____ON_i2_=_i",
@@ -248,7 +246,6 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_*_FROM_tabletest_WHERE_s_=_0",
 		"SELECT_SUM(i)_FROM_mytable",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
-
 
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_FROM_one_pk_opk_GROUP_BY_x_ORDER_BY_x",
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_______FROM_one_pk_opk_WHERE_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_>_0_______GROUP_BY_x_ORDER_BY_x",
