@@ -288,8 +288,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_ACOS(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_ASCII(s)_from_mytable_order_by_i_limit_1",
-		"SELECT_UNHEX(s)_from_mytable_order_by_i_limit_1",
-		"SELECT_BIT_LENGTH(i)_from_mytable_order_by_i_limit_1",
+
 		"select_date_format(datetime_col,_'%D')_from_datetime_table_order_by_1",
 		"select_time_format(time_col,_'%h%p')_from_datetime_table_order_by_1",
 		"select_from_unixtime(i)_from_mytable_order_by_1",
@@ -302,7 +301,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_md5(i)_from_mytable_order_by_1",
 		"select_sha1(i)_from_mytable_order_by_1",
 		"select_sha2(i,_256)_from_mytable_order_by_1",
-		"select_octet_length(s)_from_mytable_order_by_i",
+
 		"select_locate(upper(\"roW\"),_upper(s),_power(10,_0))_from_mytable_order_by_i",
 		"select_log2(i)_from_mytable_order_by_i",
 		"select_ln(i)_from_mytable_order_by_i",
