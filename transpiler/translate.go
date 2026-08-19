@@ -406,6 +406,19 @@ def rewrite_mysql_for_duckdb(node):
     # MySQL DATETIME('...') is a timestamp constructor. DuckDB has no DATETIME().
     if isinstance(node, exp.Datetime):
         return exp.Cast(this=node.this, to=exp.DataType.build("TIMESTAMP"))
+    # MySQL treats a string predicate as CAST(s AS DOUBLE) <> 0. 'hello' is 0, so false.
+    if isinstance(node, exp.Where) and isinstance(node.this, exp.Literal) and node.this.is_string:
+        return exp.Where(
+            this=exp.NEQ(
+                this=exp.Cast(this=node.this, to=exp.DataType.build("DOUBLE")),
+                expression=exp.Literal.number(0),
+            )
+        )
+    if isinstance(node, exp.Not) and isinstance(node.this, exp.Literal) and node.this.is_string:
+        return exp.EQ(
+            this=exp.Cast(this=node.this, to=exp.DataType.build("DOUBLE")),
+            expression=exp.Literal.number(0),
+        )
     # MySQL DATE_FORMAT %%D is 1st/2nd/3rd/4th. DuckDB %%D is not that.
     if isinstance(node, exp.TimeToStr):
         fmt = node.args.get("format")
