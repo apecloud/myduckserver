@@ -206,6 +206,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT JSON_OVERLAPS(c3, '{\"a\": 2}') FROM jsontable",
 			expected: "SELECT JSON_CONTAINS(CAST(c3 AS JSON), CAST('{\"a\": 2}' AS JSON)) OR JSON_CONTAINS(CAST('{\"a\": 2}' AS JSON), CAST(c3 AS JSON)) FROM jsontable",
 		},
+		{
+			name:     "GREATEST is null-safe",
+			input:    "SELECT GREATEST(i, s) FROM mytable",
+			expected: "SELECT CASE WHEN i IS NULL OR s IS NULL THEN NULL ELSE GREATEST(i, s) END FROM mytable",
+		},
+		{
+			name:     "LEAST is null-safe",
+			input:    "SELECT LEAST(i, s) FROM mytable",
+			expected: "SELECT CASE WHEN i IS NULL OR s IS NULL THEN NULL ELSE LEAST(i, s) END FROM mytable",
+		},
 	}
 
 	// Loop over each test case
