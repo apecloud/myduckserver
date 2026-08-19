@@ -406,6 +406,27 @@ def rewrite_mysql_for_duckdb(node):
     # MySQL DATETIME('...') is a timestamp constructor. DuckDB has no DATETIME().
     if isinstance(node, exp.Datetime):
         return exp.Cast(this=node.this, to=exp.DataType.build("TIMESTAMP"))
+    # MySQL DATE_FORMAT %%D is 1st/2nd/3rd/4th. DuckDB %%D is not that.
+    if isinstance(node, exp.TimeToStr):
+        fmt = node.args.get("format")
+        ts = node.this
+        if isinstance(fmt, exp.Literal) and fmt.is_string and str(fmt.this) == "%%D":
+            d = exp.Anonymous(this="day", expressions=[ts])
+            suffix = exp.Case(
+                this=exp.Anonymous(this="mod", expressions=[d, exp.Literal.number(10)]),
+                ifs=[
+                    exp.If(this=exp.Literal.number(1), true=exp.Literal.string("st")),
+                    exp.If(this=exp.Literal.number(2), true=exp.Literal.string("nd")),
+                    exp.If(this=exp.Literal.number(3), true=exp.Literal.string("rd")),
+                ],
+                default=exp.Literal.string("th"),
+            )
+            teen = exp.In(this=d, expressions=[exp.Literal.number(11), exp.Literal.number(12), exp.Literal.number(13)])
+            suf = exp.If(this=teen, true=exp.Literal.string("th"), false=suffix)
+            return exp.Anonymous(
+                this="concat",
+                expressions=[exp.Cast(this=d, to=exp.DataType.build("TEXT")), suf],
+            )
     # MySQL CAST(negative AS UNSIGNED) wraps in 2^64. DuckDB UBIGINT rejects negatives.
     if isinstance(node, exp.Cast):
         to = node.args.get("to")

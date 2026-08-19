@@ -285,7 +285,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
 
 
-		"select_date_format(datetime_col,_'%D')_from_datetime_table_order_by_1",
+
 
 
 		"SELECT_CASE_WHEN_i_>_2_THEN_i_WHEN_i_<_2_THEN_i_ELSE_'two'_END_FROM_mytable",

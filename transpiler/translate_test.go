@@ -256,6 +256,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT JSON_MERGE_PRESERVE(c3, '{\"a\": 1}') FROM jsontable",
 			expected: "SELECT CASE WHEN JSON_TYPE(CAST(c3 AS JSON)) = 'ARRAY' AND JSON_TYPE(CAST('{\"a\": 1}' AS JSON)) = 'ARRAY' THEN TO_JSON(LIST_CONCAT(JSON_EXTRACT(CAST(c3 AS JSON), '$'), JSON_EXTRACT(CAST('{\"a\": 1}' AS JSON), '$'))) ELSE JSON_MERGE_PATCH(CAST(c3 AS JSON), CAST('{\"a\": 1}' AS JSON)) END FROM jsontable",
 		},
+		{
+			name:     "DATE_FORMAT percent-D is day ordinal",
+			input:    "SELECT DATE_FORMAT(datetime_col, '%D') FROM datetime_table",
+			expected: "SELECT CONCAT(CAST(DAY(CAST(datetime_col AS TIMESTAMP)) AS TEXT), CASE WHEN DAY(CAST(datetime_col AS TIMESTAMP)) IN (11, 12, 13) THEN 'th' ELSE CASE MOD(DAY(CAST(datetime_col AS TIMESTAMP)), 10) WHEN 1 THEN 'st' WHEN 2 THEN 'nd' WHEN 3 THEN 'rd' ELSE 'th' END END) FROM datetime_table",
+		},
 	}
 
 	// Loop over each test case
