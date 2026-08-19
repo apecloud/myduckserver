@@ -76,6 +76,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT FORMAT(i, 3, 'da_DK') FROM mytable",
 			expected: "SELECT REPLACE(REPLACE(REPLACE(FORMAT('{:,.3f}', i), ',', '\x01'), '.', ','), '\x01', '.') FROM mytable",
 		},
+		{
+			name:     "aggregate without GROUP BY wraps non-agg columns",
+			input:    "SELECT pk1, SUM(c1) FROM two_pk WHERE pk1 = 0",
+			expected: "SELECT ANY_VALUE(pk1), SUM(c1) FROM two_pk WHERE pk1 = 0",
+		},
+		{
+			name:     "explicit GROUP BY is left alone",
+			input:    "SELECT pk1, SUM(c1) FROM two_pk GROUP BY pk1",
+			expected: "SELECT pk1, SUM(c1) FROM two_pk GROUP BY pk1",
+		},
 	}
 
 	// Loop over each test case
