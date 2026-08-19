@@ -82,6 +82,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT ANY_VALUE(pk1), SUM(c1) FROM two_pk WHERE pk1 = 0",
 		},
 		{
+			name:     "aggregate leaves constant select items unwrapped",
+			input:    "SELECT count(*), i, concat(i, i), 123, 'abc', concat('abc', 'def') FROM emptytable",
+			expected: "SELECT COUNT(*), ANY_VALUE(i), ANY_VALUE(i || i), 123, 'abc', 'abc' || 'def' FROM emptytable",
+		},
+		{
 			name:     "explicit GROUP BY is left alone",
 			input:    "SELECT pk1, SUM(c1) FROM two_pk GROUP BY pk1",
 			expected: "SELECT pk1, SUM(c1) FROM two_pk GROUP BY pk1",
