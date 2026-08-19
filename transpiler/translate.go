@@ -1096,6 +1096,20 @@ def rewrite_mysql_for_duckdb(node):
                     false=inner,
                 )
                 return exp.Cast(this=wrapped, to=to)
+    # MySQL allows ORDER BY a non-selected column on a lone aggregate.
+    # The result is one row, so drop the ORDER BY for DuckDB.
+    if isinstance(node, exp.Select) and node.args.get("order") is not None and node.args.get("group") is None:
+        exprs = list(node.expressions or [])
+        def _is_agg_or_lit(e):
+            if e is None or isinstance(e, exp.Star):
+                return False
+            if isinstance(e, exp.Literal):
+                return True
+            return any(isinstance(x, exp.AggFunc) for x in e.walk())
+        if exprs and all(_is_agg_or_lit(e) for e in exprs):
+            updated = node.copy()
+            updated.set("order", None)
+            return updated
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:
