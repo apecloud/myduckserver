@@ -251,10 +251,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_i_FROM_mytable_WHERE_'hello';",
 		"SELECT_i_FROM_mytable_WHERE_NOT_'hello';",
 		"select_i_from_datetime_table_where_date_col_=_'2019-12-31T00:00:01'",
-		"select_i_from_datetime_table_where_datetime_col_=_datetime('2020-01-01T12:00:00')",
-		"select_i_from_datetime_table_where_datetime_col_>_datetime('2020-01-01T12:00:00')_order_by_1",
-		"select_i_from_datetime_table_where_timestamp_col_=_datetime('2020-01-02T12:00:00')",
-		"select_i_from_datetime_table_where_timestamp_col_>_datetime('2020-01-02T12:00:00')_order_by_1",
+
 
 
 
