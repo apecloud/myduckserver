@@ -281,8 +281,6 @@ func TestQueriesSimple(t *testing.T) {
 		"_select_*_from_mytable,__lateral_(__with_recursive_cte(a)_as_(___select_y_from_xy___union___select_x_from_cte___join___(____select_*_____from_xy____where_x_=_1____)_sqa1___on_x_=_a___limit_3___)__select_*_from_cte_)_sqa2_where_i_=_a_order_by_i;",
 		"_select____dayname(id),____dayname(i8),____dayname(i16),____dayname(i32),____dayname(i64),____dayname(u8),____dayname(u16),____dayname(u32),____dayname(u64),____dayname(f32),____dayname(f64),____dayname(ti),____dayname(da),____dayname(te),____dayname(bo),____dayname(js),____dayname(bl),____dayname(e1),____dayname(s1)_from_typestable",
 		"select_*_from_mytable_order_by_dayname(i)",
-		"select_*_from_mytable_where_(i_BETWEEN_(''_BETWEEN_''_AND_(''_OR_'#'))_AND_i)",
-		"select_*_from_xy_inner_join_uv_on_(xy.x_in_(false_in_('asdf')));",
 
 		"select_length(random_bytes(i))_from_mytable;",
 	}
