@@ -132,9 +132,14 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT STRLEN(CAST(i AS TEXT)) * 8 FROM mytable",
 		},
 		{
-			name:     "OCTET_LENGTH becomes strlen",
+			name:     "OCTET_LENGTH becomes octet_length",
 			input:    "SELECT OCTET_LENGTH(s) FROM mytable",
-			expected: "SELECT STRLEN(s) FROM mytable",
+			expected: "SELECT OCTET_LENGTH(s) FROM mytable",
+		},
+		{
+			name:     "OCTET_LENGTH keeps UTF-8 as bytes",
+			input:    "SELECT OCTET_LENGTH('中') FROM mytable",
+			expected: "SELECT OCTET_LENGTH('中') FROM mytable",
 		},
 		{
 			name:     "UNHEX becomes from_hex",
