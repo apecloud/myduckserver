@@ -179,6 +179,12 @@ def rewrite_mysql_for_duckdb(node):
                     ],
                 )
         return formatted
+    # MySQL CRC32 is IEEE of the string bytes. DuckDB has no CRC32; use __sys__.mysql_crc32.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "CRC32" and node.expressions:
+        return exp.Anonymous(
+            this="__sys__.mysql_crc32",
+            expressions=[exp.Cast(this=node.expressions[0], to=exp.DataType.build("TEXT"))],
+        )
     # MySQL FIND_IN_SET(str, list) -> 1-based index or 0. DuckDB has no native function.
     if isinstance(node, exp.Anonymous) and str(node.this).lower() == "find_in_set" and len(node.expressions) == 2:
         needle, hay = node.expressions

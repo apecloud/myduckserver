@@ -361,6 +361,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT JSON_KEYS(c3) FROM jsontable",
 			expected: "SELECT JSON_KEYS(TRY_CAST(c3 AS JSON)) FROM jsontable",
 		},
+		{
+			name:     "CRC32 uses sys macro",
+			input:    "SELECT CRC32(i) FROM mytable",
+			expected: "SELECT __SYS__.MYSQL_CRC32(CAST(i AS TEXT)) FROM mytable",
+		},
 	}
 
 	// Loop over each test case
