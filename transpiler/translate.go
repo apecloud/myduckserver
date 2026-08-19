@@ -332,6 +332,42 @@ def rewrite_mysql_for_duckdb(node):
             this="json_pretty",
             expressions=[exp.Cast(this=node.expressions[0], to=exp.DataType.build("JSON"))],
         )
+    # MySQL accepts YYYYMMDD date strings; DuckDB DATE needs YYYY-MM-DD.
+    def _compact_date_literal(e):
+        if isinstance(e, exp.Literal) and e.is_string:
+            s = str(e.this)
+            if len(s) == 8 and s.isdigit():
+                return exp.Literal.string(s[0:4] + "-" + s[4:6] + "-" + s[6:8])
+        return e
+    if isinstance(node, exp.DayOfYear):
+        inner = node.this
+        if isinstance(inner, exp.TsOrDsToDate):
+            updated = inner.copy()
+            updated.set("this", _compact_date_literal(inner.this))
+            return node.__class__(this=updated)
+        return node.__class__(this=_compact_date_literal(inner))
+    # MySQL JSON_MERGE is object merge; DuckDB json_merge_patch is the closest builtin.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "JSON_MERGE" and len(node.expressions) == 2:
+        a, b = node.expressions
+        return exp.Anonymous(
+            this="json_merge_patch",
+            expressions=[
+                exp.Cast(this=a, to=exp.DataType.build("JSON")),
+                exp.Cast(this=b, to=exp.DataType.build("JSON")),
+            ],
+        )
+    # MySQL TIME_FORMAT -> DuckDB strftime. %%h is 01-12 like DuckDB %%I.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "TIME_FORMAT" and len(node.expressions) == 2:
+        t, fmt = node.expressions
+        if isinstance(fmt, exp.Literal) and fmt.is_string:
+            fmt = exp.Literal.string(str(fmt.this).replace("%%h", "%%I"))
+        return exp.Anonymous(
+            this="strftime",
+            expressions=[
+                exp.Cast(this=t, to=exp.DataType.build("TIMESTAMP")),
+                fmt,
+            ],
+        )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

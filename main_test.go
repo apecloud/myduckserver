@@ -232,7 +232,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_mytable_WHERE_false);",
 
 		"SELECT_JSON_OVERLAPS(c3,_'{\"a\":_2,_\"d\":_2}')_FROM_jsontable",
-		"SELECT_JSON_MERGE(c3,_'{\"a\":_1}')_FROM_jsontable",
+
 		"SELECT_JSON_MERGE_PRESERVE(c3,_'{\"a\":_1}')_FROM_jsontable",
 
 		"SELECT_a.column_0,_mt.s_from_(values_row(1,\"1\"),_row(2,\"2\"),_row(4,\"4\"))_a____left_join_mytable_mt_on_column_0_=_mt.i____order_by_1",
@@ -258,7 +258,7 @@ func TestQueriesSimple(t *testing.T) {
 
 		"SELECT_TRIM(mytable.s_from_\"first_row\")_AS_s_FROM_mytable",
 
-		"SELECT_DAYOFYEAR('20071211')_FROM_mytable",
+
 		"SELECT_DISTINCT_CAST(i_AS_DECIMAL)_from_mytable;",
 		"SELECT_SUM(_DISTINCT_CAST(i_AS_DECIMAL))_from_mytable;",
 
@@ -290,7 +290,7 @@ func TestQueriesSimple(t *testing.T) {
 
 
 		"select_date_format(datetime_col,_'%D')_from_datetime_table_order_by_1",
-		"select_time_format(time_col,_'%h%p')_from_datetime_table_order_by_1",
+
 		"select_from_unixtime(i)_from_mytable_order_by_1",
 		"SELECT_CASE_WHEN_i_>_2_THEN_i_WHEN_i_<_2_THEN_i_ELSE_'two'_END_FROM_mytable",
 		"SELECT_CASE_WHEN_i_>_2_THEN_'more_than_two'_WHEN_i_<_2_THEN_'less_than_two'_ELSE_2_END_FROM_mytable",
