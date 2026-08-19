@@ -414,6 +414,28 @@ def rewrite_mysql_for_duckdb(node):
             true=exp.Null(),
             false=node.__class__(this=x),
         )
+    # MySQL DAYNAME accepts many types; integers are YYYYMMDD. DuckDB only DATE/TIMESTAMP.
+    if isinstance(node, exp.Dayname):
+        x = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+        as_ts = exp.TryCast(this=x, to=exp.DataType.build("TIMESTAMP"))
+        as_ymd = exp.Anonymous(
+            this="try_strptime",
+            expressions=[
+                exp.Anonymous(
+                    this="lpad",
+                    expressions=[
+                        exp.TryCast(this=x, to=exp.DataType.build("TEXT")),
+                        exp.Literal.number(8),
+                        exp.Literal.string("0"),
+                    ],
+                ),
+                exp.Literal.string("%%Y%%m%%d"),
+            ],
+        )
+        return exp.Anonymous(
+            this="dayname",
+            expressions=[exp.Anonymous(this="coalesce", expressions=[as_ts, as_ymd])],
+        )
     # MySQL CASE allows mixed string/number results. DuckDB requires one type.
     if isinstance(node, exp.Case):
         ifs = list(node.args.get("ifs") or [])

@@ -351,6 +351,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT i FROM datetime_table WHERE date_col = '2019-12-31T00:00:01'",
 			expected: "SELECT i FROM datetime_table WHERE date_col = CAST('2019-12-31T00:00:01' AS TIMESTAMP)",
 		},
+		{
+			name:     "DAYNAME accepts non-dates",
+			input:    "SELECT DAYNAME(i) FROM mytable",
+			expected: "SELECT DAYNAME(COALESCE(TRY_CAST(i AS TIMESTAMP), TRY_STRPTIME(LPAD(TRY_CAST(i AS TEXT), 8, '0'), '%Y%m%d'))) FROM mytable",
+		},
 	}
 
 	// Loop over each test case
