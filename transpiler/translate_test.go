@@ -281,6 +281,31 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT i, v FROM stringandtable WHERE v",
 			expected: "SELECT i, v FROM stringandtable WHERE COALESCE(TRY_CAST(v AS DOUBLE), 0) <> 0",
 		},
+		{
+			name:     "string OR is numeric 0/1 for LIKE",
+			input:    "SELECT c1 FROM jsontable WHERE c1 LIKE (('%' OR 'dsads') OR '%')",
+			expected: "SELECT c1 FROM jsontable WHERE c1 LIKE CAST((CAST((CAST(COALESCE(TRY_CAST('%' AS DOUBLE), 0) <> 0 OR COALESCE(TRY_CAST('dsads' AS DOUBLE), 0) <> 0 AS INT)) OR COALESCE(TRY_CAST('%' AS DOUBLE), 0) <> 0 AS INT)) AS TEXT)",
+		},
+		{
+			name:     "string OR NULL is numeric for LIKE",
+			input:    "SELECT c1 FROM jsontable WHERE c1 LIKE ('%' OR NULL)",
+			expected: "SELECT c1 FROM jsontable WHERE c1 LIKE CAST((CAST(COALESCE(TRY_CAST('%' AS DOUBLE), 0) <> 0 OR NULL AS INT)) AS TEXT)",
+		},
+		{
+			name:     "numeric OR in CASE is 0/1",
+			input:    "SELECT CASE 1 WHEN 2 THEN 1.0 ELSE (1||2) END",
+			expected: "SELECT CASE 1 WHEN 2 THEN 1.0 ELSE (CAST(COALESCE(TRY_CAST(1 AS DOUBLE), 0) <> 0 OR COALESCE(TRY_CAST(2 AS DOUBLE), 0) <> 0 AS INT)) END",
+		},
+		{
+			name:     "bitwise OR FALSE is 0",
+			input:    "SELECT * FROM mytable WHERE (i = 1 | FALSE) IN (TRUE)",
+			expected: "SELECT * FROM mytable WHERE (i = 1 | 0) IN (TRUE)",
+		},
+		{
+			name:     "bitwise AND FALSE is 0",
+			input:    "SELECT * FROM mytable WHERE (i = 1 & FALSE) IN (TRUE)",
+			expected: "SELECT * FROM mytable WHERE (i = 1 & 0) IN (TRUE)",
+		},
 	}
 
 	// Loop over each test case

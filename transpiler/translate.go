@@ -428,16 +428,48 @@ def rewrite_mysql_for_duckdb(node):
         )
     if isinstance(node, exp.Not) and isinstance(node.this, exp.Column):
         return exp.EQ(this=_mysql_string_as_number(node.this), expression=exp.Literal.number(0))
+    def _mysql_truthy(e):
+        # MySQL AND/OR coerce strings and numbers: invalid strings are 0.
+        if isinstance(e, exp.Column) or (isinstance(e, exp.Literal) and (e.is_string or e.is_number)):
+            return exp.NEQ(this=_mysql_string_as_number(e), expression=exp.Literal.number(0))
+        return None
     if isinstance(node, (exp.And, exp.Or)):
-        left, right = node.this, node.expression
+        # Transform is pre-order; rewrite nested OR/AND before coercing this node.
+        left = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+        right = node.expression.transform(rewrite_mysql_for_duckdb) if node.expression is not None else node.expression
         changed = False
-        if isinstance(left, exp.Column):
-            left = exp.NEQ(this=_mysql_string_as_number(left), expression=exp.Literal.number(0))
+        new_left = _mysql_truthy(left)
+        if new_left is not None:
+            left = new_left
             changed = True
-        if isinstance(right, exp.Column):
-            right = exp.NEQ(this=_mysql_string_as_number(right), expression=exp.Literal.number(0))
+        new_right = _mysql_truthy(right)
+        if new_right is not None:
+            right = new_right
             changed = True
+        cond = node.__class__(this=left, expression=right)
         if changed:
+            # MySQL AND/OR yield 0/1/NULL, used as LIKE patterns and BETWEEN bounds.
+            return exp.Cast(this=cond, to=exp.DataType.build("INT"))
+        return cond
+    # LIKE 0 must match the string '0', not a boolean.
+    # Transform is pre-order; rewrite the pattern first so string OR becomes 0/1.
+    if isinstance(node, exp.Like):
+        this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+        pat = node.args.get("expression")
+        if pat is not None:
+            pat = pat.transform(rewrite_mysql_for_duckdb)
+        core = pat.this if isinstance(pat, exp.Paren) else pat
+        if not (isinstance(core, exp.Literal) and core.is_string):
+            pat = exp.Cast(this=pat, to=exp.DataType.build("TEXT"))
+        return exp.Like(this=this, expression=pat)
+    # MySQL TRUE/FALSE are 1/0 in bitwise operators. DuckDB rejects BOOLEAN | INTEGER.
+    def _bool_to_int(e):
+        if isinstance(e, exp.Boolean):
+            return exp.Literal.number(1 if e.this else 0)
+        return e
+    if isinstance(node, (exp.BitwiseOr, exp.BitwiseAnd, exp.BitwiseXor)):
+        left, right = _bool_to_int(node.this), _bool_to_int(node.expression)
+        if left is not node.this or right is not node.expression:
             return node.__class__(this=left, expression=right)
     # MySQL DATE_FORMAT %%D is 1st/2nd/3rd/4th. DuckDB %%D is not that.
     if isinstance(node, exp.TimeToStr):
