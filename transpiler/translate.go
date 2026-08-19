@@ -297,8 +297,14 @@ def _rewrite_mysql_update(node):
             sub = sub.where(node.args.get("where").this)
         if node.args.get("order") is not None:
             sub.set("order", node.args.get("order"))
-        if node.args.get("limit") is not None:
-            sub.set("limit", node.args.get("limit"))
+        lim = node.args.get("limit")
+        if lim is not None:
+            off = lim.args.get("offset")
+            if off is not None:
+                sub.set("limit", exp.Limit(expression=lim.args.get("expression")))
+                sub.set("offset", exp.Offset(expression=off))
+            else:
+                sub.set("limit", lim)
         kwargs = {
             "this": tbl,
             "expressions": list(node.expressions or []),
@@ -1233,6 +1239,13 @@ def transpile_mysql_to_duckdb(sql: str) -> str:
     # MySQL allows t.AND / t.OR / t.SELECT as identifiers. Quote so sqlglot parses them.
     bq = chr(96)
     sql = re.sub(r'\.(AND|OR|SELECT)\b', lambda m: '.' + bq + m.group(1) + bq, sql, flags=re.I)
+    # SQLGlot rejects UPDATE ... LIMIT n OFFSET m. LIMIT offset, count parses.
+    if re.match(r'(?is)^update\b', sql.strip()):
+        sql = re.sub(
+            r'(?is)\blimit\s+(\d+)\s+offset\s+(\d+)\s*;?\s*$',
+            lambda m: 'LIMIT ' + m.group(2) + ', ' + m.group(1),
+            sql.strip(),
+        )
     try:
         trees = sqlglot.parse(sql, read="mysql")
     except Exception:

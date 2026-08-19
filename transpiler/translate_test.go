@@ -482,6 +482,11 @@ func TestTranslate(t *testing.T) {
 			expected: "UPDATE mytable SET s = 'updated' WHERE rowid IN ((SELECT rowid FROM mytable ORDER BY i ASC NULLS FIRST LIMIT 2))",
 		},
 		{
+			name:     "UPDATE LIMIT OFFSET uses rowid",
+			input:    "UPDATE mytable SET s = 'updated' ORDER BY i LIMIT 1 OFFSET 1",
+			expected: "UPDATE mytable SET s = 'updated' WHERE rowid IN ((SELECT rowid FROM mytable ORDER BY i NULLS FIRST LIMIT 1 OFFSET 1))",
+		},
+		{
 			name:     "multi-table UPDATE SET is left alone",
 			input:    "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET one_pk.c1 = one_pk.c1 + 1, two_pk.c1 = two_pk.c2 + 1",
 			expected: "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET one_pk.c1 = one_pk.c1 + 1, two_pk.c1 = two_pk.c2 + 1",
