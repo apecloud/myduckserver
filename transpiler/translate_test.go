@@ -331,6 +331,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT CASE WHEN i > 2 THEN i ELSE 'two' END FROM mytable",
 			expected: "SELECT CASE WHEN COALESCE(TRY_CAST(i AS DOUBLE), 0) > 2 THEN CAST(i AS TEXT) ELSE CAST('two' AS TEXT) END FROM mytable",
 		},
+		{
+			name:     "FALSE IN string is numeric",
+			input:    "SELECT * FROM xy INNER JOIN uv ON (xy.x IN (FALSE IN ('asdf')))",
+			expected: "SELECT * FROM xy INNER JOIN uv ON (xy.x IN (CAST(0 IN (COALESCE(TRY_CAST('asdf' AS DOUBLE), 0)) AS INT)))",
+		},
+		{
+			name:     "mixed string BETWEEN is numeric",
+			input:    "SELECT * FROM mytable WHERE (i BETWEEN ('' BETWEEN '' AND ('' OR '#')) AND i)",
+			expected: "SELECT * FROM mytable WHERE (i BETWEEN (CAST(COALESCE(TRY_CAST('' AS DOUBLE), 0) BETWEEN COALESCE(TRY_CAST('' AS DOUBLE), 0) AND CAST(COALESCE(TRY_CAST('' AS DOUBLE), 0) <> 0 OR COALESCE(TRY_CAST('#' AS DOUBLE), 0) <> 0 AS INT) AS INT)) AND i)",
+		},
 	}
 
 	// Loop over each test case

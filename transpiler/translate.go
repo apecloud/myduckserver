@@ -494,6 +494,61 @@ def rewrite_mysql_for_duckdb(node):
             return node.__class__(this=_mysql_string_as_number(left), expression=right)
         if _is_num_lit(left) and _needs_num(right):
             return node.__class__(this=left, expression=_mysql_string_as_number(right))
+    # MySQL BETWEEN / IN coerce mixed strings, numbers, and booleans to numbers.
+    def _unwrap_paren(e):
+        while isinstance(e, exp.Paren):
+            e = e.this
+        return e
+    def _bool_to_int(e):
+        if isinstance(e, exp.Boolean):
+            return exp.Literal.number(1 if e.this else 0)
+        return e
+    def _lit_str_to_num(e):
+        e = _unwrap_paren(e)
+        if isinstance(e, exp.Literal) and e.is_string:
+            return _mysql_string_as_number(e)
+        return _bool_to_int(e)
+    if isinstance(node, exp.Between):
+        this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+        low = node.args.get("low")
+        high = node.args.get("high")
+        if low is not None:
+            low = low.transform(rewrite_mysql_for_duckdb)
+        if high is not None:
+            high = high.transform(rewrite_mysql_for_duckdb)
+        cores = (_unwrap_paren(this), _unwrap_paren(low), _unwrap_paren(high))
+        has_str = any(isinstance(e, exp.Literal) and e.is_string for e in cores)
+        has_num = any(
+            e is not None and (
+                (isinstance(e, exp.Literal) and e.is_number)
+                or isinstance(e, (exp.Cast, exp.Boolean))
+            )
+            for e in cores
+        )
+        if has_str and has_num:
+            this, low, high = _lit_str_to_num(this), _lit_str_to_num(low), _lit_str_to_num(high)
+            return exp.Cast(
+                this=exp.Between(this=this, low=low, high=high),
+                to=exp.DataType.build("INT"),
+            )
+        return exp.Between(this=this, low=low, high=high)
+    if isinstance(node, exp.In):
+        this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+        exprs = [
+            e.transform(rewrite_mysql_for_duckdb) if e is not None else e
+            for e in list(node.expressions or [])
+        ]
+        parts = [this] + exprs
+        has_bool = any(isinstance(e, exp.Boolean) for e in parts)
+        has_str = any(isinstance(e, exp.Literal) and e.is_string for e in parts)
+        if has_bool and has_str:
+            this = _lit_str_to_num(this)
+            exprs = [_lit_str_to_num(e) for e in exprs]
+            return exp.Cast(
+                this=exp.In(this=this, expressions=exprs),
+                to=exp.DataType.build("INT"),
+            )
+        return exp.In(this=this, expressions=exprs)
     def _mysql_truthy(e):
         # MySQL AND/OR coerce strings and numbers: invalid strings are 0.
         if isinstance(e, exp.Column) or (isinstance(e, exp.Literal) and (e.is_string or e.is_number)):
