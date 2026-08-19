@@ -225,11 +225,6 @@ func TestQueriesSimple(t *testing.T) {
 	waitForFixQueries := []string{
 		"_Select_x_from_(select_*_from_xy)_sq1_union_all_select_u_from_(select_*_from_uv)_sq2_limit_1_offset_1;",
 
-		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_emptytable);",
-		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_mytable_WHERE_false);",
-		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_emptytable);",
-		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_mytable_WHERE_false);",
-
 		"select_i+0.0/(lag(i)_over_(order_by_s))_from_mytable_order_by_1;",
 		"select_f64/f32,_f32/(lag(i)_over_(order_by_f64))_from_floattable_order_by_1,2;",
 		"WITH_mytable_as_(select_*_FROM_mytable)_SELECT_s,i_FROM_mytable;",
@@ -251,7 +246,6 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_VALUES(i)_FROM_mytable",
 		"select_i,_row_number()_over_(order_by_i_desc)_+_3,____row_number()_over_(order_by_length(s),i)_+_0.0_/_row_number()_over_(order_by_length(s)_desc,i_desc)_+_0.0____from_mytable_order_by_1;",
 		"SELECT_pk,_row_number()_over_(partition_by_v2_order_by_pk_),_max(v3)_over_(partition_by_v2_order_by_pk)_FROM_one_pk_three_idx_ORDER_BY_pk",
-
 
 		"show_function_status",
 		"show_function_status_like_'foo'",
@@ -279,8 +273,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_COT(i)_from_mytable_order_by_i_limit_1",
 		"select_now()_=_sysdate(),_sleep(0.1),_now(6)_<_sysdate(6);")
 
-	panicQueries := []string{
-	}
+	panicQueries := []string{}
 
 	harness.QueriesToSkip(notApplicableQueries...)
 	harness.QueriesToSkip(undefinedOrderQueries...)

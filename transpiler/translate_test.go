@@ -387,6 +387,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT reservedWordsTable.\"AND\", reservedWordsTABLE.\"Or\", reservedwordstable.\"SEleCT\" FROM reservedWordsTable",
 		},
 		{
+			name:     "tuple IN subquery becomes EXISTS",
+			input:    "SELECT pk FROM one_pk WHERE (pk, 123) IN (SELECT count(*) AS u, 123 AS v FROM emptytable)",
+			expected: "SELECT pk FROM one_pk WHERE EXISTS(SELECT 1 FROM (SELECT COUNT(*) AS u, 123 AS v FROM emptytable) AS q WHERE pk = q.u AND 123 = q.v)",
+		},
+		{
 			name:     "DELETE JOIN becomes DELETE USING",
 			input:    "DELETE mytable FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
 			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",

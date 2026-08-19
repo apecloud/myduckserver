@@ -750,9 +750,39 @@ def rewrite_mysql_for_duckdb(node):
         query = node.args.get("query")
         if query is not None or (not node.expressions and node.args.get("unbound")):
             this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+            if query is not None:
+                query = query.transform(rewrite_mysql_for_duckdb)
+            # DuckDB IN expects one column. (a, b) IN (SELECT x, y) -> EXISTS.
+            if query is not None and isinstance(this, exp.Tuple):
+                sel = query.this if isinstance(query, exp.Subquery) else query
+                if isinstance(sel, exp.Select):
+                    new_sel = sel.copy()
+                    aliases = []
+                    new_exprs = []
+                    for i, e in enumerate(new_sel.expressions or []):
+                        name = e.alias if isinstance(e, exp.Alias) and e.alias else ("_c" + str(i))
+                        aliases.append(name)
+                        if isinstance(e, exp.Alias) and e.alias:
+                            new_exprs.append(e)
+                        else:
+                            new_exprs.append(exp.alias_(e, name))
+                    new_sel.set("expressions", new_exprs)
+                    eqs = []
+                    for lhs, name in zip(this.expressions or [], aliases):
+                        eqs.append(exp.EQ(this=lhs, expression=exp.column(name, table="q")))
+                    cond = eqs[0]
+                    for e in eqs[1:]:
+                        cond = exp.And(this=cond, expression=e)
+                    return exp.Exists(
+                        this=exp.Select(
+                            expressions=[exp.Literal.number(1)],
+                            from_=exp.From(this=exp.Subquery(this=new_sel, alias="q")),
+                            where=exp.Where(this=cond),
+                        )
+                    )
             kwargs = {"this": this}
             if query is not None:
-                kwargs["query"] = query.transform(rewrite_mysql_for_duckdb)
+                kwargs["query"] = query
             return exp.In(**kwargs)
         this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
         exprs = [
