@@ -1105,6 +1105,9 @@ def rewrite_mysql_for_duckdb(node):
                 return False
             if isinstance(e, exp.Literal):
                 return True
+            # Window aggregates still return one row per input row.
+            if any(isinstance(x, exp.Window) for x in e.walk()):
+                return False
             return any(isinstance(x, exp.AggFunc) for x in e.walk())
         if exprs and all(_is_agg_or_lit(e) for e in exprs):
             updated = node.copy()
