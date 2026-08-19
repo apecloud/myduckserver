@@ -171,6 +171,21 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT JSON_PRETTY(c3) FROM jsontable",
 			expected: "SELECT JSON_PRETTY(CAST(c3 AS JSON)) FROM jsontable",
 		},
+		{
+			name:     "DAYOFYEAR compact date gets dashes",
+			input:    "SELECT DAYOFYEAR('20071211') FROM mytable",
+			expected: "SELECT DAYOFYEAR(CAST('2007-12-11' AS DATE)) FROM mytable",
+		},
+		{
+			name:     "JSON_MERGE becomes json_merge_patch",
+			input:    "SELECT JSON_MERGE(c3, '{\"a\": 1}') FROM jsontable",
+			expected: "SELECT JSON_MERGE_PATCH(CAST(c3 AS JSON), CAST('{\"a\": 1}' AS JSON)) FROM jsontable",
+		},
+		{
+			name:     "TIME_FORMAT becomes strftime",
+			input:    "SELECT TIME_FORMAT(time_col, '%h%p') FROM datetime_table",
+			expected: "SELECT STRFTIME(CAST(time_col AS TIMESTAMP), '%I%p') FROM datetime_table",
+		},
 	}
 
 	// Loop over each test case
