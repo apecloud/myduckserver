@@ -279,11 +279,11 @@ def rewrite_mysql_for_duckdb(node):
                     this="format",
                     expressions=[exp.Literal.string(spec), value],
                 )
-    # MySQL BIT_LENGTH is bits; DuckDB STRLEN is bytes.
+    # MySQL BIT_LENGTH is 8 * byte length, not character length.
     if isinstance(node, exp.BitLength):
         return exp.Mul(
             this=exp.Anonymous(
-                this="strlen",
+                this="octet_length",
                 expressions=[exp.Cast(this=node.this, to=exp.DataType.build("TEXT"))],
             ),
             expression=exp.Literal.number(8),

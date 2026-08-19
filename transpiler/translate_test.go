@@ -127,9 +127,9 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT FORMAT('{:b}', i) FROM mytable",
 		},
 		{
-			name:     "BIT_LENGTH is strlen times 8",
+			name:     "BIT_LENGTH is octet_length times 8",
 			input:    "SELECT BIT_LENGTH(i) FROM mytable",
-			expected: "SELECT STRLEN(CAST(i AS TEXT)) * 8 FROM mytable",
+			expected: "SELECT OCTET_LENGTH(CAST(i AS TEXT)) * 8 FROM mytable",
 		},
 		{
 			name:     "OCTET_LENGTH becomes octet_length",
