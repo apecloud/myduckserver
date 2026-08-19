@@ -436,6 +436,41 @@ func TestTranslate(t *testing.T) {
 			input:    "WITH t(n) AS (SELECT (1) FROM dual) DELETE FROM mytable WHERE i IN (SELECT n FROM t)",
 			expected: "WITH t(n) AS (SELECT (1) FROM (SELECT 1) AS dual) DELETE FROM mytable WHERE i IN (SELECT n FROM t)",
 		},
+		{
+			name:     "UPDATE JOIN becomes rowid IN",
+			input:    "UPDATE mytable INNER JOIN one_pk ON mytable.i = one_pk.c5 SET mytable.i = mytable.i * 10",
+			expected: "UPDATE mytable SET i = mytable.i * 10 WHERE rowid IN ((SELECT DISTINCT mytable.rowid FROM mytable INNER JOIN one_pk ON mytable.i = one_pk.c5))",
+		},
+		{
+			name:     "UPDATE JOIN other target uses rowid",
+			input:    "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET two_pk.c1 = two_pk.c1 + 1",
+			expected: "UPDATE two_pk SET c1 = two_pk.c1 + 1 WHERE rowid IN ((SELECT DISTINCT two_pk.rowid FROM one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1))",
+		},
+		{
+			name:     "UPDATE JOIN keeps extra WHERE",
+			input:    "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET two_pk.c1 = two_pk.c1 + 1 WHERE one_pk.c5 < 10",
+			expected: "UPDATE two_pk SET c1 = two_pk.c1 + 1 WHERE rowid IN ((SELECT DISTINCT two_pk.rowid FROM one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 WHERE COALESCE(TRY_CAST(one_pk.c5 AS DOUBLE), 0) < 10))",
+		},
+		{
+			name:     "UPDATE JOIN SET from other table uses FROM",
+			input:    "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET one_pk.c1 = two_pk.c1 + 1",
+			expected: "UPDATE one_pk SET c1 = src.__s0 FROM (SELECT one_pk.rowid AS __rid, two_pk.c1 + 1 AS __s0 FROM one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 QUALIFY ROW_NUMBER() OVER (PARTITION BY one_pk.rowid) = 1) AS src WHERE rowid = src.__rid",
+		},
+		{
+			name:     "UPDATE ORDER BY LIMIT uses rowid",
+			input:    "UPDATE mytable SET s = 'updated' ORDER BY i ASC LIMIT 2",
+			expected: "UPDATE mytable SET s = 'updated' WHERE rowid IN ((SELECT rowid FROM mytable ORDER BY i ASC NULLS FIRST LIMIT 2))",
+		},
+		{
+			name:     "multi-table UPDATE SET is left alone",
+			input:    "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET one_pk.c1 = one_pk.c1 + 1, two_pk.c1 = two_pk.c2 + 1",
+			expected: "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET one_pk.c1 = one_pk.c1 + 1, two_pk.c1 = two_pk.c2 + 1",
+		},
+		{
+			name:     "UPDATE LEFT JOIN is left alone",
+			input:    "UPDATE othertable LEFT JOIN tabletest ON othertable.i2 = 3 AND tabletest.i = 3 SET othertable.s2 = 'fourth'",
+			expected: "UPDATE othertable LEFT JOIN tabletest ON othertable.i2 = 3 AND tabletest.i = 3 SET othertable.s2 = 'fourth'",
+		},
 	}
 
 	// Loop over each test case
