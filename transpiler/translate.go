@@ -401,6 +401,45 @@ def rewrite_mysql_for_duckdb(node):
             updated = node.copy()
             updated.set("expressions", new_exprs)
             return updated
+    # MySQL also allows SELECT s, i GROUP BY i. Wrap non-grouped, non-agg columns.
+    if isinstance(node, exp.Select) and node.args.get("group") is not None:
+        exprs = list(node.expressions or [])
+        group_exprs = list(node.args.get("group").expressions or [])
+        group_keys = set()
+        for g in group_exprs:
+            group_keys.add(g.sql(dialect="duckdb").lower())
+            if isinstance(g, exp.Literal) and g.is_int:
+                group_keys.add(str(int(g.this)))
+        def _has_agg(e):
+            return any(isinstance(x, exp.AggFunc) for x in e.walk())
+        def _already_any_value(e):
+            inner = e.this if isinstance(e, exp.Alias) else e
+            return isinstance(inner, exp.Anonymous) and str(inner.this).lower() == "any_value"
+        def _in_group(e, idx):
+            if str(idx) in group_keys:
+                return True
+            ident = e.sql(dialect="duckdb").lower()
+            if ident in group_keys:
+                return True
+            inner = e.this if isinstance(e, exp.Alias) else e
+            return inner.sql(dialect="duckdb").lower() in group_keys
+        new_exprs = []
+        changed = False
+        for idx, e in enumerate(exprs, 1):
+            if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or _in_group(e, idx):
+                new_exprs.append(e)
+                continue
+            alias = e.alias if isinstance(e, exp.Alias) else None
+            inner = e.this if isinstance(e, exp.Alias) else e
+            wrapped = exp.Anonymous(this="any_value", expressions=[inner])
+            if alias:
+                wrapped = exp.alias_(wrapped, alias)
+            new_exprs.append(wrapped)
+            changed = True
+        if changed:
+            updated = node.copy()
+            updated.set("expressions", new_exprs)
+            return updated
     return node
 
 def transpile_mysql_to_duckdb(sql: str) -> str:
