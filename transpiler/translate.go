@@ -950,6 +950,10 @@ def rewrite_mysql_for_duckdb(node):
     return node
 
 def transpile_mysql_to_duckdb(sql: str) -> str:
+    import re
+    # MySQL allows t.AND / t.OR / t.SELECT as identifiers. Quote so sqlglot parses them.
+    bq = chr(96)
+    sql = re.sub(r'\.(AND|OR|SELECT)\b', lambda m: '.' + bq + m.group(1) + bq, sql, flags=re.I)
     try:
         trees = sqlglot.parse(sql, read="mysql")
     except Exception:

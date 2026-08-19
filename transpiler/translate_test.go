@@ -382,6 +382,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT a.column_0 FROM (VALUES (1, '1'), (2, '2')) AS a(column_0, column_1)",
 		},
 		{
+			name:     "reserved word columns are quoted",
+			input:    "SELECT reservedWordsTable.AND, reservedWordsTABLE.Or, reservedwordstable.SEleCT FROM reservedWordsTable",
+			expected: "SELECT reservedWordsTable.\"AND\", reservedWordsTABLE.\"Or\", reservedwordstable.\"SEleCT\" FROM reservedWordsTable",
+		},
+		{
 			name:     "DELETE JOIN becomes DELETE USING",
 			input:    "DELETE mytable FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
 			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",
