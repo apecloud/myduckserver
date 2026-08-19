@@ -236,6 +236,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT TRIM(s FROM 'first row') AS s FROM mytable",
 			expected: "SELECT TRIM('first row', s) AS s FROM mytable",
 		},
+		{
+			name:     "GROUP BY wraps non-grouped columns",
+			input:    "SELECT s, i FROM mytable GROUP BY i",
+			expected: "SELECT ANY_VALUE(s), i FROM mytable GROUP BY i",
+		},
 	}
 
 	// Loop over each test case
