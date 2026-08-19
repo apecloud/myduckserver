@@ -332,6 +332,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT COUNT(*) FROM people WHERE last_name = 'doe' AND first_name = 'jane'",
 		},
 		{
+			name:     "window aggregate keeps ORDER BY",
+			input:    "SELECT count(*) OVER () FROM mytable ORDER BY i",
+			expected: "SELECT COUNT(*) OVER () FROM mytable ORDER BY i NULLS FIRST",
+		},
+		{
 			name:     "id = 1 is left alone",
 			input:    "SELECT i FROM mytable WHERE id = 1",
 			expected: "SELECT i FROM mytable WHERE id = 1",
