@@ -221,6 +221,30 @@ def rewrite_mysql_for_duckdb(node):
             this=exp.Select(expressions=[exp.Literal.number(1)]),
             alias="dual",
         )
+    # MySQL VALUES ROW(1, '1') -> DuckDB VALUES (1, '1') AS t(column_0, column_1).
+    if isinstance(node, exp.Values):
+        new_exprs = []
+        changed = False
+        for e in node.expressions or []:
+            inner = e.expressions[0] if isinstance(e, exp.Tuple) and len(e.expressions or []) == 1 else e
+            if isinstance(inner, exp.Anonymous) and str(inner.this).lower() == "row":
+                new_exprs.append(exp.Tuple(expressions=list(inner.expressions or [])))
+                changed = True
+            else:
+                new_exprs.append(e)
+        if changed:
+            alias = node.args.get("alias")
+            ncols = len(new_exprs[0].expressions) if new_exprs else 0
+            if alias is not None and ncols:
+                alias = exp.TableAlias(
+                    this=alias.this if isinstance(alias, exp.TableAlias) else alias,
+                    columns=[exp.to_identifier("column_" + str(i)) for i in range(ncols)],
+                )
+            updated = node.copy()
+            updated.set("expressions", new_exprs)
+            if alias is not None:
+                updated.set("alias", alias)
+            return updated
     rewritten_delete = _rewrite_mysql_delete(node)
     if rewritten_delete is not None:
         if rewritten_delete.args.get("with_") is not None:
