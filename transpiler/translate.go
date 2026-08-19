@@ -195,6 +195,44 @@ def rewrite_mysql_for_duckdb(node):
                 exp.Literal.number(0),
             ],
         )
+    # MySQL SUBSTRING_INDEX(str, delim, n): first/last n delimited parts.
+    if isinstance(node, exp.SubstringIndex):
+        src = node.args.get("this")
+        delim = node.args.get("delimiter")
+        count = node.args.get("count")
+        parts = exp.Anonymous(this="string_split", expressions=[src, delim])
+        parts_len = exp.Anonymous(this="len", expressions=[parts])
+        pos = exp.Anonymous(
+            this="array_to_string",
+            expressions=[
+                exp.Anonymous(
+                    this="list_slice",
+                    expressions=[parts, exp.Literal.number(1), count],
+                ),
+                delim,
+            ],
+        )
+        neg = exp.Anonymous(
+            this="array_to_string",
+            expressions=[
+                exp.Anonymous(
+                    this="list_slice",
+                    expressions=[
+                        parts,
+                        exp.Add(this=parts_len, expression=exp.Add(this=count, expression=exp.Literal.number(1))),
+                        parts_len,
+                    ],
+                ),
+                delim,
+            ],
+        )
+        return exp.Case(
+            ifs=[
+                exp.If(this=exp.EQ(this=count, expression=exp.Literal.number(0)), true=exp.Literal.string("")),
+                exp.If(this=exp.GT(this=count, expression=exp.Literal.number(0)), true=pos),
+            ],
+            default=neg,
+        )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

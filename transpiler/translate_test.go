@@ -91,6 +91,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT FIND_IN_SET(s, 'first_row,second_row,third_row') FROM mytable",
 			expected: "SELECT COALESCE(LIST_POSITION(STRING_SPLIT('first_row,second_row,third_row', ','), s), 0) FROM mytable",
 		},
+		{
+			name:     "SUBSTRING_INDEX positive count",
+			input:    "SELECT SUBSTRING_INDEX(s, 'd', 1) FROM mytable",
+			expected: "SELECT CASE WHEN 1 = 0 THEN '' WHEN 1 > 0 THEN ARRAY_TO_STRING(LIST_SLICE(STRING_SPLIT(s, 'd'), 1, 1), 'd') ELSE ARRAY_TO_STRING(LIST_SLICE(STRING_SPLIT(s, 'd'), LEN(STRING_SPLIT(s, 'd')) + 1 + 1, LEN(STRING_SPLIT(s, 'd'))), 'd') END FROM mytable",
+		},
 	}
 
 	// Loop over each test case
