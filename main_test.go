@@ -231,10 +231,6 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_emptytable);",
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_mytable_WHERE_false);",
 
-
-
-
-
 		"SELECT_a.column_0,_mt.s_from_(values_row(1,\"1\"),_row(2,\"2\"),_row(4,\"4\"))_a____left_join_mytable_mt_on_column_0_=_mt.i____order_by_1",
 
 		"select_i+0.0/(lag(i)_over_(order_by_s))_from_mytable_order_by_1;",
@@ -245,25 +241,15 @@ func TestQueriesSimple(t *testing.T) {
 		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable_union_SELECT_*_from_mytable;",
 
 		"SELECT_reservedWordsTable.AND,_reservedWordsTABLE.Or,_reservedwordstable.SEleCT_FROM_reservedWordsTable;",
-		"SELECT_*_from_mytable_where_(i_=_1_|_false)_IN_(true)",
-		"SELECT_*_from_mytable_where_(i_=_1_&_false)_IN_(true)",
 
 		"select_i_from_datetime_table_where_date_col_=_'2019-12-31T00:00:01'",
-
-
-
-
 
 		"SELECT_DISTINCT_CAST(i_AS_DECIMAL)_from_mytable;",
 		"SELECT_SUM(_DISTINCT_CAST(i_AS_DECIMAL))_from_mytable;",
 
-
-
 		"select_pk,_________row_number()_over_(order_by_pk_desc),_________sum(v1)_over_(partition_by_v2_order_by_pk),_________percent_rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 		"select_pk,____________________percent_rank()_over(partition_by_v2_order_by_pk),____________________dense_rank()_over(partition_by_v2_order_by_pk),____________________rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 		"select_pk,_________first_value(pk)_over_(order_by_pk_desc),_________lag(pk,_1)_over_(order_by_pk_desc),_________count(pk)_over(partition_by_v1_order_by_pk),_________max(pk)_over(partition_by_v1_order_by_pk_desc),_________avg(v2)_over_(partition_by_v1_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
-
-
 
 		"SELECT_s_>_2_FROM_tabletest",
 		"SELECT_*_FROM_tabletest_WHERE_s_>_0",
@@ -275,20 +261,9 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_ACOS(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
 
-
-
-
-
 		"SELECT_CASE_WHEN_i_>_2_THEN_i_WHEN_i_<_2_THEN_i_ELSE_'two'_END_FROM_mytable",
 		"SELECT_CASE_WHEN_i_>_2_THEN_'more_than_two'_WHEN_i_<_2_THEN_'less_than_two'_ELSE_2_END_FROM_mytable",
 		"SELECT_substring(mytable.s,_1,_5)_AS_s_FROM_mytable_INNER_JOIN_othertable_ON_(substring(mytable.s,_1,_5)_=_SUBSTRING(othertable.s2,_1,_5))_GROUP_BY_1_HAVING_s_=_\"secon\"",
-
-
-
-
-
-
-
 
 		"SELECT_sum(i)_as_isum,_s_FROM_mytable_GROUP_BY_i_ORDER_BY_isum_ASC_LIMIT_0,_200",
 		"SELECT_pk,_(SELECT_concat(pk,_pk)_FROM_one_pk_WHERE_pk_<_opk.pk_ORDER_BY_1_DESC_LIMIT_1)_as_strpk_FROM_one_pk_opk_having_strpk_>_\"0\"_ORDER_BY_2",
@@ -302,24 +277,18 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_pk,_row_number()_over_(partition_by_v2_order_by_pk_),_max(v3)_over_(partition_by_v2_order_by_pk)_FROM_one_pk_three_idx_ORDER_BY_pk",
 
 		"SELECT_distinct_pk1_FROM_two_pk_WHERE_EXISTS_(SELECT_pk_from_one_pk_where_pk_<=_two_pk.pk1)",
-		"select_c1_from_jsontable_where_c1_LIKE_(('%'_OR_'dsads')_OR_'%')",
-		"select_c1_from_jsontable_where_c1_LIKE_('%'_OR_NULL)",
+
 		"show_function_status",
 		"show_function_status_like_'foo'",
 		"show_function_status_where_Db='mydb'",
-
 
 		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_keyless_U0,_cte___WHERE_cte.j_=_keyless.c0____)_____ORDER_BY_c0;_",
 		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_cte,_keyless_U0____WHERE_cte.j_=_keyless.c0_____)_____ORDER_BY_c0;_",
 		"_select_*_from_mytable,__lateral_(__with_recursive_cte(a)_as_(___select_y_from_xy___union___select_x_from_cte___join___(____select_*_____from_xy____where_x_=_1____)_sqa1___on_x_=_a___limit_3___)__select_*_from_cte_)_sqa2_where_i_=_a_order_by_i;",
 		"_select____dayname(id),____dayname(i8),____dayname(i16),____dayname(i32),____dayname(i64),____dayname(u8),____dayname(u16),____dayname(u32),____dayname(u64),____dayname(f32),____dayname(f64),____dayname(ti),____dayname(da),____dayname(te),____dayname(bo),____dayname(js),____dayname(bl),____dayname(e1),____dayname(s1)_from_typestable",
 		"select_*_from_mytable_order_by_dayname(i)",
-		"select_*_from_mytable_where_(i_BETWEEN_(CASE_1_WHEN_2_THEN_1.0_ELSE_(1||2)_END)_AND_i)",
 		"select_*_from_mytable_where_(i_BETWEEN_(''_BETWEEN_''_AND_(''_OR_'#'))_AND_i)",
 		"select_*_from_xy_inner_join_uv_on_(xy.x_in_(false_in_('asdf')));",
-
-
-
 
 		"select_length(random_bytes(i))_from_mytable;",
 	}
