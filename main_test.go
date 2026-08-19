@@ -897,8 +897,6 @@ func TestUpdate(t *testing.T) {
 		"UPDATE_IGNORE_one_pk_JOIN_one_pk_one_pk2_on_one_pk.pk_=_one_pk2.pk_SET_one_pk.pk_=_10",
 		"UPDATE_floattable_SET_f32_=_f32_+_f32,_f64_=_f32_*_f64_WHERE_i_=_2;",
 		"UPDATE_mytable_SET_s_=_'first_row'_WHERE_i_=_1;",
-		"UPDATE_mytable_SET_s_=_'updated'_ORDER_BY_i_LIMIT_1_OFFSET_1;",
-
 		"UPDATE_niltable_SET_b_=_NULL_WHERE_f_IS_NULL;",
 		"UPDATE_othertable_INNER_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.s2_=_'fourth'",
 		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_one_pk.c1_=_one_pk.c1_+_1,_one_pk.c2_=_one_pk.c2_+_1_ORDER_BY_one_pk.pk",
