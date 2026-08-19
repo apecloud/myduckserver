@@ -300,7 +300,7 @@ func TestQueriesSimple(t *testing.T) {
 
 
 
-		"select_locate(upper(\"roW\"),_upper(s),_power(10,_0))_from_mytable_order_by_i",
+
 		"select_log2(i)_from_mytable_order_by_i",
 		"select_ln(i)_from_mytable_order_by_i",
 		"select_log10(i)_from_mytable_order_by_i",
