@@ -397,6 +397,11 @@ func TestTranslate(t *testing.T) {
 			expected: "WITH mytable__mds AS (SELECT * FROM mytable) SELECT s, i FROM mytable__mds",
 		},
 		{
+			name:     "RANDOM_BYTES becomes REPEAT for length",
+			input:    "SELECT LENGTH(RANDOM_BYTES(i)) FROM mytable",
+			expected: "SELECT CASE TYPEOF(REPEAT('x', i)) WHEN 'BLOB' THEN OCTET_LENGTH(CAST(REPEAT('x', i) AS BLOB)) ELSE LENGTH(CAST(REPEAT('x', i) AS TEXT)) END FROM mytable",
+		},
+		{
 			name:     "DELETE JOIN becomes DELETE USING",
 			input:    "DELETE mytable FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
 			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",
