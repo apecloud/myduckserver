@@ -257,8 +257,6 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_SUM(i)_FROM_mytable",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
 
-		"SELECT_ASIN(i)_from_mytable_order_by_i_limit_1",
-		"SELECT_ACOS(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
 
 		"SELECT_CASE_WHEN_i_>_2_THEN_i_WHEN_i_<_2_THEN_i_ELSE_'two'_END_FROM_mytable",

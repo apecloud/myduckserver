@@ -406,6 +406,14 @@ def rewrite_mysql_for_duckdb(node):
     # MySQL DATETIME('...') is a timestamp constructor. DuckDB has no DATETIME().
     if isinstance(node, exp.Datetime):
         return exp.Cast(this=node.this, to=exp.DataType.build("TIMESTAMP"))
+    # MySQL ASIN/ACOS return NULL outside [-1, 1]. DuckDB errors.
+    if isinstance(node, (exp.Asin, exp.Acos)):
+        x = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+        return exp.If(
+            this=exp.GT(this=exp.Abs(this=x), expression=exp.Literal.number(1)),
+            true=exp.Null(),
+            false=node.__class__(this=x),
+        )
     # MySQL treats a string predicate as a number: invalid strings are 0, not an error.
     def _mysql_string_as_number(e):
         return exp.Anonymous(

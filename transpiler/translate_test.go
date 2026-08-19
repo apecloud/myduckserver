@@ -306,6 +306,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT * FROM mytable WHERE (i = 1 & FALSE) IN (TRUE)",
 			expected: "SELECT * FROM mytable WHERE (i = 1 & 0) IN (TRUE)",
 		},
+		{
+			name:     "ASIN outside [-1,1] is NULL",
+			input:    "SELECT ASIN(i) FROM mytable",
+			expected: "SELECT CASE WHEN ABS(i) > 1 THEN NULL ELSE ASIN(i) END FROM mytable",
+		},
+		{
+			name:     "ACOS outside [-1,1] is NULL",
+			input:    "SELECT ACOS(i) FROM mytable",
+			expected: "SELECT CASE WHEN ABS(i) > 1 THEN NULL ELSE ACOS(i) END FROM mytable",
+		},
 	}
 
 	// Loop over each test case
