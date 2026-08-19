@@ -256,7 +256,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_i_from_datetime_table_where_timestamp_col_=_datetime('2020-01-02T12:00:00')",
 		"select_i_from_datetime_table_where_timestamp_col_>_datetime('2020-01-02T12:00:00')_order_by_1",
 
-		"SELECT_TRIM(mytable.s_from_\"first_row\")_AS_s_FROM_mytable",
+
 
 
 		"SELECT_DISTINCT_CAST(i_AS_DECIMAL)_from_mytable;",
