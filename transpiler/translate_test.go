@@ -472,6 +472,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT NULL FROM mytable",
 		},
 		{
+			name:     "ON DUPLICATE KEY keeps VALUES",
+			input:    "INSERT INTO mytable (i, s) VALUES (1, 'hi') ON DUPLICATE KEY UPDATE s = VALUES(s)",
+			expected: "INSERT INTO mytable (i, s) VALUES (1, 'hi') ON DUPLICATE KEY UPDATE SET s = VALUES(s)",
+		},
+		{
 			name:     "UPDATE LEFT JOIN is left alone",
 			input:    "UPDATE othertable LEFT JOIN tabletest ON othertable.i2 = 3 AND tabletest.i = 3 SET othertable.s2 = 'fourth'",
 			expected: "UPDATE othertable LEFT JOIN tabletest ON othertable.i2 = 3 AND tabletest.i = 3 SET othertable.s2 = 'fourth'",

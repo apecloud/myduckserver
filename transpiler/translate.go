@@ -486,10 +486,6 @@ def rewrite_mysql_for_duckdb(node):
                 kind=node.args.get("kind"),
                 constraints=kept,
             )
-    # MySQL VALUES(col) is only meaningful in INSERT ON DUPLICATE KEY UPDATE.
-    # In SELECT it is deprecated and returns NULL. Do not use this for upsert.
-    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "VALUES":
-        return exp.Null()
     # MySQL CHAR_LENGTH / CHARACTER_LENGTH -> DuckDB LENGTH (character count).
     # Without this, some paths still emit CHAR_LENGTH, which DuckDB does not have.
     if isinstance(node, exp.Length) and not node.args.get("binary"):
@@ -1208,7 +1204,17 @@ def transpile_mysql_to_duckdb(sql: str) -> str:
     if not trees or trees[0] is None:
         return ""
     # Keep the historical contract: only the first statement is returned.
-    return trees[0].transform(rewrite_mysql_for_duckdb).sql(dialect="duckdb")
+    # VALUES(col) is NULL in SELECT, but INSERT ON DUPLICATE KEY must keep it.
+    in_insert = [0]
+    def rewrite_with_insert_context(node):
+        if isinstance(node, exp.Insert):
+            in_insert[0] += 1
+        if isinstance(node, exp.Anonymous) and str(node.this).upper() == "VALUES":
+            if in_insert[0]:
+                return node
+            return exp.Null()
+        return rewrite_mysql_for_duckdb(node)
+    return trees[0].transform(rewrite_with_insert_context).sql(dialect="duckdb")
 
 while True:
     inp = read_string()
