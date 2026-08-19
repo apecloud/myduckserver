@@ -261,16 +261,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_DAYOFYEAR('20071211')_FROM_mytable",
 		"SELECT_DISTINCT_CAST(i_AS_DECIMAL)_from_mytable;",
 		"SELECT_SUM(_DISTINCT_CAST(i_AS_DECIMAL))_from_mytable;",
-		"SELECT_id_FROM_typestable_WHERE_da_<_adddate('2020-01-01',_INTERVAL_1_DAY)",
-		"SELECT_id_FROM_typestable_WHERE_da_<_adddate('2020-01-01',_1)",
-		"SELECT_id_FROM_typestable_WHERE_da_>=_subdate('2020-01-01',_INTERVAL_1_DAY)",
-		"SELECT_id_FROM_typestable_WHERE_da_>=_subdate('2020-01-01',_1)",
-		"SELECT_adddate(da,_i32)_from_typestable;",
-		"SELECT_adddate(da,_concat(u32))_from_typestable;",
-		"SELECT_adddate(da,_f32/10)_from_typestable;",
-		"SELECT_subdate(da,_i32)_from_typestable;",
-		"SELECT_subdate(da,_concat(u32))_from_typestable;",
-		"SELECT_subdate(da,_f32/10)_from_typestable;",
+
 		"SELECT_i,v_from_stringandtable_WHERE_v",
 		"SELECT_i,v_from_stringandtable_WHERE_v_AND_v",
 		"SELECT_i,v_from_stringandtable_WHERE_v_OR_v",
@@ -336,7 +327,7 @@ func TestQueriesSimple(t *testing.T) {
 		"show_function_status",
 		"show_function_status_like_'foo'",
 		"show_function_status_where_Db='mydb'",
-		"SELECT_CONV(i,_10,_2)_FROM_mytable",
+
 
 		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_keyless_U0,_cte___WHERE_cte.j_=_keyless.c0____)_____ORDER_BY_c0;_",
 		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_cte,_keyless_U0____WHERE_cte.j_=_keyless.c0_____)_____ORDER_BY_c0;_",

@@ -111,6 +111,21 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT FIELD(i, '1', '2', '3') FROM mytable",
 			expected: "SELECT COALESCE(LIST_POSITION(['1', '2', '3'], i), 0) FROM mytable",
 		},
+		{
+			name:     "ADDDATE interval becomes date plus interval",
+			input:    "SELECT ADDDATE(da, INTERVAL 1 DAY) FROM typestable",
+			expected: "SELECT da + INTERVAL '1' DAY FROM typestable",
+		},
+		{
+			name:     "ADDDATE days becomes date plus interval day",
+			input:    "SELECT ADDDATE(da, 1) FROM typestable",
+			expected: "SELECT da + INTERVAL 1 DAY FROM typestable",
+		},
+		{
+			name:     "CONV 10 to 2 uses fmt binary",
+			input:    "SELECT CONV(i, 10, 2) FROM mytable",
+			expected: "SELECT FORMAT('{:b}', i) FROM mytable",
+		},
 	}
 
 	// Loop over each test case

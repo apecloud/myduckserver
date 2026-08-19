@@ -261,6 +261,24 @@ def rewrite_mysql_for_duckdb(node):
                 exp.Literal.number(0),
             ],
         )
+    # MySQL ADDDATE/SUBDATE -> date +/- INTERVAL. Bare numbers are days.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() in ("ADDDATE", "DATE_ADD", "SUBDATE", "DATE_SUB") and len(node.expressions) == 2:
+        base, delta = node.expressions
+        if not isinstance(delta, exp.Interval):
+            delta = exp.Interval(this=delta, unit=exp.Var(this="DAY"))
+        if str(node.this).upper() in ("ADDDATE", "DATE_ADD"):
+            return exp.Add(this=base, expression=delta)
+        return exp.Sub(this=base, expression=delta)
+    # MySQL CONV(n, from, to). Cover the common 10 -> 2/8/16 cases with {fmt}.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "CONV" and len(node.expressions) == 3:
+        value, frm, to = node.expressions
+        if isinstance(frm, exp.Literal) and frm.is_int and int(frm.this) == 10 and isinstance(to, exp.Literal) and to.is_int:
+            spec = {2: "{:b}", 8: "{:o}", 16: "{:X}"}.get(int(to.this))
+            if spec:
+                return exp.Anonymous(
+                    this="format",
+                    expressions=[exp.Literal.string(spec), value],
+                )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:
