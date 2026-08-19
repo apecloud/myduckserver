@@ -56,6 +56,26 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT i XOR i XOR i FROM t",
 			expected: "SELECT (((i AND (NOT i)) OR ((NOT i) AND i)) AND NOT (i)) OR (NOT ((i AND (NOT i)) OR ((NOT i) AND i)) AND (i)) FROM t",
 		},
+		{
+			name:     "CHAR_LENGTH becomes DuckDB LENGTH",
+			input:    "SELECT CHAR_LENGTH(s) FROM t",
+			expected: "SELECT LENGTH(s) FROM t",
+		},
+		{
+			name:     "CHAR_LENGTH inside AVG does not emit CHAR_LENGTH",
+			input:    "SELECT FLOOR(i), AVG(CHAR_LENGTH(s)) FROM mytable mt GROUP BY 1 ORDER BY FLOOR(i) DESC",
+			expected: "SELECT FLOOR(i), AVG(LENGTH(s)) FROM mytable AS mt GROUP BY 1 ORDER BY FLOOR(i) DESC",
+		},
+		{
+			name:     "FORMAT two-arg uses DuckDB fmt grouping",
+			input:    "SELECT FORMAT(i, 3) FROM mytable",
+			expected: "SELECT FORMAT('{:,.3f}', i) FROM mytable",
+		},
+		{
+			name:     "FORMAT with da_DK swaps grouping separators",
+			input:    "SELECT FORMAT(i, 3, 'da_DK') FROM mytable",
+			expected: "SELECT REPLACE(REPLACE(REPLACE(FORMAT('{:,.3f}', i), ',', '\x01'), '.', ','), '\x01', '.') FROM mytable",
+		},
 	}
 
 	// Loop over each test case
