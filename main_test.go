@@ -247,8 +247,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_reservedWordsTable.AND,_reservedWordsTABLE.Or,_reservedwordstable.SEleCT_FROM_reservedWordsTable;",
 		"SELECT_*_from_mytable_where_(i_=_1_|_false)_IN_(true)",
 		"SELECT_*_from_mytable_where_(i_=_1_&_false)_IN_(true)",
-		"SELECT_i_FROM_mytable_WHERE_'hello';",
-		"SELECT_i_FROM_mytable_WHERE_NOT_'hello';",
+
 		"select_i_from_datetime_table_where_date_col_=_'2019-12-31T00:00:01'",
 
 
