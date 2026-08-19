@@ -1068,8 +1068,6 @@ func TestCreateTable(t *testing.T) {
 	waitForFixQueries := []string{
 		"CREATE_TABLE_t1_(a_INTEGER,_create_time_timestamp(6)_NOT_NULL_DEFAULT_NOW(6),_primary_key_(a))",
 		"CREATE_TABLE_t1_(a_INTEGER,_create_time_timestamp(6)_NOT_NULL_DEFAULT_NOW(6),_primary_key_(a))",
-		"CREATE_TABLE_t1_(____pk_bigint_primary_key,____v1_bigint_default_(2)_comment_'hi_there',____index_idx_v1_(v1)_comment_'index_here'____)",
-		"CREATE_TABLE_t1_(____pk_bigint_primary_key,____v1_bigint_default_(2)_comment_'hi_there',____index_idx_v1_(v1)_comment_'index_here'____)",
 		"CREATE_TABLE_t1_SELECT_*_from_mytable",
 		"CREATE_TABLE_t1_SELECT_*_from_mytable",
 		"CREATE_TABLE_td_(_____pk_int_PRIMARY_KEY,_____col2_int_NOT_NULL_DEFAULT_2,______col3_double_NOT_NULL_DEFAULT_(round(-(1.58),0)),_____col4_varchar(10)_DEFAULT_'new_row',___________col5_float_DEFAULT_33.33,___________col6_int_DEFAULT_NULL,_____col7_timestamp_DEFAULT_NOW(),_____col8_bigint_DEFAULT_(NOW())___)",
