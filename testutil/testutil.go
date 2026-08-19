@@ -30,6 +30,8 @@ type TestEnv struct {
 	TestDir                             string
 	OriginalWorkingDir                  string
 	MyDuckServer                        *sqlx.DB
+	ExtraArgs                           []string
+	SuperuserPassword                   string
 }
 
 func NewTestEnv() *TestEnv {
@@ -88,6 +90,7 @@ func StartDuckSqlServer(t *testing.T, dir string, persistentSystemVars map[strin
 		"--default-time-zone=UTC",
 		"--loglevel=4", // 4: INFO, 5: DEBUG, 6: TRACE
 	}
+	args = append(args, testEnv.ExtraArgs...)
 
 	// If we're running in CI, use a precompiled dolt binary instead of go run
 	devBuildPath := initializeDevBuild(dir, goDirPath)
@@ -135,7 +138,12 @@ func StartDuckSqlServer(t *testing.T, dir string, persistentSystemVars map[strin
 
 	fmt.Printf("MyDuck CMD: %s\n", cmd.String())
 
-	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%v)/", "root", testEnv.DuckPort)
+	var dsn string
+	if testEnv.SuperuserPassword != "" {
+		dsn = fmt.Sprintf("root:%s@tcp(127.0.0.1:%v)/", testEnv.SuperuserPassword, testEnv.DuckPort)
+	} else {
+		dsn = fmt.Sprintf("%s@tcp(127.0.0.1:%v)/", "root", testEnv.DuckPort)
+	}
 	testEnv.MyDuckServer = sqlx.MustOpen("mysql", dsn)
 
 	err = WaitForSqlServerToStart(testEnv.MyDuckServer)
