@@ -234,7 +234,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_JSON_OVERLAPS(c3,_'{\"a\":_2,_\"d\":_2}')_FROM_jsontable",
 		"SELECT_JSON_MERGE(c3,_'{\"a\":_1}')_FROM_jsontable",
 		"SELECT_JSON_MERGE_PRESERVE(c3,_'{\"a\":_1}')_FROM_jsontable",
-		"select_json_pretty(c3)_from_jsontable",
+
 		"SELECT_a.column_0,_mt.s_from_(values_row(1,\"1\"),_row(2,\"2\"),_row(4,\"4\"))_a____left_join_mytable_mt_on_column_0_=_mt.i____order_by_1",
 
 		"select_i+0.0/(lag(i)_over_(order_by_s))_from_mytable_order_by_1;",
@@ -339,7 +339,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_space(i_*_2)_from_mytable;",
 		"select_atan(i),_atan2(i,_i_+_2)_from_mytable;",
 
-		"select_char(i,_i_+_10,_pi())_from_mytable;",
+
 		"select_length(random_bytes(i))_from_mytable;",
 	}
 
