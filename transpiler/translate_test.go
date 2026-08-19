@@ -347,6 +347,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT COUNT(*) OVER () FROM mytable ORDER BY i NULLS FIRST",
 		},
 		{
+			name:     "window functions are not outer aggregates",
+			input:    "SELECT pk, row_number() OVER (ORDER BY pk DESC), SUM(v1) OVER (PARTITION BY v2 ORDER BY pk) FROM one_pk_three_idx ORDER BY pk",
+			expected: "SELECT pk, ROW_NUMBER() OVER (ORDER BY pk DESC), SUM(v1) OVER (PARTITION BY v2 ORDER BY pk NULLS FIRST) FROM one_pk_three_idx ORDER BY pk NULLS FIRST",
+		},
+		{
 			name:     "duplicate SET keeps the last assignment",
 			input:    "UPDATE floattable SET f32 = 5, f32 = 4 WHERE i = 1",
 			expected: "UPDATE floattable SET f32 = 4 WHERE i = 1",
