@@ -936,18 +936,30 @@ def rewrite_mysql_for_duckdb(node):
     if isinstance(node, exp.Not) and isinstance(node.this, exp.Column):
         return exp.EQ(this=_mysql_string_as_number(node.this), expression=exp.Literal.number(0))
     # MySQL compares strings to numbers by coercing the string (invalid -> 0).
-    # Do not rewrite id = 1; only inequalities may coerce a column.
+    # Do not rewrite id = 1. Inequalities may coerce a column. Equality only
+    # when the number is 0 (s = 0 matches non-numeric strings).
     if isinstance(node, (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.NEQ)):
         left, right = node.this, node.expression
         def _is_num_lit(e):
             return isinstance(e, exp.Literal) and e.is_number
         def _is_str_lit(e):
             return isinstance(e, exp.Literal) and e.is_string
+        def _is_zero_lit(e):
+            if not _is_num_lit(e):
+                return False
+            try:
+                return float(e.this) == 0.0
+            except (TypeError, ValueError):
+                return False
         def _needs_num(e):
             if _is_str_lit(e):
                 return True
             if isinstance(e, exp.Column) and isinstance(node, (exp.GT, exp.GTE, exp.LT, exp.LTE)):
                 return True
+            # s = 0 coerces varchar s. id = 0/1 must stay (concurrent smoke test).
+            if isinstance(e, exp.Column) and isinstance(node, (exp.EQ, exp.NEQ)):
+                other = right if e is left else left
+                return _is_zero_lit(other) and (e.name or "").lower() == "s"
             return False
         if _needs_num(left) and _is_num_lit(right):
             return node.__class__(this=_mysql_string_as_number(left), expression=right)
