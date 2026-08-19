@@ -297,7 +297,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_substring(mytable.s,_1,_5)_AS_s_FROM_mytable_INNER_JOIN_othertable_ON_(substring(mytable.s,_1,_5)_=_SUBSTRING(othertable.s2,_1,_5))_GROUP_BY_1_HAVING_s_=_\"secon\"",
 		"SELECT_s,_i_FROM_mytable_GROUP_BY_i_ORDER_BY_SUBSTRING(s,_1,_1)_DESC",
 		"SELECT_s,_i_FROM_mytable_GROUP_BY_i_HAVING_count(*)_>_0_ORDER_BY_SUBSTRING(s,_1,_1)_DESC",
-		"SELECT_GREATEST(i,_s)_FROM_mytable",
+
 
 
 		"select_locate(upper(\"roW\"),_upper(s),_power(10,_0))_from_mytable_order_by_i",
@@ -305,14 +305,14 @@ func TestQueriesSimple(t *testing.T) {
 		"select_ln(i)_from_mytable_order_by_i",
 		"select_log10(i)_from_mytable_order_by_i",
 		"select_log(3,_i)_from_mytable_order_by_i",
-		"SELECT_LEAST(i,_s)_FROM_mytable",
+
 		"SELECT_i_FROM_mytable_WHERE_NOT_s_ORDER_BY_1_DESC",
 		"SELECT_sum(i)_as_isum,_s_FROM_mytable_GROUP_BY_i_ORDER_BY_isum_ASC_LIMIT_0,_200",
 		"SELECT_pk,_(SELECT_concat(pk,_pk)_FROM_one_pk_WHERE_pk_<_opk.pk_ORDER_BY_1_DESC_LIMIT_1)_as_strpk_FROM_one_pk_opk_having_strpk_>_\"0\"_ORDER_BY_2",
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_FROM_one_pk_opk_GROUP_BY_x_ORDER_BY_x",
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_______FROM_one_pk_opk_WHERE_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_>_0_______GROUP_BY_x_ORDER_BY_x",
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_______FROM_one_pk_opk_WHERE_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_>_0_______GROUP_BY_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_ORDER_BY_x",
-		"SELECT_GREATEST(CAST(i_AS_CHAR),_CAST(b_AS_CHAR))_FROM_niltable_order_by_i",
+
 		"SELECT_count(*)_FROM_people_WHERE_last_name='doe'_and_first_name='jane'_order_by_dob",
 		"SELECT_VALUES(i)_FROM_mytable",
 		"select_i,_row_number()_over_(order_by_i_desc)_+_3,____row_number()_over_(order_by_length(s),i)_+_0.0_/_row_number()_over_(order_by_length(s)_desc,i_desc)_+_0.0____from_mytable_order_by_1;",
