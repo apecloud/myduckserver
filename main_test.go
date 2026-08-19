@@ -253,7 +253,6 @@ func TestQueriesSimple(t *testing.T) {
 		"select_i,_row_number()_over_(order_by_i_desc)_+_3,____row_number()_over_(order_by_length(s),i)_+_0.0_/_row_number()_over_(order_by_length(s)_desc,i_desc)_+_0.0____from_mytable_order_by_1;",
 		"SELECT_pk,_row_number()_over_(partition_by_v2_order_by_pk_),_max(v3)_over_(partition_by_v2_order_by_pk)_FROM_one_pk_three_idx_ORDER_BY_pk",
 
-		"SELECT_distinct_pk1_FROM_two_pk_WHERE_EXISTS_(SELECT_pk_from_one_pk_where_pk_<=_two_pk.pk1)",
 
 		"show_function_status",
 		"show_function_status_like_'foo'",
