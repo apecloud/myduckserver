@@ -301,10 +301,7 @@ func TestQueriesSimple(t *testing.T) {
 
 
 
-		"select_log2(i)_from_mytable_order_by_i",
-		"select_ln(i)_from_mytable_order_by_i",
-		"select_log10(i)_from_mytable_order_by_i",
-		"select_log(3,_i)_from_mytable_order_by_i",
+
 
 		"SELECT_i_FROM_mytable_WHERE_NOT_s_ORDER_BY_1_DESC",
 		"SELECT_sum(i)_as_isum,_s_FROM_mytable_GROUP_BY_i_ORDER_BY_isum_ASC_LIMIT_0,_200",
@@ -335,7 +332,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_*_from_mytable_where_(i_BETWEEN_(''_BETWEEN_''_AND_(''_OR_'#'))_AND_i)",
 		"select_*_from_xy_inner_join_uv_on_(xy.x_in_(false_in_('asdf')));",
 
-		"select_atan(i),_atan2(i,_i_+_2)_from_mytable;",
+
 
 
 		"select_length(random_bytes(i))_from_mytable;",

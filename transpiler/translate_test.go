@@ -221,6 +221,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT LOCATE(UPPER('roW'), UPPER(s), POWER(10, 0)) FROM mytable",
 			expected: "SELECT CASE WHEN STRPOS(SUBSTRING(UPPER(s), POWER(10, 0)), UPPER('roW')) = 0 THEN 0 ELSE STRPOS(SUBSTRING(UPPER(s), POWER(10, 0)), UPPER('roW')) + (POWER(10, 0)) - 1 END FROM mytable",
 		},
+		{
+			name:     "LOG2 becomes LOG base 2",
+			input:    "SELECT LOG2(i) FROM mytable",
+			expected: "SELECT LOG(2, i) FROM mytable",
+		},
+		{
+			name:     "ATAN2 is kept",
+			input:    "SELECT ATAN(i), ATAN2(i, i + 2) FROM mytable",
+			expected: "SELECT ATAN(i), ATAN2(i, i + 2) FROM mytable",
+		},
 	}
 
 	// Loop over each test case
