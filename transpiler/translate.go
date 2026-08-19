@@ -317,6 +317,21 @@ def rewrite_mysql_for_duckdb(node):
                 exp.Literal.number(0),
             ],
         )
+    # MySQL CHAR(n, ...) concatenates code points. DuckDB CHR takes one argument.
+    if isinstance(node, exp.Chr):
+        args = list(node.expressions or [])
+        if not args:
+            return node
+        chrs = [exp.Anonymous(this="chr", expressions=[a]) for a in args]
+        if len(chrs) == 1:
+            return chrs[0]
+        return exp.Anonymous(this="concat", expressions=chrs)
+    # MySQL JSON_PRETTY -> DuckDB json_pretty on JSON values.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "JSON_PRETTY" and node.expressions:
+        return exp.Anonymous(
+            this="json_pretty",
+            expressions=[exp.Cast(this=node.expressions[0], to=exp.DataType.build("JSON"))],
+        )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

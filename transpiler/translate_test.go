@@ -161,6 +161,16 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT ASCII(s) FROM mytable",
 			expected: "SELECT GET_BYTE(CAST(s AS BLOB), 0) FROM mytable",
 		},
+		{
+			name:     "CHAR concatenates chr of each arg",
+			input:    "SELECT CHAR(i, i + 10) FROM mytable",
+			expected: "SELECT CONCAT(CHR(i), CHR(i + 10)) FROM mytable",
+		},
+		{
+			name:     "JSON_PRETTY casts to JSON",
+			input:    "SELECT JSON_PRETTY(c3) FROM jsontable",
+			expected: "SELECT JSON_PRETTY(CAST(c3 AS JSON)) FROM jsontable",
+		},
 	}
 
 	// Loop over each test case
