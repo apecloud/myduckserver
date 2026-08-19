@@ -5,6 +5,7 @@ myduckserver
 *.log
 .replica/
 *.txt
+!requirements.txt
 *.out
 *.test
 .vscode/

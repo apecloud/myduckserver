@@ -74,7 +74,7 @@ test-full:
 	@$(SHOW_TOTAL_COVERAGE)
 
 test:
-	$(TEST_CMD) $(shell go list ./... | grep -v './binlogreplication')
+	$(TEST_CMD) $(shell go list ./... | grep -v './binlogreplication' | grep -v './compatibility')
 	@$(SHOW_TOTAL_COVERAGE)
 
 cover:
