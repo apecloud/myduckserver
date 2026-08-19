@@ -253,10 +253,6 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_SUM(i)_FROM_mytable",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
 
-		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
-
-
-
 		"SELECT_sum(i)_as_isum,_s_FROM_mytable_GROUP_BY_i_ORDER_BY_isum_ASC_LIMIT_0,_200",
 
 		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_FROM_one_pk_opk_GROUP_BY_x_ORDER_BY_x",
