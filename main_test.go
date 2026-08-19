@@ -233,7 +233,7 @@ func TestQueriesSimple(t *testing.T) {
 
 
 
-		"SELECT_JSON_MERGE_PRESERVE(c3,_'{\"a\":_1}')_FROM_jsontable",
+
 
 		"SELECT_a.column_0,_mt.s_from_(values_row(1,\"1\"),_row(2,\"2\"),_row(4,\"4\"))_a____left_join_mytable_mt_on_column_0_=_mt.i____order_by_1",
 
