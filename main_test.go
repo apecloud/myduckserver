@@ -915,8 +915,6 @@ func TestUpdate(t *testing.T) {
 		"UPDATE_othertable_RIGHT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.i2_=_othertable.i2_+_1",
 		"UPDATE_othertable_RIGHT_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.s2_=_'fourth'",
 		"UPDATE_typestable_SET_da_=_'0000-00-00',_ti_=_'0000-00-00_00:00:00';",
-		"with_recursive_t_(n)_as_(select_(1)_from_dual_union_all_select_n_+_1_from_t_where_n_<_2)_UPDATE_mytable_set_s_=_concat('updated_',_i)_where_i_in_(select_n_from_t)",
-		"with_t_(n)_as_(select_(1)_from_dual)_UPDATE_mytable_set_s_=_concat('updated_',_i)_where_i_in_(select_n_from_t)",
 	)
 	enginetest.TestUpdate(t, harness)
 }
