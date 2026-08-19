@@ -274,7 +274,8 @@ def _iter_args(e):
 def _has_outer(e, pred):
     # Do not look inside scalar subqueries. MAX in (SELECT MAX(pk) ...) is
     # not an aggregate of the outer SELECT.
-    if e is None or isinstance(e, exp.Subquery):
+    # Window SUM() OVER (...) is also not a GROUP BY aggregate.
+    if e is None or isinstance(e, (exp.Subquery, exp.Window)):
         return False
     if pred(e):
         return True
