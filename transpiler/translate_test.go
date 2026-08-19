@@ -269,12 +269,12 @@ func TestTranslate(t *testing.T) {
 		{
 			name:     "string WHERE predicate is numeric nonzero",
 			input:    "SELECT i FROM mytable WHERE 'hello'",
-			expected: "SELECT i FROM mytable WHERE CAST('hello' AS DOUBLE) <> 0",
+			expected: "SELECT i FROM mytable WHERE COALESCE(TRY_CAST('hello' AS DOUBLE), 0) <> 0",
 		},
 		{
 			name:     "NOT string predicate is numeric zero",
 			input:    "SELECT i FROM mytable WHERE NOT 'hello'",
-			expected: "SELECT i FROM mytable WHERE CAST('hello' AS DOUBLE) = 0",
+			expected: "SELECT i FROM mytable WHERE COALESCE(TRY_CAST('hello' AS DOUBLE), 0) = 0",
 		},
 	}
 
