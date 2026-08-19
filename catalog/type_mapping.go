@@ -99,14 +99,23 @@ func newDateTimeType(mysqlName string, precision int) AnnotatedDuckType {
 }
 
 func newEnumType(typ sql.EnumType) AnnotatedDuckType {
-	// For ENUM type, we need to escape single quotes in values
-	escapedValues := make([]string, len(typ.Values()))
-	for i, v := range typ.Values() {
-		// Replace each single quote with two single quotes to escape it
-		escapedValues[i] = strings.ReplaceAll(v, "'", "''")
+	values := typ.Values()
+	// MySQL non-strict mode stores invalid ENUM values as empty string.
+	// DuckDB rejects members that are not declared, so keep '' in the DuckDB
+	// type. SHOW CREATE TABLE still uses the original MySQL value list.
+	escapedValues := make([]string, 0, len(values)+1)
+	hasEmpty := false
+	for _, v := range values {
+		if v == "" {
+			hasEmpty = true
+		}
+		escapedValues = append(escapedValues, strings.ReplaceAll(v, "'", "''"))
+	}
+	if !hasEmpty {
+		escapedValues = append([]string{""}, escapedValues...)
 	}
 	typeString := `ENUM('` + strings.Join(escapedValues, `', '`) + `')`
-	return AnnotatedDuckType{typeString, MySQLType{Name: "ENUM", Values: typ.Values(), Collation: uint16(typ.Collation())}}
+	return AnnotatedDuckType{typeString, MySQLType{Name: "ENUM", Values: values, Collation: uint16(typ.Collation())}}
 }
 
 func newSetType(typ sql.SetType) AnnotatedDuckType {
