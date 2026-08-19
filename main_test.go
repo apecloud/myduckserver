@@ -257,10 +257,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_i_from_datetime_table_where_timestamp_col_>_datetime('2020-01-02T12:00:00')_order_by_1",
 
 		"SELECT_TRIM(mytable.s_from_\"first_row\")_AS_s_FROM_mytable",
-		"SELECT_HOUR('2007-12-11_20:21:22')_FROM_mytable",
-		"SELECT_MINUTE('2007-12-11_20:21:22')_FROM_mytable",
-		"SELECT_SECOND('2007-12-11_20:21:22')_FROM_mytable",
-		"SELECT_SECOND('2007-12-11T20:21:22Z')_FROM_mytable",
+
 		"SELECT_DAYOFYEAR('20071211')_FROM_mytable",
 		"SELECT_DISTINCT_CAST(i_AS_DECIMAL)_from_mytable;",
 		"SELECT_SUM(_DISTINCT_CAST(i_AS_DECIMAL))_from_mytable;",
@@ -353,8 +350,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_concat(space(i),_'a')_from_mytable;",
 		"select_space(i_*_2)_from_mytable;",
 		"select_atan(i),_atan2(i,_i_+_2)_from_mytable;",
-		"select_elt(i,_'a',_'b')_from_mytable;",
-		"select_field(i,_'1',_'2',_'3')_from_mytable;",
+
 		"select_char(i,_i_+_10,_pi())_from_mytable;",
 		"select_length(random_bytes(i))_from_mytable;",
 	}

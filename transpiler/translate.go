@@ -233,6 +233,34 @@ def rewrite_mysql_for_duckdb(node):
             ],
             default=neg,
         )
+    # MySQL HOUR/MINUTE/SECOND accept datetime strings; DuckDB needs a timestamp.
+    if isinstance(node, (exp.Hour, exp.Minute, exp.Second)):
+        inner = node.this
+        if not isinstance(inner, exp.Cast):
+            inner = exp.Cast(this=inner, to=exp.DataType.build("TIMESTAMP"))
+        return node.__class__(this=inner)
+    # MySQL ELT(n, a, b, ...) is 1-based; out of range is NULL.
+    if isinstance(node, exp.Elt):
+        idx = node.this
+        items = list(node.expressions or [])
+        return exp.Anonymous(
+            this="list_extract",
+            expressions=[exp.Array(expressions=items), idx],
+        )
+    # MySQL FIELD(str, a, b, ...) is 1-based index or 0.
+    if isinstance(node, exp.Anonymous) and str(node.this).lower() == "field" and len(node.expressions) >= 2:
+        needle = node.expressions[0]
+        items = list(node.expressions[1:])
+        return exp.Anonymous(
+            this="coalesce",
+            expressions=[
+                exp.Anonymous(
+                    this="list_position",
+                    expressions=[exp.Array(expressions=items), needle],
+                ),
+                exp.Literal.number(0),
+            ],
+        )
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

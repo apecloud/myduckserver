@@ -96,6 +96,21 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT SUBSTRING_INDEX(s, 'd', 1) FROM mytable",
 			expected: "SELECT CASE WHEN 1 = 0 THEN '' WHEN 1 > 0 THEN ARRAY_TO_STRING(LIST_SLICE(STRING_SPLIT(s, 'd'), 1, 1), 'd') ELSE ARRAY_TO_STRING(LIST_SLICE(STRING_SPLIT(s, 'd'), LEN(STRING_SPLIT(s, 'd')) + 1 + 1, LEN(STRING_SPLIT(s, 'd'))), 'd') END FROM mytable",
 		},
+		{
+			name:     "HOUR casts datetime string to timestamp",
+			input:    "SELECT HOUR('2007-12-11 20:21:22') FROM mytable",
+			expected: "SELECT HOUR(CAST('2007-12-11 20:21:22' AS TIMESTAMP)) FROM mytable",
+		},
+		{
+			name:     "ELT becomes list_extract",
+			input:    "SELECT ELT(i, 'a', 'b') FROM mytable",
+			expected: "SELECT LIST_EXTRACT(['a', 'b'], i) FROM mytable",
+		},
+		{
+			name:     "FIELD becomes list_position",
+			input:    "SELECT FIELD(i, '1', '2', '3') FROM mytable",
+			expected: "SELECT COALESCE(LIST_POSITION(['1', '2', '3'], i), 0) FROM mytable",
+		},
 	}
 
 	// Loop over each test case
