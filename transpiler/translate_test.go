@@ -367,6 +367,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT MYSQL_RAND(i) FROM mytable ORDER BY i NULLS FIRST",
 		},
 		{
+			name:     "RANDOM_BYTES uses mysql_random_bytes",
+			input:    "SELECT LENGTH(RANDOM_BYTES(i)) FROM mytable",
+			expected: "SELECT OCTET_LENGTH(MYSQL_RANDOM_BYTES(i)) FROM mytable",
+		},
+		{
 			name:     "string column equal to zero is numeric",
 			input:    "SELECT * FROM tabletest WHERE s = 0",
 			expected: "SELECT * FROM tabletest WHERE COALESCE(TRY_CAST(s AS DOUBLE), 0) = 0",
