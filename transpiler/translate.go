@@ -121,6 +121,64 @@ def rewrite_mysql_for_duckdb(node):
                 kind=node.args.get("kind"),
                 constraints=kept,
             )
+    # MySQL CHAR_LENGTH / CHARACTER_LENGTH -> DuckDB LENGTH (character count).
+    # Without this, some paths still emit CHAR_LENGTH, which DuckDB does not have.
+    if isinstance(node, exp.Length) and not node.args.get("binary"):
+        return exp.Anonymous(this="length", expressions=[node.this])
+    # MySQL FORMAT(x, d[, locale]) is number-to-string with grouping.
+    # DuckDB FORMAT is {fmt}; map the scale and swap separators for common EU locales.
+    if isinstance(node, exp.NumberToStr):
+        value = node.this
+        digits = node.args.get("format")
+        culture = node.args.get("culture")
+        if isinstance(digits, exp.Literal) and digits.is_int:
+            fmt = "{:,." + str(int(digits.this)) + "f}"
+            formatted = exp.Anonymous(
+                this="format",
+                expressions=[exp.Literal.string(fmt), value],
+            )
+        else:
+            formatted = exp.Anonymous(
+                this="format",
+                expressions=[
+                    exp.Anonymous(
+                        this="concat",
+                        expressions=[
+                            exp.Literal.string("{:,."),
+                            exp.Cast(this=digits, to=exp.DataType.build("TEXT")),
+                            exp.Literal.string("f}"),
+                        ],
+                    ),
+                    value,
+                ],
+            )
+        if isinstance(culture, exp.Literal) and culture.is_string:
+            loc = str(culture.this).lower().replace("-", "_")
+            prefix = loc.split("_", 1)[0]
+            if prefix in ("da", "de", "nl", "es", "it", "pt"):
+                formatted = exp.Anonymous(
+                    this="replace",
+                    expressions=[
+                        exp.Anonymous(
+                            this="replace",
+                            expressions=[
+                                exp.Anonymous(
+                                    this="replace",
+                                    expressions=[
+                                        formatted,
+                                        exp.Literal.string(","),
+                                        exp.Literal.string("\x01"),
+                                    ],
+                                ),
+                                exp.Literal.string("."),
+                                exp.Literal.string(","),
+                            ],
+                        ),
+                        exp.Literal.string("\x01"),
+                        exp.Literal.string("."),
+                    ],
+                )
+        return formatted
     return node
 
 def transpile_mysql_to_duckdb(sql: str) -> str:
