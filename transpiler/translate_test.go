@@ -261,6 +261,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT DATE_FORMAT(datetime_col, '%D') FROM datetime_table",
 			expected: "SELECT CONCAT(CAST(DAY(CAST(datetime_col AS TIMESTAMP)) AS TEXT), CASE WHEN DAY(CAST(datetime_col AS TIMESTAMP)) IN (11, 12, 13) THEN 'th' ELSE CASE MOD(DAY(CAST(datetime_col AS TIMESTAMP)), 10) WHEN 1 THEN 'st' WHEN 2 THEN 'nd' WHEN 3 THEN 'rd' ELSE 'th' END END) FROM datetime_table",
 		},
+		{
+			name:     "HAVING uses SELECT alias expression",
+			input:    "SELECT i, 1 AS foo, 2 AS bar FROM MyTable HAVING bar = 2",
+			expected: "SELECT i, 1 AS foo, 2 AS bar FROM MyTable HAVING 2 = 2",
+		},
 	}
 
 	// Loop over each test case

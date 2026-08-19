@@ -503,6 +503,23 @@ def rewrite_mysql_for_duckdb(node):
             updated = node.copy()
             updated.set("expressions", new_exprs)
             return updated
+    # MySQL HAVING can use SELECT aliases. Substitute the aliased expression.
+    if isinstance(node, exp.Select) and node.args.get("having") is not None:
+        aliases = {}
+        for e in node.expressions or []:
+            if isinstance(e, exp.Alias) and e.alias:
+                aliases[str(e.alias).lower()] = e.this
+        if aliases:
+            def _replace_having_alias(n):
+                if isinstance(n, exp.Column) and not n.table and n.name and n.name.lower() in aliases:
+                    return aliases[n.name.lower()]
+                return n
+            having = node.args.get("having")
+            new_having = having.transform(_replace_having_alias)
+            if new_having is not having:
+                updated = node.copy()
+                updated.set("having", new_having)
+                return updated
     return node
 
 def transpile_mysql_to_duckdb(sql: str) -> str:

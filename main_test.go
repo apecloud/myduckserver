@@ -243,8 +243,7 @@ func TestQueriesSimple(t *testing.T) {
 		"WITH_mytable_as_(select_*_FROM_mytable)_SELECT_s,i_FROM_mytable;",
 		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable;",
 		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable_union_SELECT_*_from_mytable;",
-		"SELECT_i,_1_AS_foo,_2_AS_bar_FROM_MyTable_HAVING_bar_=_2_ORDER_BY_foo,_i;",
-		"SELECT_i,_1_AS_foo,_2_AS_bar_FROM_MyTable_HAVING_bar_=_1_ORDER_BY_foo,_i;",
+
 		"SELECT_reservedWordsTable.AND,_reservedWordsTABLE.Or,_reservedwordstable.SEleCT_FROM_reservedWordsTable;",
 		"SELECT_*_from_mytable_where_(i_=_1_|_false)_IN_(true)",
 		"SELECT_*_from_mytable_where_(i_=_1_&_false)_IN_(true)",
@@ -276,7 +275,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_s_>_2_FROM_tabletest",
 		"SELECT_*_FROM_tabletest_WHERE_s_>_0",
 		"SELECT_*_FROM_tabletest_WHERE_s_=_0",
-		"SELECT_i_AS_foo_FROM_mytable_HAVING_foo_NOT_IN_(1,_2,_5)",
+
 		"SELECT_SUM(i)_FROM_mytable",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
 
