@@ -27,6 +27,7 @@
   - [Backup and Restore with Object Storage](#backup-and-restore-with-object-storage)
   - [LLM Integration](#llm-integration)
   - [Access from Python](#access-from-python)
+- [Connect examples](#connect-examples)
 - [Roadmap](#-roadmap)
 - [Contributing](#-contributing)
 - [Acknowledgements](#-acknowledgements)
@@ -216,6 +217,10 @@ MyDuck Server can be integrated with LLM applications via the [Model Context Pro
 ### Access from Python
 
 MyDuck Server can be seamlessly accessed from the Python data science ecosystem. Follow the [Python integration guide](docs/tutorial/pg-python-data-tools.md) to connect to MyDuck Server from Python and export data to PyArrow, pandas, and Polars. Additionally, check out the [Ibis integration guide](docs/tutorial/connect-with-ibis-setup.md) for using the [Ibis](https://ibis-project.org/) dataframe API to query MyDuck Server directly.
+
+### Connect examples
+
+Short connect snippets for MySQL/Postgres CLI, Python, Node.js, Go, Java, and R are in [connect-examples.md](docs/tutorial/connect-examples.md).
 
 ## 🎯 Roadmap
 
