@@ -750,16 +750,25 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 
 	default:
 		// https://mariadb.com/kb/en/2-binlog-event-header/
+		// MySQL include/mysql/binlog_event.h: byte 4 is Log_event_type.
 		bytes := event.Bytes()
+		if len(bytes) < 5 {
+			return fmt.Errorf("received unknown event: %v", event)
+		}
 		switch bytes[4] {
-		case 0x1b:
+		case binlogEventHeartbeat:
 			// Type 27 is a Heartbeat event. This event does not appear in the binary log. It's only sent over the
 			// network by a primary to a replica to let it know that the primary is still alive, and is only sent
 			// when the primary has no binlog events to send to replica servers.
 			// For more details, see: https://mariadb.com/kb/en/heartbeat_log_event/
 			ctx.GetLogger().Trace("Received binlog event: Heartbeat")
-		case 0x03:
+		case binlogEventStop:
 			ctx.GetLogger().Trace("Received binlog event: Stop")
+		case binlogEventIgnorable, binlogEventRowsQuery:
+			// ROWS_QUERY is the original SQL text when binlog_rows_query_log_events=ON.
+			// It is informational only; the following WRITE/UPDATE/DELETE_ROWS events apply the change.
+			// Treating it as unknown aborted replication (#359).
+			ctx.GetLogger().Trace("Received binlog event: Ignorable/Rows_query")
 		default:
 			return fmt.Errorf("received unknown event: %v", event)
 		}
