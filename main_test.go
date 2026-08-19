@@ -742,8 +742,7 @@ func TestInsertInto(t *testing.T) {
 		"INSERT_INTO_mytable_(i,s)_values_(1,_'hello2')_ON_DUPLICATE_KEY_UPDATE_s='hello3'#01",
 		"INSERT_INTO_mytable_(i,s)_values_(10,_'hello')_ON_DUPLICATE_KEY_UPDATE_s='hello'",
 		"INSERT_INTO_mytable_(s,i)_values_('dup',1)_ON_DUPLICATE_KEY_UPDATE_s=CONCAT(VALUES(s),_'licate')",
-		"INSERT_INTO_mytable_SET_i_=_999,_s_=__binary_'x';",
-		"INSERT_INTO_mytable_VALUES_(999,__binary_'x');",
+
 		"INSERT_INTO_othertable_VALUES_(\"fourth\",_1)_ON_DUPLICATE_KEY_UPDATE_s2=\"fourth\"",
 		"INSERT_INTO_typestable_SET____id_=_999,_i8_=_-128,_i16_=_-32768,_i32_=_-2147483648,_i64_=_-9223372036854775808,____u8_=_0,_u16_=_0,_u32_=_0,_u64_=_0,____f32_=_1.401298464324817070923729583289916131280e-45,_f64_=_4.940656458412465441765687928682213723651e-324,____ti_=_'0000-00-00_00:00:00',_da_=_'0000-00-00',____te_=_'',_bo_=_false,_js_=_'\"\"',_bl_=_'',_e1_=_'v1',_s1_=_'v2'____;",
 		"INSERT_INTO_typestable_SET____id_=_999,_i8_=_-128,_i16_=_-32768,_i32_=_-2147483648,_i64_=_-9223372036854775808,____u8_=_0,_u16_=_0,_u32_=_0,_u64_=_0,____f32_=_1.401298464324817070923729583289916131280e-45,_f64_=_4.940656458412465441765687928682213723651e-324,____ti_=_'2037-04-05_12:51:36_-0000_UTC',_da_=_'0000-00-00',____te_=_'',_bo_=_false,_js_=_'\"\"',_bl_=_'',_e1_=_'v1',_s1_=_'v2'____;",
@@ -900,7 +899,7 @@ func TestUpdate(t *testing.T) {
 		"UPDATE_floattable_SET_f32_=_f32_+_f32,_f64_=_f32_*_f64_WHERE_i_=_2;",
 		"UPDATE_mytable_SET_s_=_'first_row'_WHERE_i_=_1;",
 		"UPDATE_mytable_SET_s_=_'updated'_ORDER_BY_i_LIMIT_1_OFFSET_1;",
-		"UPDATE_mytable_SET_s_=__binary_'updated'_WHERE_i_=_3;",
+
 		"UPDATE_niltable_SET_b_=_NULL_WHERE_f_IS_NULL;",
 		"UPDATE_othertable_INNER_JOIN_tabletest_on_othertable.i2=3_and_tabletest.i=3_SET_othertable.s2_=_'fourth'",
 		"UPDATE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_one_pk.c1_=_one_pk.c1_+_1,_one_pk.c2_=_one_pk.c2_+_1_ORDER_BY_one_pk.pk",

@@ -354,6 +354,11 @@ def _rewrite_mysql_update(node):
     return exp.Update(**kwargs)
 
 def rewrite_mysql_for_duckdb(node):
+    # MySQL _binary 'x' / _utf8mb4 'x' are charset introducers. DuckDB has no _binary type.
+    if isinstance(node, exp.Introducer):
+        inner = node.args.get("expression")
+        if inner is not None:
+            return inner
     # DuckDB has no DUAL; replace with a one-row subquery.
     if isinstance(node, exp.Table) and not node.args.get("db") and (node.name or "").lower() == "dual":
         return exp.Subquery(
