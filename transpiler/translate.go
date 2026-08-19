@@ -845,10 +845,12 @@ def rewrite_mysql_for_duckdb(node):
         def _already_any_value(e):
             inner = e.this if isinstance(e, exp.Alias) else e
             return isinstance(inner, exp.Anonymous) and str(inner.this).lower() == "any_value"
+        def _has_column(e):
+            return any(isinstance(x, exp.Column) for x in e.walk())
         if exprs and any(_has_agg(e) for e in exprs) and any(not _has_agg(e) for e in exprs):
             new_exprs = []
             for e in exprs:
-                if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e):
+                if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or not _has_column(e):
                     new_exprs.append(e)
                     continue
                 alias = e.alias if isinstance(e, exp.Alias) else None
@@ -884,8 +886,10 @@ def rewrite_mysql_for_duckdb(node):
             return inner.sql(dialect="duckdb").lower() in group_keys
         new_exprs = []
         changed = False
+        def _has_column(e):
+            return any(isinstance(x, exp.Column) for x in e.walk())
         for idx, e in enumerate(exprs, 1):
-            if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or _in_group(e, idx):
+            if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or _in_group(e, idx) or not _has_column(e):
                 new_exprs.append(e)
                 continue
             alias = e.alias if isinstance(e, exp.Alias) else None
