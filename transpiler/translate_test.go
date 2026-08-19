@@ -326,6 +326,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT i FROM mytable WHERE id = 1",
 			expected: "SELECT i FROM mytable WHERE id = 1",
 		},
+		{
+			name:     "CASE mixed int and string casts to text",
+			input:    "SELECT CASE WHEN i > 2 THEN i ELSE 'two' END FROM mytable",
+			expected: "SELECT CASE WHEN COALESCE(TRY_CAST(i AS DOUBLE), 0) > 2 THEN CAST(i AS TEXT) ELSE CAST('two' AS TEXT) END FROM mytable",
+		},
 	}
 
 	// Loop over each test case
