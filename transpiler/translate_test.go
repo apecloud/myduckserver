@@ -126,6 +126,21 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT CONV(i, 10, 2) FROM mytable",
 			expected: "SELECT FORMAT('{:b}', i) FROM mytable",
 		},
+		{
+			name:     "BIT_LENGTH is strlen times 8",
+			input:    "SELECT BIT_LENGTH(i) FROM mytable",
+			expected: "SELECT STRLEN(CAST(i AS TEXT)) * 8 FROM mytable",
+		},
+		{
+			name:     "OCTET_LENGTH becomes strlen",
+			input:    "SELECT OCTET_LENGTH(s) FROM mytable",
+			expected: "SELECT STRLEN(s) FROM mytable",
+		},
+		{
+			name:     "UNHEX becomes from_hex",
+			input:    "SELECT UNHEX(s) FROM mytable",
+			expected: "SELECT FROM_HEX(s) FROM mytable",
+		},
 	}
 
 	// Loop over each test case

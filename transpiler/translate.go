@@ -279,6 +279,21 @@ def rewrite_mysql_for_duckdb(node):
                     this="format",
                     expressions=[exp.Literal.string(spec), value],
                 )
+    # MySQL BIT_LENGTH is bits; DuckDB STRLEN is bytes.
+    if isinstance(node, exp.BitLength):
+        return exp.Mul(
+            this=exp.Anonymous(
+                this="strlen",
+                expressions=[exp.Cast(this=node.this, to=exp.DataType.build("TEXT"))],
+            ),
+            expression=exp.Literal.number(8),
+        )
+    # MySQL OCTET_LENGTH is bytes.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "OCTET_LENGTH" and node.expressions:
+        return exp.Anonymous(this="strlen", expressions=[node.expressions[0]])
+    # MySQL UNHEX -> DuckDB from_hex.
+    if isinstance(node, exp.Unhex):
+        return exp.Anonymous(this="from_hex", expressions=[node.this])
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:
