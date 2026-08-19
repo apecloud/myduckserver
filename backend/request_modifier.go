@@ -302,6 +302,15 @@ func RewriteIncomingQuery(query string) string {
 	return rewritten
 }
 
+func isCreateViewStmt(query string) bool {
+	_, _, ok := findCreateViewBody(query)
+	return ok
+}
+
+func shouldIgnoreFailedView(query string, snapshot bool) bool {
+	return snapshot && isCreateViewStmt(query)
+}
+
 // applyRequestModifiers applies request modifiers to a query
 func applyRequestModifiers(query string, requestModifiers []RequestModifier) (string, []ResultModifier) {
 	resultModifiers := make([]ResultModifier, 0)

@@ -99,6 +99,15 @@ func TestUnwrapCreateViewParensWithColumnList(t *testing.T) {
 	require.Equal(t, "CREATE VIEW v (a, b) AS SELECT 1, 2", got)
 }
 
+func TestShouldIgnoreFailedViewDuringSnapshot(t *testing.T) {
+	view := "CREATE OR REPLACE SQL SECURITY INVOKER VIEW log_report_count AS SELECT 1"
+	require.True(t, isCreateViewStmt(view))
+	require.True(t, shouldIgnoreFailedView(view, true))
+	require.False(t, shouldIgnoreFailedView(view, false))
+	require.False(t, shouldIgnoreFailedView("CREATE TABLE t (i INT)", true))
+	require.False(t, shouldIgnoreFailedView("SELECT 1", true))
+}
+
 func TestApplyRequestModifiersIssue329(t *testing.T) {
 	fn, _ := applyRequestModifiers("/*!50003 DROP FUNCTION IF EXISTS `toDate` */", defaultRequestModifiers)
 	require.Equal(t, skipUnsupportedDDL, fn)
