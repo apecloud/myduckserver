@@ -392,6 +392,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT pk FROM one_pk WHERE EXISTS(SELECT 1 FROM (SELECT COUNT(*) AS u, 123 AS v FROM emptytable) AS q WHERE pk = q.u AND 123 = q.v)",
 		},
 		{
+			name:     "CTE name matching table is not circular",
+			input:    "WITH mytable AS (SELECT * FROM mytable) SELECT s, i FROM mytable",
+			expected: "WITH mytable__mds AS (SELECT * FROM mytable) SELECT s, i FROM mytable__mds",
+		},
+		{
 			name:     "DELETE JOIN becomes DELETE USING",
 			input:    "DELETE mytable FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
 			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",
