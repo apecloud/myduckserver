@@ -276,6 +276,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT i FROM mytable WHERE NOT 'hello'",
 			expected: "SELECT i FROM mytable WHERE COALESCE(TRY_CAST('hello' AS DOUBLE), 0) = 0",
 		},
+		{
+			name:     "bare column WHERE is numeric nonzero",
+			input:    "SELECT i, v FROM stringandtable WHERE v",
+			expected: "SELECT i, v FROM stringandtable WHERE COALESCE(TRY_CAST(v AS DOUBLE), 0) <> 0",
+		},
 	}
 
 	// Loop over each test case
