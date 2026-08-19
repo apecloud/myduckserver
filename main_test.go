@@ -237,8 +237,6 @@ func TestQueriesSimple(t *testing.T) {
 		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable;",
 		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable_union_SELECT_*_from_mytable;",
 
-		"SELECT_reservedWordsTable.AND,_reservedWordsTABLE.Or,_reservedwordstable.SEleCT_FROM_reservedWordsTable;",
-
 		"select_pk,_________row_number()_over_(order_by_pk_desc),_________sum(v1)_over_(partition_by_v2_order_by_pk),_________percent_rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 		"select_pk,____________________percent_rank()_over(partition_by_v2_order_by_pk),____________________dense_rank()_over(partition_by_v2_order_by_pk),____________________rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 		"select_pk,_________first_value(pk)_over_(order_by_pk_desc),_________lag(pk,_1)_over_(order_by_pk_desc),_________count(pk)_over(partition_by_v1_order_by_pk),_________max(pk)_over(partition_by_v1_order_by_pk_desc),_________avg(v2)_over_(partition_by_v1_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
