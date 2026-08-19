@@ -231,6 +231,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT ATAN(i), ATAN2(i, i + 2) FROM mytable",
 			expected: "SELECT ATAN(i), ATAN2(i, i + 2) FROM mytable",
 		},
+		{
+			name:     "TRIM remstr FROM str becomes trim(str, remstr)",
+			input:    "SELECT TRIM(s FROM 'first row') AS s FROM mytable",
+			expected: "SELECT TRIM('first row', s) AS s FROM mytable",
+		},
 	}
 
 	// Loop over each test case
