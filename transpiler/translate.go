@@ -288,9 +288,9 @@ def rewrite_mysql_for_duckdb(node):
             ),
             expression=exp.Literal.number(8),
         )
-    # MySQL OCTET_LENGTH is bytes.
+    # MySQL OCTET_LENGTH is bytes. DuckDB STRLEN counts characters.
     if isinstance(node, exp.Anonymous) and str(node.this).upper() == "OCTET_LENGTH" and node.expressions:
-        return exp.Anonymous(this="strlen", expressions=[node.expressions[0]])
+        return exp.Anonymous(this="octet_length", expressions=[node.expressions[0]])
     # MySQL UNHEX -> DuckDB from_hex.
     if isinstance(node, exp.Unhex):
         return exp.Anonymous(this="from_hex", expressions=[node.this])
