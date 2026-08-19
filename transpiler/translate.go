@@ -259,9 +259,33 @@ def _target_rowid(match, tgt_name):
         return exp.column("rowid", table=alias)
     return exp.column("rowid")
 
+def _col_key(col):
+    return ((col.table or "").lower(), (col.name or "").lower())
+
+def _last_wins_sets(exprs):
+    # MySQL SET a = 1, a = 2 keeps 2. DuckDB rejects two assignments.
+    exprs = list(exprs or [])
+    last_pos = {}
+    for i, e in enumerate(exprs):
+        if isinstance(e, exp.EQ) and isinstance(e.this, exp.Column):
+            last_pos[_col_key(e.this)] = i
+    out = []
+    for i, e in enumerate(exprs):
+        if isinstance(e, exp.EQ) and isinstance(e.this, exp.Column):
+            if last_pos[_col_key(e.this)] != i:
+                continue
+        out.append(e)
+    return out
+
 def _rewrite_mysql_update(node):
     if not isinstance(node, exp.Update):
         return None
+    original = list(node.expressions or [])
+    exprs = _last_wins_sets(original)
+    deduped = exprs != original
+    if deduped:
+        node = node.copy()
+        node.set("expressions", exprs)
     srcs, ons = [], []
     _collect_from_src(node.this, srcs, ons)
     has_join = len(srcs) > 1
@@ -283,7 +307,7 @@ def _rewrite_mysql_update(node):
         kwargs.update(_with_kwargs(node))
         return exp.Update(**kwargs)
     if not has_join:
-        return None
+        return node if deduped else None
     if isinstance(node.this, exp.Table):
         for j in node.this.args.get("joins") or []:
             if not _join_is_inner_or_cross(j):

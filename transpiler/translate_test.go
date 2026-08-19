@@ -337,6 +337,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT COUNT(*) OVER () FROM mytable ORDER BY i NULLS FIRST",
 		},
 		{
+			name:     "duplicate SET keeps the last assignment",
+			input:    "UPDATE floattable SET f32 = 5, f32 = 4 WHERE i = 1",
+			expected: "UPDATE floattable SET f32 = 4 WHERE i = 1",
+		},
+		{
 			name:     "charset introducer is stripped",
 			input:    "UPDATE mytable SET s = _binary 'updated' WHERE i = 3",
 			expected: "UPDATE mytable SET s = 'updated' WHERE i = 3",
