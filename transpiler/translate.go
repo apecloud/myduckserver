@@ -214,6 +214,145 @@ def _rewrite_mysql_delete(node):
         return exp.Delete(**kwargs)
     return None
 
+def _join_is_inner_or_cross(j):
+    kind = (j.args.get("kind") or "").upper()
+    side = (j.args.get("side") or "").upper()
+    if side in ("LEFT", "RIGHT", "FULL"):
+        return False
+    return kind in ("", "INNER", "CROSS")
+
+def _update_set_tables(exprs):
+    tables = []
+    seen = set()
+    for e in exprs or []:
+        if isinstance(e, exp.EQ) and isinstance(e.this, exp.Column) and e.this.table:
+            name = str(e.this.table).lower()
+            if name not in seen:
+                seen.add(name)
+                tables.append(name)
+    return tables
+
+def _strip_target_table(exprs, tgt_name):
+    out = []
+    for e in exprs or []:
+        if isinstance(e, exp.EQ) and isinstance(e.this, exp.Column):
+            col = e.this.copy()
+            if (col.table or "").lower() == tgt_name:
+                col.set("table", None)
+            out.append(exp.EQ(this=col, expression=e.expression))
+        else:
+            out.append(e)
+    return out
+
+def _expr_tables(e):
+    names = set()
+    if e is None:
+        return names
+    for c in e.find_all(exp.Column):
+        if c.table:
+            names.add(str(c.table).lower())
+    return names
+
+def _target_rowid(match, tgt_name):
+    alias = _table_alias_or_name(match) or tgt_name
+    if alias:
+        return exp.column("rowid", table=alias)
+    return exp.column("rowid")
+
+def _rewrite_mysql_update(node):
+    if not isinstance(node, exp.Update):
+        return None
+    srcs, ons = [], []
+    _collect_from_src(node.this, srcs, ons)
+    has_join = len(srcs) > 1
+    # DuckDB UPDATE has no ORDER BY / LIMIT. Keep the same rows via rowid.
+    if (node.args.get("order") is not None or node.args.get("limit") is not None) and not has_join:
+        tbl = _plain_source(node.this)
+        sub = exp.select(exp.column("rowid")).from_(tbl.copy())
+        if node.args.get("where") is not None:
+            sub = sub.where(node.args.get("where").this)
+        if node.args.get("order") is not None:
+            sub.set("order", node.args.get("order"))
+        if node.args.get("limit") is not None:
+            sub.set("limit", node.args.get("limit"))
+        kwargs = {
+            "this": tbl,
+            "expressions": list(node.expressions or []),
+            "where": exp.Where(this=exp.In(this=exp.column("rowid"), expressions=[exp.paren(sub)])),
+        }
+        kwargs.update(_with_kwargs(node))
+        return exp.Update(**kwargs)
+    if not has_join:
+        return None
+    if isinstance(node.this, exp.Table):
+        for j in node.this.args.get("joins") or []:
+            if not _join_is_inner_or_cross(j):
+                return None
+    set_tables = _update_set_tables(node.expressions)
+    if len(set_tables) != 1:
+        return None
+    tgt_name = set_tables[0]
+    match = None
+    for s in srcs:
+        if _match_target(s, tgt_name):
+            match = s
+            break
+    if match is None:
+        return None
+    other_refs = set()
+    for e in node.expressions or []:
+        if isinstance(e, exp.EQ):
+            other_refs |= _expr_tables(e.expression)
+    other_refs.discard(tgt_name)
+    rid = _target_rowid(match, tgt_name)
+    if not other_refs:
+        # MySQL updates each target row once. rowid IN avoids 1:N double-count
+        # and DuckDB unique-index errors on UPDATE FROM.
+        sub = exp.select(rid).from_(node.this.copy()).distinct()
+        if node.args.get("where") is not None:
+            sub = sub.where(node.args.get("where").this)
+        kwargs = {
+            "this": _plain_source(match),
+            "expressions": _strip_target_table(node.expressions, tgt_name),
+            "where": exp.Where(this=exp.In(this=exp.column("rowid"), expressions=[exp.paren(sub)])),
+        }
+        kwargs.update(_with_kwargs(node))
+        return exp.Update(**kwargs)
+    # SET uses other tables: pick one joined row per target.
+    select_exprs = [exp.alias_(rid, "__rid")]
+    new_sets = []
+    for i, e in enumerate(node.expressions or []):
+        if not isinstance(e, exp.EQ):
+            return None
+        alias = "__s" + str(i)
+        select_exprs.append(exp.alias_(e.expression, alias))
+        col = e.this.copy()
+        col.set("table", None)
+        new_sets.append(exp.EQ(this=col, expression=exp.column(alias, table="src")))
+    sub = exp.Select(expressions=select_exprs)
+    sub.set("from_", exp.From(this=node.this.copy()))
+    if node.args.get("where") is not None:
+        sub = sub.where(node.args.get("where").this)
+    sub.set(
+        "qualify",
+        exp.Qualify(
+            this=exp.EQ(
+                this=exp.Window(this=exp.RowNumber(), partition_by=[rid], over="OVER"),
+                expression=exp.Literal.number(1),
+            )
+        ),
+    )
+    kwargs = {
+        "this": _plain_source(match),
+        "expressions": new_sets,
+        "from_": exp.From(this=exp.Subquery(this=sub, alias="src")),
+        "where": exp.Where(
+            this=exp.EQ(this=exp.column("rowid"), expression=exp.column("__rid", table="src"))
+        ),
+    }
+    kwargs.update(_with_kwargs(node))
+    return exp.Update(**kwargs)
+
 def rewrite_mysql_for_duckdb(node):
     # DuckDB has no DUAL; replace with a one-row subquery.
     if isinstance(node, exp.Table) and not node.args.get("db") and (node.name or "").lower() == "dual":
@@ -305,6 +444,21 @@ def rewrite_mysql_for_duckdb(node):
         if rewritten_delete.this is not None:
             rewritten_delete.set("this", rewritten_delete.this.transform(rewrite_mysql_for_duckdb))
         return rewritten_delete
+    rewritten_update = _rewrite_mysql_update(node)
+    if rewritten_update is not None:
+        if rewritten_update.args.get("with_") is not None:
+            rewritten_update.set("with_", rewritten_update.args.get("with_").transform(rewrite_mysql_for_duckdb))
+        if rewritten_update.args.get("where") is not None:
+            rewritten_update.set("where", rewritten_update.args.get("where").transform(rewrite_mysql_for_duckdb))
+        if rewritten_update.args.get("from_") is not None:
+            rewritten_update.set("from_", rewritten_update.args.get("from_").transform(rewrite_mysql_for_duckdb))
+        if rewritten_update.this is not None:
+            rewritten_update.set("this", rewritten_update.this.transform(rewrite_mysql_for_duckdb))
+        new_exprs = []
+        for e in rewritten_update.expressions or []:
+            new_exprs.append(e.transform(rewrite_mysql_for_duckdb) if e is not None else e)
+        rewritten_update.set("expressions", new_exprs)
+        return rewritten_update
     # Nested MySQL XOR is left as the XOR keyword, which DuckDB rejects.
     # Expand to the equivalent boolean form before generating DuckDB SQL.
     if isinstance(node, exp.Xor):
