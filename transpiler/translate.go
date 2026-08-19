@@ -545,6 +545,13 @@ def rewrite_mysql_for_duckdb(node):
                 kind=node.args.get("kind"),
                 constraints=kept,
             )
+    # MySQL LENGTH(RANDOM_BYTES(n)) is the byte count. Evaluate RANDOM_BYTES once.
+    if isinstance(node, exp.Length) and isinstance(node.this, exp.Anonymous) and str(node.this.this).upper() in ("RANDOM_BYTES", "MYSQL_RANDOM_BYTES") and node.this.expressions:
+        n = node.this.expressions[0].transform(rewrite_mysql_for_duckdb)
+        return exp.Anonymous(
+            this="octet_length",
+            expressions=[exp.Anonymous(this="mysql_random_bytes", expressions=[n])],
+        )
     # MySQL CHAR_LENGTH / CHARACTER_LENGTH -> DuckDB LENGTH (character count).
     # Without this, some paths still emit CHAR_LENGTH, which DuckDB does not have.
     if isinstance(node, exp.Length) and not node.args.get("binary"):
@@ -610,6 +617,10 @@ def rewrite_mysql_for_duckdb(node):
     if isinstance(node, exp.Anonymous) and str(node.this).upper() == "RAND" and node.expressions:
         seed = node.expressions[0].transform(rewrite_mysql_for_duckdb)
         return exp.Anonymous(this="mysql_rand", expressions=[seed])
+    # MySQL RANDOM_BYTES(n) is n random bytes. DuckDB has no builtin.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "RANDOM_BYTES" and node.expressions:
+        n = node.expressions[0].transform(rewrite_mysql_for_duckdb)
+        return exp.Anonymous(this="mysql_random_bytes", expressions=[n])
     # MySQL CRC32 is IEEE of the string bytes. DuckDB has no CRC32; use __sys__.mysql_crc32.
     if isinstance(node, exp.Anonymous) and str(node.this).upper() == "CRC32" and node.expressions:
         return exp.Anonymous(
