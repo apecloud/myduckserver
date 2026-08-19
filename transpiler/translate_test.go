@@ -201,6 +201,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT MOD(i, 2) FROM mytable",
 			expected: "SELECT i % 2 FROM mytable",
 		},
+		{
+			name:     "JSON_OVERLAPS becomes json_contains either way",
+			input:    "SELECT JSON_OVERLAPS(c3, '{\"a\": 2}') FROM jsontable",
+			expected: "SELECT JSON_CONTAINS(CAST(c3 AS JSON), CAST('{\"a\": 2}' AS JSON)) OR JSON_CONTAINS(CAST('{\"a\": 2}' AS JSON), CAST(c3 AS JSON)) FROM jsontable",
+		},
 	}
 
 	// Loop over each test case

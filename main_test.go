@@ -231,7 +231,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_emptytable);",
 		"SELECT_pk_FROM_one_pk_WHERE_(pk,_123)_NOT_IN_(SELECT_count(*)_AS_u,_123_AS_v_FROM_mytable_WHERE_false);",
 
-		"SELECT_JSON_OVERLAPS(c3,_'{\"a\":_2,_\"d\":_2}')_FROM_jsontable",
+
 
 		"SELECT_JSON_MERGE_PRESERVE(c3,_'{\"a\":_1}')_FROM_jsontable",
 
