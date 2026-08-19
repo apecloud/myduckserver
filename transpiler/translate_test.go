@@ -216,6 +216,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT LEAST(i, s) FROM mytable",
 			expected: "SELECT CASE WHEN i IS NULL OR s IS NULL THEN NULL ELSE LEAST(i, s) END FROM mytable",
 		},
+		{
+			name:     "LOCATE with start uses strpos of substring",
+			input:    "SELECT LOCATE(UPPER('roW'), UPPER(s), POWER(10, 0)) FROM mytable",
+			expected: "SELECT CASE WHEN STRPOS(SUBSTRING(UPPER(s), POWER(10, 0)), UPPER('roW')) = 0 THEN 0 ELSE STRPOS(SUBSTRING(UPPER(s), POWER(10, 0)), UPPER('roW')) + (POWER(10, 0)) - 1 END FROM mytable",
+		},
 	}
 
 	// Loop over each test case
