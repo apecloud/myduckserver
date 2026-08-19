@@ -362,6 +362,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT i FROM mytable WHERE id = 1",
 		},
 		{
+			name:     "string column equal to zero is numeric",
+			input:    "SELECT * FROM tabletest WHERE s = 0",
+			expected: "SELECT * FROM tabletest WHERE COALESCE(TRY_CAST(s AS DOUBLE), 0) = 0",
+		},
+		{
 			name:     "CASE mixed int and string casts to text",
 			input:    "SELECT CASE WHEN i > 2 THEN i ELSE 'two' END FROM mytable",
 			expected: "SELECT CASE WHEN COALESCE(TRY_CAST(i AS DOUBLE), 0) > 2 THEN CAST(i AS TEXT) ELSE CAST('two' AS TEXT) END FROM mytable",
