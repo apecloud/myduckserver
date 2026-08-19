@@ -297,7 +297,6 @@ func TestQueriesSimple(t *testing.T) {
 		"select_now()_=_sysdate(),_sleep(0.1),_now(6)_<_sysdate(6);")
 
 	panicQueries := []string{
-		"SELECT_JSON_KEYS(c3)_FROM_jsontable",
 		"SELECT_(SELECT_s_FROM_mytable_ORDER_BY_i_ASC_LIMIT_1)_AS_x",
 	}
 
