@@ -28,6 +28,7 @@ var _ sql.ViewDatabase = (*Database)(nil)
 var _ sql.TriggerDatabase = (*Database)(nil)
 var _ sql.CollatedDatabase = (*Database)(nil)
 var _ sql.TemporaryTableCreator = (*Database)(nil)
+var _ sql.StoredProcedureDatabase = (*Database)(nil)
 
 func NewDatabase(name string, catalogName string) *Database {
 	return &Database{
@@ -435,6 +436,27 @@ func (d *Database) DropTrigger(ctx *sql.Context, name string) error {
 // GetTriggers implements sql.TriggerDatabase.
 func (d *Database) GetTriggers(ctx *sql.Context) ([]sql.TriggerDefinition, error) {
 	return nil, nil
+}
+
+// GetStoredProcedure implements sql.StoredProcedureDatabase.
+// Routines are not hosted in DuckDB; SHOW FUNCTION STATUS should be empty.
+func (d *Database) GetStoredProcedure(ctx *sql.Context, name string) (sql.StoredProcedureDetails, bool, error) {
+	return sql.StoredProcedureDetails{}, false, nil
+}
+
+// GetStoredProcedures implements sql.StoredProcedureDatabase.
+func (d *Database) GetStoredProcedures(ctx *sql.Context) ([]sql.StoredProcedureDetails, error) {
+	return nil, nil
+}
+
+// SaveStoredProcedure implements sql.StoredProcedureDatabase.
+func (d *Database) SaveStoredProcedure(ctx *sql.Context, spd sql.StoredProcedureDetails) error {
+	return sql.ErrStoredProceduresNotSupported.New(d.name)
+}
+
+// DropStoredProcedure implements sql.StoredProcedureDatabase.
+func (d *Database) DropStoredProcedure(ctx *sql.Context, name string) error {
+	return sql.ErrStoredProceduresNotSupported.New(d.name)
 }
 
 // GetCollation implements sql.CollatedDatabase.
