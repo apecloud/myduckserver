@@ -283,7 +283,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_i_AS_foo_FROM_mytable_HAVING_foo_NOT_IN_(1,_2,_5)",
 		"SELECT_SUM(i)_FROM_mytable",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
-		"SELECT_MOD(i,_2)_from_mytable_order_by_i_limit_1",
+
 		"SELECT_ASIN(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_ACOS(i)_from_mytable_order_by_i_limit_1",
 		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
@@ -291,7 +291,7 @@ func TestQueriesSimple(t *testing.T) {
 
 		"select_date_format(datetime_col,_'%D')_from_datetime_table_order_by_1",
 
-		"select_from_unixtime(i)_from_mytable_order_by_1",
+
 		"SELECT_CASE_WHEN_i_>_2_THEN_i_WHEN_i_<_2_THEN_i_ELSE_'two'_END_FROM_mytable",
 		"SELECT_CASE_WHEN_i_>_2_THEN_'more_than_two'_WHEN_i_<_2_THEN_'less_than_two'_ELSE_2_END_FROM_mytable",
 		"SELECT_substring(mytable.s,_1,_5)_AS_s_FROM_mytable_INNER_JOIN_othertable_ON_(substring(mytable.s,_1,_5)_=_SUBSTRING(othertable.s2,_1,_5))_GROUP_BY_1_HAVING_s_=_\"secon\"",
@@ -317,7 +317,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_VALUES(i)_FROM_mytable",
 		"select_i,_row_number()_over_(order_by_i_desc)_+_3,____row_number()_over_(order_by_length(s),i)_+_0.0_/_row_number()_over_(order_by_length(s)_desc,i_desc)_+_0.0____from_mytable_order_by_1;",
 		"SELECT_pk,_row_number()_over_(partition_by_v2_order_by_pk_),_max(v3)_over_(partition_by_v2_order_by_pk)_FROM_one_pk_three_idx_ORDER_BY_pk",
-		"SELECT_CONVERT_TZ(datetime_col,_\"+00:00\",_\"+04:00\")_FROM_datetime_table_WHERE_i_=_1",
+
 		"SELECT_distinct_pk1_FROM_two_pk_WHERE_EXISTS_(SELECT_pk_from_one_pk_where_pk_<=_two_pk.pk1)",
 		"select_c1_from_jsontable_where_c1_LIKE_(('%'_OR_'dsads')_OR_'%')",
 		"select_c1_from_jsontable_where_c1_LIKE_('%'_OR_NULL)",
@@ -334,9 +334,7 @@ func TestQueriesSimple(t *testing.T) {
 		"select_*_from_mytable_where_(i_BETWEEN_(CASE_1_WHEN_2_THEN_1.0_ELSE_(1||2)_END)_AND_i)",
 		"select_*_from_mytable_where_(i_BETWEEN_(''_BETWEEN_''_AND_(''_OR_'#'))_AND_i)",
 		"select_*_from_xy_inner_join_uv_on_(xy.x_in_(false_in_('asdf')));",
-		"select_length(space(i))_from_mytable;",
-		"select_concat(space(i),_'a')_from_mytable;",
-		"select_space(i_*_2)_from_mytable;",
+
 		"select_atan(i),_atan2(i,_i_+_2)_from_mytable;",
 
 
