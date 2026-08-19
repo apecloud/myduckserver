@@ -14,7 +14,7 @@ Before getting started, ensure that the following dependencies are installed:
 
     - **Global installation** (use with caution as it may affect system packages):
         ```bash
-        pip3 install "sqlglot[rs]" --break-system-packages
+        pip3 install -r requirements.txt --break-system-packages
         ```
 
     - **Installation inside a virtual environment** (recommended):
@@ -22,7 +22,7 @@ Before getting started, ensure that the following dependencies are installed:
         mkdir -p ~/venv
         python3 -m venv ~/venv/myduck
         source ~/venv/myduck/bin/activate
-        pip3 install "sqlglot[rs]"
+        pip3 install -r requirements.txt
         ```
 
     Make sure to activate the virtual environment when you work on the project:

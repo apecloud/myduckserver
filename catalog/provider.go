@@ -287,7 +287,8 @@ func (prov *DatabaseProvider) AttachCatalog(file interface {
 		return fmt.Errorf("file %s is not a database file", file.Name())
 	}
 	name := strings.TrimSuffix(file.Name(), ".db")
-	if _, err := prov.storage.ExecContext(context.Background(), "ATTACH IF NOT EXISTS '"+filepath.Join(prov.dataDir, file.Name())+"' AS "+name); err != nil {
+	quoted := QuoteIdentifierANSI(name)
+	if _, err := prov.storage.ExecContext(context.Background(), "ATTACH IF NOT EXISTS '"+filepath.Join(prov.dataDir, file.Name())+"' AS "+quoted); err != nil {
 		return fmt.Errorf("failed to attach database %s: %w", name, err)
 	}
 	return nil
@@ -309,7 +310,8 @@ func (prov *DatabaseProvider) CreateCatalog(name string, ifNotExists bool) error
 	if ifNotExists {
 		attachSQL += " IF NOT EXISTS"
 	}
-	attachSQL += " '" + dsn + "' AS " + name
+	quoted := QuoteIdentifierANSI(name)
+	attachSQL += " '" + dsn + "' AS " + quoted
 	_, err = prov.storage.ExecContext(context.Background(), attachSQL)
 	if err != nil {
 		return err
@@ -327,12 +329,15 @@ func (prov *DatabaseProvider) CreateCatalog(name string, ifNotExists bool) error
 			}
 		}
 
-		if _, err := prov.storage.ExecContext(context.Background(), "USE "+name); err != nil {
+		if _, err := prov.storage.ExecContext(context.Background(), "USE "+quoted); err != nil {
 			return fmt.Errorf("failed to switch to the new catalog: %w", err)
 		}
 
 		defer func() {
-			if _, err := prov.storage.ExecContext(context.Background(), "USE "+lastCatalog); err != nil {
+			if lastCatalog == "" {
+				return
+			}
+			if _, err := prov.storage.ExecContext(context.Background(), "USE "+QuoteIdentifierANSI(lastCatalog)); err != nil {
 				logrus.WithError(err).Errorln("Failed to switch back to the old catalog")
 			}
 		}()
@@ -360,7 +365,7 @@ func (prov *DatabaseProvider) DropCatalog(name string, ifExists bool) error {
 		return fmt.Errorf("database file %s does not exist", dsn)
 	}
 	// detach
-	if _, err := prov.storage.ExecContext(context.Background(), "DETACH "+name); err != nil {
+	if _, err := prov.storage.ExecContext(context.Background(), "DETACH "+QuoteIdentifierANSI(name)); err != nil {
 		return fmt.Errorf("failed to detach catalog %w", err)
 	}
 	// delete the file

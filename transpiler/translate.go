@@ -61,6 +61,7 @@ func newTranslateService() (*translateService, error) {
 	pythonScript := fmt.Sprintf(`
 import sys
 import sqlglot
+from sqlglot import exp
 
 CMD_EXIT = %q
 CMD_RUN = %q
@@ -92,6 +93,43 @@ def write_string(s: str):
     sys.stdout.buffer.write(data)
     sys.stdout.flush()
 
+def rewrite_mysql_for_duckdb(node):
+    # Nested MySQL XOR is left as the XOR keyword, which DuckDB rejects.
+    # Expand to the equivalent boolean form before generating DuckDB SQL.
+    if isinstance(node, exp.Xor):
+        left, right = node.this, node.expression
+        return exp.or_(
+            exp.and_(exp.paren(left), exp.Not(this=exp.paren(right))),
+            exp.and_(exp.Not(this=exp.paren(left)), exp.paren(right)),
+        )
+    # DuckDB has no AUTO_INCREMENT; map it to IDENTITY.
+    if isinstance(node, exp.ColumnDef):
+        constraints = list(node.args.get("constraints") or [])
+        kept = []
+        has_autoinc = False
+        for c in constraints:
+            if isinstance(getattr(c, "kind", None), exp.AutoIncrementColumnConstraint):
+                has_autoinc = True
+                continue
+            kept.append(c)
+        if has_autoinc:
+            kept.append(exp.ColumnConstraint(
+                kind=exp.GeneratedAsIdentityColumnConstraint(this=False)
+            ))
+            return exp.ColumnDef(
+                this=node.this,
+                kind=node.args.get("kind"),
+                constraints=kept,
+            )
+    return node
+
+def transpile_mysql_to_duckdb(sql: str) -> str:
+    trees = sqlglot.parse(sql, read="mysql")
+    if not trees or trees[0] is None:
+        return ""
+    # Keep the historical contract: only the first statement is returned.
+    return trees[0].transform(rewrite_mysql_for_duckdb).sql(dialect="duckdb")
+
 while True:
     inp = read_string()
     if inp == CMD_EXIT:
@@ -99,7 +137,7 @@ while True:
     if inp.startswith(CMD_RUN):
         sql = inp[len(CMD_RUN):]
         try:
-            result = sqlglot.transpile(sql, read="mysql", write="duckdb")[0]
+            result = transpile_mysql_to_duckdb(sql)
             write_string(RESULT_OK + result)
         except Exception as e:
             write_string(RESULT_ERR + str(e))

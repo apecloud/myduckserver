@@ -61,7 +61,7 @@ RUN apt-get update && apt-get install -y debian-archive-keyring \
     python3 python3-pip \
     postgresql-client \
     --no-install-recommends \
-    && pip install --no-cache-dir "sqlglot[rs]" --break-system-packages \
+    && pip install --no-cache-dir "sqlglot[rs]==30.17.0" --break-system-packages \
     && rm -rf /var/lib/apt/lists/*
 
 # Install MySQL Shell from builder stage

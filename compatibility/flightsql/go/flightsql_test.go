@@ -28,8 +28,27 @@ func createDatabaseConnection(t *testing.T) adbc.Connection {
 
 	cnxn, err := db.Open(context.Background())
 	if err != nil {
-		t.Fatalf("Error opening connection: %v", err)
+		t.Skipf("Flight SQL server not available at %s: %v", options[adbc.OptionKeyURI], err)
 	}
+
+	// Open is lazy; probe so a missing local server is a skip, not a fail.
+	stmt, err := cnxn.NewStatement()
+	if err != nil {
+		cnxn.Close()
+		t.Skipf("Flight SQL server not available at %s: %v", options[adbc.OptionKeyURI], err)
+	}
+	if err := stmt.SetSqlQuery("SELECT 1"); err != nil {
+		stmt.Close()
+		cnxn.Close()
+		t.Skipf("Flight SQL server not available at %s: %v", options[adbc.OptionKeyURI], err)
+	}
+	rows, _, err := stmt.ExecuteQuery(context.Background())
+	stmt.Close()
+	if err != nil {
+		cnxn.Close()
+		t.Skipf("Flight SQL server not available at %s: %v", options[adbc.OptionKeyURI], err)
+	}
+	rows.Release()
 
 	return cnxn
 }

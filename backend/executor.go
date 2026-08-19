@@ -35,7 +35,7 @@ type DuckBuilder struct {
 
 	provider *catalog.DatabaseProvider
 
-	FlushDeltaBuffer func() error
+	FlushDeltaBuffer func(*sql.Context) error
 }
 
 var _ sql.NodeExecBuilder = (*DuckBuilder)(nil)
@@ -55,7 +55,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.Row
 	// Flush the delta buffer before executing the query.
 	// TODO(fan): Be fine-grained and flush only when the replicated tables are touched.
 	if b.FlushDeltaBuffer != nil {
-		if err := b.FlushDeltaBuffer(); err != nil {
+		if err := b.FlushDeltaBuffer(ctx); err != nil {
 			return nil, err
 		}
 	}

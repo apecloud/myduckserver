@@ -23,6 +23,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"vitess.io/vitess/go/mysql"
 
+	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/binlogreplication"
@@ -49,7 +50,26 @@ func RegisterReplicaController(provider *catalog.DatabaseProvider, engine *sqle.
 	twp.controller = delta.NewController()
 
 	replica.SetTableWriterProvider(twp)
-	builder.FlushDeltaBuffer = nil // TODO: implement this
+	builder.FlushDeltaBuffer = func(ctx *sql.Context) error {
+		conn, err := adapter.GetCatalogConn(ctx)
+		if err != nil {
+			return err
+		}
+		existed := adapter.TryGetTxn(ctx) != nil
+		tx, err := adapter.GetCatalogTxn(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if err := twp.FlushDeltaBuffer(ctx, conn, tx, delta.QueryFlushReason); err != nil {
+			return err
+		}
+		// If this query opened the txn just to flush, commit so the following
+		// SELECT can see the replicated rows.
+		if !existed {
+			return adapter.CommitAndCloseTxn(ctx)
+		}
+		return nil
+	}
 
 	engine.Analyzer.Catalog.BinlogReplicaController = binlogreplication.MyBinlogReplicaController
 
