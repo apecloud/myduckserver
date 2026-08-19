@@ -258,8 +258,6 @@ func TestQueriesSimple(t *testing.T) {
 
 	// failed during CI
 	waitForFixQueries = append(waitForFixQueries,
-		"SELECT_TAN(i)_from_mytable_order_by_i_limit_1", // might be precision issue
-		"SELECT_COT(i)_from_mytable_order_by_i_limit_1",
 		"select_now()_=_sysdate(),_sleep(0.1),_now(6)_<_sysdate(6);")
 
 	panicQueries := []string{}
