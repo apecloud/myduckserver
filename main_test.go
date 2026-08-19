@@ -251,8 +251,6 @@ func TestQueriesSimple(t *testing.T) {
 		"select_pk,____________________percent_rank()_over(partition_by_v2_order_by_pk),____________________dense_rank()_over(partition_by_v2_order_by_pk),____________________rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 		"select_pk,_________first_value(pk)_over_(order_by_pk_desc),_________lag(pk,_1)_over_(order_by_pk_desc),_________count(pk)_over(partition_by_v1_order_by_pk),_________max(pk)_over(partition_by_v1_order_by_pk_desc),_________avg(v2)_over_(partition_by_v1_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 
-		"SELECT_s_>_2_FROM_tabletest",
-		"SELECT_*_FROM_tabletest_WHERE_s_>_0",
 		"SELECT_*_FROM_tabletest_WHERE_s_=_0",
 		"SELECT_SUM(i)_FROM_mytable",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
