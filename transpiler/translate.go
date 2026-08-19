@@ -421,6 +421,24 @@ def rewrite_mysql_for_duckdb(node):
         )
     if isinstance(node, exp.Not) and isinstance(node.this, exp.Literal) and node.this.is_string:
         return exp.EQ(this=_mysql_string_as_number(node.this), expression=exp.Literal.number(0))
+    # Bare column predicates: WHERE v / NOT v / v AND v.
+    if isinstance(node, exp.Where) and isinstance(node.this, exp.Column):
+        return exp.Where(
+            this=exp.NEQ(this=_mysql_string_as_number(node.this), expression=exp.Literal.number(0))
+        )
+    if isinstance(node, exp.Not) and isinstance(node.this, exp.Column):
+        return exp.EQ(this=_mysql_string_as_number(node.this), expression=exp.Literal.number(0))
+    if isinstance(node, (exp.And, exp.Or)):
+        left, right = node.this, node.expression
+        changed = False
+        if isinstance(left, exp.Column):
+            left = exp.NEQ(this=_mysql_string_as_number(left), expression=exp.Literal.number(0))
+            changed = True
+        if isinstance(right, exp.Column):
+            right = exp.NEQ(this=_mysql_string_as_number(right), expression=exp.Literal.number(0))
+            changed = True
+        if changed:
+            return node.__class__(this=left, expression=right)
     # MySQL DATE_FORMAT %%D is 1st/2nd/3rd/4th. DuckDB %%D is not that.
     if isinstance(node, exp.TimeToStr):
         fmt = node.args.get("format")
