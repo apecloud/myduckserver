@@ -93,7 +93,145 @@ def write_string(s: str):
     sys.stdout.buffer.write(data)
     sys.stdout.flush()
 
+def _table_alias_or_name(t):
+    if t is None:
+        return ""
+    if isinstance(t, exp.Table):
+        if t.alias:
+            return str(t.alias).lower()
+        return (t.name or "").lower()
+    if isinstance(t, exp.Alias) and t.alias:
+        return str(t.alias).lower()
+    if isinstance(t, exp.Subquery) and t.alias:
+        return str(t.alias).lower()
+    return ""
+
+def _plain_source(src):
+    if src is None:
+        return src
+    copied = src.copy()
+    if isinstance(copied, exp.Table) and copied.args.get("joins"):
+        copied.set("joins", None)
+    return copied
+
+def _collect_from_src(src, tables, ons):
+    if src is None:
+        return
+    if isinstance(src, exp.Table):
+        tables.append(_plain_source(src))
+        for j in src.args.get("joins") or []:
+            _collect_from_src(j.this, tables, ons)
+            if j.args.get("on") is not None:
+                ons.append(j.args.get("on"))
+        return
+    tables.append(src)
+
+def _and_where(where, extra):
+    if extra is None:
+        return where
+    if where is None:
+        return exp.Where(this=extra)
+    return exp.Where(this=exp.And(this=where.this, expression=extra))
+
+def _match_target(src, tgt_name):
+    if not tgt_name:
+        return False
+    if _table_alias_or_name(src) == tgt_name:
+        return True
+    return isinstance(src, exp.Table) and (src.name or "").lower() == tgt_name
+
+def _with_kwargs(node):
+    if node.args.get("with_") is not None:
+        return {"with_": node.args.get("with_")}
+    return {}
+
+def _rewrite_mysql_delete(node):
+    if not isinstance(node, exp.Delete):
+        return None
+    # DuckDB DELETE has no ORDER BY / LIMIT. Keep the same rows via rowid.
+    if node.args.get("order") is not None or node.args.get("limit") is not None:
+        tbl = node.this
+        sub = exp.select(exp.column("rowid")).from_(tbl.copy())
+        if node.args.get("where") is not None:
+            sub = sub.where(node.args.get("where").this)
+        if node.args.get("order") is not None:
+            sub.set("order", node.args.get("order"))
+        if node.args.get("limit") is not None:
+            sub.set("limit", node.args.get("limit"))
+        kwargs = {
+            "this": tbl,
+            "where": exp.Where(this=exp.In(this=exp.column("rowid"), expressions=[exp.paren(sub)])),
+        }
+        kwargs.update(_with_kwargs(node))
+        return exp.Delete(**kwargs)
+    targets = list(node.args.get("tables") or [])
+    using = node.args.get("using")
+    # MySQL: DELETE t FROM t JOIN other. DuckDB: DELETE FROM t USING other.
+    if targets:
+        if len(targets) != 1:
+            return None
+        tgt_name = _table_alias_or_name(targets[0])
+        srcs, ons = [], []
+        _collect_from_src(node.this, srcs, ons)
+        match = None
+        others = []
+        for s in srcs:
+            if match is None and _match_target(s, tgt_name):
+                match = s
+                continue
+            others.append(s)
+        if match is None:
+            match = targets[0]
+        where = node.args.get("where")
+        for on in ons:
+            where = _and_where(where, on)
+        kwargs = {"this": match}
+        if others:
+            kwargs["using"] = others
+        if where is not None:
+            kwargs["where"] = where
+        kwargs.update(_with_kwargs(node))
+        return exp.Delete(**kwargs)
+    # MySQL: DELETE FROM t USING t JOIN other. Drop t from USING.
+    if isinstance(using, list) and using:
+        srcs, ons = [], []
+        for u in using:
+            _collect_from_src(u, srcs, ons)
+        tgt = node.this
+        tgt_name = _table_alias_or_name(tgt)
+        others = [s for s in srcs if not _match_target(s, tgt_name)]
+        if others == srcs and not ons:
+            return None
+        where = node.args.get("where")
+        for on in ons:
+            where = _and_where(where, on)
+        kwargs = {"this": tgt}
+        if others:
+            kwargs["using"] = others
+        if where is not None:
+            kwargs["where"] = where
+        kwargs.update(_with_kwargs(node))
+        return exp.Delete(**kwargs)
+    return None
+
 def rewrite_mysql_for_duckdb(node):
+    # DuckDB has no DUAL; replace with a one-row subquery.
+    if isinstance(node, exp.Table) and not node.args.get("db") and (node.name or "").lower() == "dual":
+        return exp.Subquery(
+            this=exp.Select(expressions=[exp.Literal.number(1)]),
+            alias="dual",
+        )
+    rewritten_delete = _rewrite_mysql_delete(node)
+    if rewritten_delete is not None:
+        if rewritten_delete.args.get("with_") is not None:
+            rewritten_delete.set("with_", rewritten_delete.args.get("with_").transform(rewrite_mysql_for_duckdb))
+        if rewritten_delete.args.get("where") is not None:
+            rewritten_delete.set("where", rewritten_delete.args.get("where").transform(rewrite_mysql_for_duckdb))
+        if isinstance(rewritten_delete.args.get("using"), list):
+            rewritten_delete.set("using", [u.transform(rewrite_mysql_for_duckdb) for u in rewritten_delete.args.get("using")])
+        if rewritten_delete.this is not None:
+            rewritten_delete.set("this", rewritten_delete.this.transform(rewrite_mysql_for_duckdb))
+        return rewritten_delete
     # Nested MySQL XOR is left as the XOR keyword, which DuckDB rejects.
     # Expand to the equivalent boolean form before generating DuckDB SQL.
     if isinstance(node, exp.Xor):
@@ -585,6 +723,13 @@ def rewrite_mysql_for_duckdb(node):
             )
         return exp.Between(this=this, low=low, high=high)
     if isinstance(node, exp.In):
+        query = node.args.get("query")
+        if query is not None or (not node.expressions and node.args.get("unbound")):
+            this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
+            kwargs = {"this": this}
+            if query is not None:
+                kwargs["query"] = query.transform(rewrite_mysql_for_duckdb)
+            return exp.In(**kwargs)
         this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
         exprs = [
             e.transform(rewrite_mysql_for_duckdb) if e is not None else e
@@ -774,7 +919,20 @@ def rewrite_mysql_for_duckdb(node):
     return node
 
 def transpile_mysql_to_duckdb(sql: str) -> str:
-    trees = sqlglot.parse(sql, read="mysql")
+    try:
+        trees = sqlglot.parse(sql, read="mysql")
+    except Exception:
+        # SQLGlot's MySQL parser rejects DELETE ... LIMIT n OFFSET m.
+        import re
+        m = re.match(
+            r"(?is)^(.*?delete\s+from\s+)([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)(\s+where\s+.*?)?(\s+order\s+by\s+.+)$",
+            sql.strip().rstrip(";").strip(),
+        )
+        if not m:
+            raise
+        prefix, table, where, tail = m.group(1), m.group(2), m.group(3) or "", m.group(4)
+        sql = prefix + table + " WHERE rowid IN (SELECT rowid FROM " + table + where + tail + ")"
+        trees = sqlglot.parse(sql, read="mysql")
     if not trees or trees[0] is None:
         return ""
     # Keep the historical contract: only the first statement is returned.

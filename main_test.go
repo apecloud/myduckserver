@@ -998,8 +998,20 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestDeleteFrom(t *testing.T) {
-	t.Skip("wait for fix: MySQL multi-table DELETE / DELETE JOIN")
-	enginetest.TestDelete(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	harness.QueriesToSkip(
+		// DuckDB deletes from one table per statement.
+		"DELETE mytable, tabletest FROM mytable join tabletest where mytable.i=tabletest.i;",
+		"DELETE MYTABLE, TABLETEST FROM mytable join tabletest where mytable.i=tabletest.i;",
+		"DELETE FROM mytable, tabletest USING mytable inner join tabletest on mytable.i=tabletest.i;",
+		"DELETE mytable, tabletest FROM mytable join tabletest where mytable.i=tabletest.i and mytable.i = 2;",
+		"DELETE tabletest, mytable FROM mytable join tabletest where mytable.i=tabletest.i and mytable.i = 2;",
+		"with t (n) as (select (1) from dual) delete mytable, tabletest from mytable join tabletest where mytable.i=tabletest.i and mytable.i in (select n from t)",
+		// DuckDB has no JSON_TABLE.
+		"DELETE mytable FROM mytable join tabletest on mytable.i=tabletest.i join JSON_TABLE('[{\"x\": 1},{\"x\": 2}]', '$[*]' COLUMNS (x INT PATH '$.x')) as jt on jt.x=mytable.i;",
+		"DELETE mytable, tabletest FROM mytable join tabletest on mytable.i=tabletest.i join JSON_TABLE('[{\"x\": 1},{\"x\": 2}]', '$[*]' COLUMNS (x INT PATH '$.x')) as jt on jt.x=mytable.i;",
+	)
+	enginetest.TestDelete(t, harness)
 }
 
 func TestConvert(t *testing.T) {

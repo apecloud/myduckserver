@@ -366,6 +366,46 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT CRC32(i) FROM mytable",
 			expected: "SELECT __SYS__.MYSQL_CRC32(CAST(i AS TEXT)) FROM mytable",
 		},
+		{
+			name:     "DELETE JOIN becomes DELETE USING",
+			input:    "DELETE mytable FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
+			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",
+		},
+		{
+			name:     "DELETE JOIN other target keeps USING source",
+			input:    "DELETE tabletest FROM mytable JOIN tabletest WHERE mytable.i = tabletest.i",
+			expected: "DELETE FROM tabletest USING mytable WHERE mytable.i = tabletest.i",
+		},
+		{
+			name:     "DELETE JOIN alias target",
+			input:    "DELETE t1 FROM mytable AS t1 JOIN tabletest WHERE t1.i = tabletest.i",
+			expected: "DELETE FROM mytable AS t1 USING tabletest WHERE t1.i = tabletest.i",
+		},
+		{
+			name:     "DELETE t FROM t is plain DELETE",
+			input:    "DELETE mytable FROM mytable",
+			expected: "DELETE FROM mytable",
+		},
+		{
+			name:     "DELETE USING drops the target table",
+			input:    "DELETE FROM mytable USING mytable INNER JOIN tabletest ON mytable.i = tabletest.i",
+			expected: "DELETE FROM mytable USING tabletest WHERE mytable.i = tabletest.i",
+		},
+		{
+			name:     "DELETE ORDER BY LIMIT uses rowid",
+			input:    "DELETE FROM mytable ORDER BY i ASC LIMIT 2",
+			expected: "DELETE FROM mytable WHERE rowid IN ((SELECT rowid FROM mytable ORDER BY i ASC NULLS FIRST LIMIT 2))",
+		},
+		{
+			name:     "DELETE LIMIT OFFSET uses rowid",
+			input:    "DELETE FROM mytable ORDER BY i DESC LIMIT 1 OFFSET 1;",
+			expected: "DELETE FROM mytable WHERE rowid IN (SELECT rowid FROM mytable ORDER BY i DESC LIMIT 1 OFFSET 1)",
+		},
+		{
+			name:     "DUAL becomes a one-row subquery",
+			input:    "WITH t(n) AS (SELECT (1) FROM dual) DELETE FROM mytable WHERE i IN (SELECT n FROM t)",
+			expected: "WITH t(n) AS (SELECT (1) FROM (SELECT 1) AS dual) DELETE FROM mytable WHERE i IN (SELECT n FROM t)",
+		},
 	}
 
 	// Loop over each test case
