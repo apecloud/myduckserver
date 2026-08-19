@@ -232,7 +232,6 @@ func TestQueriesSimple(t *testing.T) {
 
 		"select_i+0.0/(lag(i)_over_(order_by_s))_from_mytable_order_by_1;",
 		"select_f64/f32,_f32/(lag(i)_over_(order_by_f64))_from_floattable_order_by_1,2;",
-		"SELECT_s2,_i2,_i____FROM_(SELECT_*_FROM_mytable)_mytable____RIGHT_JOIN_____((SELECT_i2,_s2_FROM_othertable_ORDER_BY_i2_ASC)______UNION_ALL______SELECT_CAST(4_AS_SIGNED)_AS_i2,_\"not_found\"_AS_s2_FROM_DUAL)_othertable____ON_i2_=_i",
 		"WITH_mytable_as_(select_*_FROM_mytable)_SELECT_s,i_FROM_mytable;",
 		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable;",
 		"WITH_mytable_as_(select_*_FROM_mytable_where_i_>_2)_SELECT_*_FROM_mytable_union_SELECT_*_from_mytable;",
