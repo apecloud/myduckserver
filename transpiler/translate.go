@@ -356,6 +356,32 @@ def rewrite_mysql_for_duckdb(node):
                 exp.Cast(this=b, to=exp.DataType.build("JSON")),
             ],
         )
+    # MySQL JSON_MERGE_PRESERVE concatenates arrays; objects still use merge_patch.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "JSON_MERGE_PRESERVE" and len(node.expressions) == 2:
+        a, b = node.expressions
+        aj = exp.Cast(this=a, to=exp.DataType.build("JSON"))
+        bj = exp.Cast(this=b, to=exp.DataType.build("JSON"))
+        both_arrays = exp.and_(
+            exp.EQ(this=exp.Anonymous(this="json_type", expressions=[aj]), expression=exp.Literal.string("ARRAY")),
+            exp.EQ(this=exp.Anonymous(this="json_type", expressions=[bj]), expression=exp.Literal.string("ARRAY")),
+        )
+        concat = exp.Anonymous(
+            this="to_json",
+            expressions=[
+                exp.Anonymous(
+                    this="list_concat",
+                    expressions=[
+                        exp.Anonymous(this="json_extract", expressions=[aj, exp.Literal.string("$")]),
+                        exp.Anonymous(this="json_extract", expressions=[bj, exp.Literal.string("$")]),
+                    ],
+                )
+            ],
+        )
+        return exp.If(
+            this=both_arrays,
+            true=concat,
+            false=exp.Anonymous(this="json_merge_patch", expressions=[aj, bj]),
+        )
     # MySQL TIME_FORMAT -> DuckDB strftime. %%h is 01-12 like DuckDB %%I.
     if isinstance(node, exp.Anonymous) and str(node.this).upper() == "TIME_FORMAT" and len(node.expressions) == 2:
         t, fmt = node.expressions

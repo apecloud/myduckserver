@@ -251,6 +251,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT CAST(-3 AS UNSIGNED) FROM mytable",
 			expected: "SELECT CAST(CASE WHEN -3 < 0 THEN -3 + 18446744073709551616 ELSE -3 END AS UBIGINT) FROM mytable",
 		},
+		{
+			name:     "JSON_MERGE_PRESERVE concatenates arrays",
+			input:    "SELECT JSON_MERGE_PRESERVE(c3, '{\"a\": 1}') FROM jsontable",
+			expected: "SELECT CASE WHEN JSON_TYPE(CAST(c3 AS JSON)) = 'ARRAY' AND JSON_TYPE(CAST('{\"a\": 1}' AS JSON)) = 'ARRAY' THEN TO_JSON(LIST_CONCAT(JSON_EXTRACT(CAST(c3 AS JSON), '$'), JSON_EXTRACT(CAST('{\"a\": 1}' AS JSON), '$'))) ELSE JSON_MERGE_PATCH(CAST(c3 AS JSON), CAST('{\"a\": 1}' AS JSON)) END FROM jsontable",
+		},
 	}
 
 	// Loop over each test case
