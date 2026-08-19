@@ -235,9 +235,7 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_*_FROM_tabletest_WHERE_s_=_0",
 		"SELECT_RAND(i)_from_mytable_order_by_i",
 
-		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_FROM_one_pk_opk_GROUP_BY_x_ORDER_BY_x",
-		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_______FROM_one_pk_opk_WHERE_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_>_0_______GROUP_BY_x_ORDER_BY_x",
-		"SELECT_pk,_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_AS_x_______FROM_one_pk_opk_WHERE_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_>_0_______GROUP_BY_(SELECT_max(pk)_FROM_one_pk_WHERE_pk_<_opk.pk)_ORDER_BY_x",
+
 
 				"show_function_status",
 		"show_function_status_like_'foo'",

@@ -262,6 +262,30 @@ def _target_rowid(match, tgt_name):
 def _col_key(col):
     return ((col.table or "").lower(), (col.name or "").lower())
 
+def _iter_args(e):
+    for v in e.args.values():
+        if isinstance(v, list):
+            for x in v:
+                if isinstance(x, exp.Expression):
+                    yield x
+        elif isinstance(v, exp.Expression):
+            yield v
+
+def _has_outer(e, pred):
+    # Do not look inside scalar subqueries. MAX in (SELECT MAX(pk) ...) is
+    # not an aggregate of the outer SELECT.
+    if e is None or isinstance(e, exp.Subquery):
+        return False
+    if pred(e):
+        return True
+    return any(_has_outer(c, pred) for c in _iter_args(e))
+
+def _has_outer_agg(e):
+    return _has_outer(e, lambda x: isinstance(x, exp.AggFunc))
+
+def _has_outer_column(e):
+    return _has_outer(e, lambda x: isinstance(x, exp.Column))
+
 def _last_wins_sets(exprs):
     # MySQL SET a = 1, a = 2 keeps 2. DuckDB rejects two assignments.
     exprs = list(exprs or [])
@@ -1143,7 +1167,7 @@ def rewrite_mysql_for_duckdb(node):
             # Window aggregates still return one row per input row.
             if any(isinstance(x, exp.Window) for x in e.walk()):
                 return False
-            return any(isinstance(x, exp.AggFunc) for x in e.walk())
+            return _has_outer_agg(e)
         if exprs and all(_is_agg_or_lit(e) for e in exprs):
             updated = node.copy()
             updated.set("order", None)
@@ -1152,17 +1176,13 @@ def rewrite_mysql_for_duckdb(node):
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:
         exprs = list(node.expressions or [])
-        def _has_agg(e):
-            return any(isinstance(x, exp.AggFunc) for x in e.walk())
         def _already_any_value(e):
             inner = e.this if isinstance(e, exp.Alias) else e
             return isinstance(inner, exp.Anonymous) and str(inner.this).lower() == "any_value"
-        def _has_column(e):
-            return any(isinstance(x, exp.Column) for x in e.walk())
-        if exprs and any(_has_agg(e) for e in exprs) and any(not _has_agg(e) for e in exprs):
+        if exprs and any(_has_outer_agg(e) for e in exprs) and any(not _has_outer_agg(e) for e in exprs):
             new_exprs = []
             for e in exprs:
-                if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or not _has_column(e):
+                if _has_outer_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or not _has_outer_column(e):
                     new_exprs.append(e)
                     continue
                 alias = e.alias if isinstance(e, exp.Alias) else None
@@ -1183,8 +1203,6 @@ def rewrite_mysql_for_duckdb(node):
             group_keys.add(g.sql(dialect="duckdb").lower())
             if isinstance(g, exp.Literal) and g.is_int:
                 group_keys.add(str(int(g.this)))
-        def _has_agg(e):
-            return any(isinstance(x, exp.AggFunc) for x in e.walk())
         def _already_any_value(e):
             inner = e.this if isinstance(e, exp.Alias) else e
             return isinstance(inner, exp.Anonymous) and str(inner.this).lower() == "any_value"
@@ -1198,10 +1216,8 @@ def rewrite_mysql_for_duckdb(node):
             return inner.sql(dialect="duckdb").lower() in group_keys
         new_exprs = []
         changed = False
-        def _has_column(e):
-            return any(isinstance(x, exp.Column) for x in e.walk())
         for idx, e in enumerate(exprs, 1):
-            if _has_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or _in_group(e, idx) or not _has_column(e):
+            if _has_outer_agg(e) or isinstance(e, exp.Star) or _already_any_value(e) or _in_group(e, idx) or not _has_outer_column(e):
                 new_exprs.append(e)
                 continue
             alias = e.alias if isinstance(e, exp.Alias) else None

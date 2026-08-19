@@ -327,6 +327,16 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT COALESCE(TRY_CAST(s AS DOUBLE), 0) > 2 FROM tabletest",
 		},
 		{
+			name:     "scalar subquery MAX is not an outer aggregate",
+			input:    "SELECT pk, (SELECT max(pk) FROM one_pk WHERE pk < opk.pk) AS x FROM one_pk opk",
+			expected: "SELECT pk, (SELECT MAX(pk) FROM one_pk WHERE pk < opk.pk) AS x FROM one_pk AS opk",
+		},
+		{
+			name:     "GROUP BY subquery alias wraps extra column",
+			input:    "SELECT pk, (SELECT max(pk) FROM one_pk WHERE pk < opk.pk) AS x FROM one_pk opk GROUP BY x",
+			expected: "SELECT ANY_VALUE(pk), (SELECT MAX(pk) FROM one_pk WHERE pk < opk.pk) AS x FROM one_pk AS opk GROUP BY x",
+		},
+		{
 			name:     "aggregate ORDER BY unused column is dropped",
 			input:    "SELECT count(*) FROM people WHERE last_name='doe' AND first_name='jane' ORDER BY dob",
 			expected: "SELECT COUNT(*) FROM people WHERE last_name = 'doe' AND first_name = 'jane'",
