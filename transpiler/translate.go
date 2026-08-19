@@ -414,6 +414,46 @@ def rewrite_mysql_for_duckdb(node):
             true=exp.Null(),
             false=node.__class__(this=x),
         )
+    # MySQL CASE allows mixed string/number results. DuckDB requires one type.
+    if isinstance(node, exp.Case):
+        ifs = list(node.args.get("ifs") or [])
+        new_ifs = []
+        for iff in ifs:
+            cond = iff.args.get("this")
+            true = iff.args.get("true")
+            if cond is not None:
+                cond = cond.transform(rewrite_mysql_for_duckdb)
+            if true is not None:
+                true = true.transform(rewrite_mysql_for_duckdb)
+            new_ifs.append(exp.If(this=cond, true=true))
+        default = node.args.get("default")
+        if default is not None:
+            default = default.transform(rewrite_mysql_for_duckdb)
+        this = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else None
+        branches = [iff.args.get("true") for iff in new_ifs]
+        if default is not None:
+            branches.append(default)
+        def _is_str(e):
+            return isinstance(e, exp.Literal) and e.is_string
+        has_str = any(_is_str(b) for b in branches if b is not None)
+        has_other = any(b is not None and not _is_str(b) for b in branches)
+        if has_str and has_other:
+            def _as_text(e):
+                if e is None:
+                    return e
+                return exp.Cast(this=e, to=exp.DataType.build("TEXT"))
+            new_ifs = [
+                exp.If(this=iff.args.get("this"), true=_as_text(iff.args.get("true")))
+                for iff in new_ifs
+            ]
+            if default is not None:
+                default = _as_text(default)
+        args = {"ifs": new_ifs}
+        if this is not None:
+            args["this"] = this
+        if default is not None:
+            args["default"] = default
+        return exp.Case(**args)
     # MySQL treats a string predicate as a number: invalid strings are 0, not an error.
     def _mysql_string_as_number(e):
         return exp.Anonymous(

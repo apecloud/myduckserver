@@ -257,8 +257,6 @@ func TestQueriesSimple(t *testing.T) {
 
 		"SELECT_CRC32(i)_from_mytable_order_by_i_limit_1",
 
-		"SELECT_CASE_WHEN_i_>_2_THEN_i_WHEN_i_<_2_THEN_i_ELSE_'two'_END_FROM_mytable",
-		"SELECT_CASE_WHEN_i_>_2_THEN_'more_than_two'_WHEN_i_<_2_THEN_'less_than_two'_ELSE_2_END_FROM_mytable",
 		"SELECT_substring(mytable.s,_1,_5)_AS_s_FROM_mytable_INNER_JOIN_othertable_ON_(substring(mytable.s,_1,_5)_=_SUBSTRING(othertable.s2,_1,_5))_GROUP_BY_1_HAVING_s_=_\"secon\"",
 
 		"SELECT_sum(i)_as_isum,_s_FROM_mytable_GROUP_BY_i_ORDER_BY_isum_ASC_LIMIT_0,_200",
