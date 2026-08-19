@@ -380,6 +380,19 @@ def rewrite_mysql_for_duckdb(node):
     # MySQL DATETIME('...') is a timestamp constructor. DuckDB has no DATETIME().
     if isinstance(node, exp.Datetime):
         return exp.Cast(this=node.this, to=exp.DataType.build("TIMESTAMP"))
+    # MySQL CAST(negative AS UNSIGNED) wraps in 2^64. DuckDB UBIGINT rejects negatives.
+    if isinstance(node, exp.Cast):
+        to = node.args.get("to")
+        inner = node.this
+        if to is not None and not isinstance(inner, (exp.If, exp.Case)):
+            to_sql = to.sql(dialect="duckdb").upper()
+            if to_sql.startswith("U") and "INT" in to_sql:
+                wrapped = exp.If(
+                    this=exp.LT(this=inner, expression=exp.Literal.number(0)),
+                    true=exp.Add(this=inner, expression=exp.Literal.number(18446744073709551616)),
+                    false=inner,
+                )
+                return exp.Cast(this=wrapped, to=to)
     # MySQL allows SELECT pk, SUM(c) without GROUP BY when ONLY_FULL_GROUP_BY is off.
     # DuckDB requires the extra columns to be aggregated; ANY_VALUE matches that mode.
     if isinstance(node, exp.Select) and node.args.get("group") is None:

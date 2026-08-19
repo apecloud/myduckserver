@@ -246,6 +246,11 @@ func TestTranslate(t *testing.T) {
 			input:    "SELECT DATETIME('2020-01-01T12:00:00')",
 			expected: "SELECT CAST('2020-01-01T12:00:00' AS TIMESTAMP)",
 		},
+		{
+			name:     "CAST negative AS UNSIGNED wraps",
+			input:    "SELECT CAST(-3 AS UNSIGNED) FROM mytable",
+			expected: "SELECT CAST(CASE WHEN -3 < 0 THEN -3 + 18446744073709551616 ELSE -3 END AS UBIGINT) FROM mytable",
+		},
 	}
 
 	// Loop over each test case
