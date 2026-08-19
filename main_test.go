@@ -237,9 +237,6 @@ func TestQueriesSimple(t *testing.T) {
 
 
 
-				"show_function_status",
-		"show_function_status_like_'foo'",
-		"show_function_status_where_Db='mydb'",
 		"select_i,_row_number()_over_(order_by_i_desc)_+_3,____row_number()_over_(order_by_length(s),i)_+_0.0_/_row_number()_over_(order_by_length(s)_desc,i_desc)_+_0.0____from_mytable_order_by_1;",
 		"SELECT_pk,_row_number()_over_(partition_by_v2_order_by_pk_),_max(v3)_over_(partition_by_v2_order_by_pk)_FROM_one_pk_three_idx_ORDER_BY_pk",
 
