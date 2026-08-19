@@ -327,6 +327,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT COALESCE(TRY_CAST(s AS DOUBLE), 0) > 2 FROM tabletest",
 		},
 		{
+			name:     "aggregate ORDER BY unused column is dropped",
+			input:    "SELECT count(*) FROM people WHERE last_name='doe' AND first_name='jane' ORDER BY dob",
+			expected: "SELECT COUNT(*) FROM people WHERE last_name = 'doe' AND first_name = 'jane'",
+		},
+		{
 			name:     "id = 1 is left alone",
 			input:    "SELECT i FROM mytable WHERE id = 1",
 			expected: "SELECT i FROM mytable WHERE id = 1",
