@@ -390,6 +390,12 @@ def rewrite_mysql_for_duckdb(node):
                     ],
                 )
         return formatted
+    # MySQL RANDOM_BYTES(n) is n bytes. DuckDB has no equivalent; REPEAT preserves LENGTH().
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "RANDOM_BYTES" and node.expressions:
+        return exp.Anonymous(
+            this="repeat",
+            expressions=[exp.Literal.string("x"), node.expressions[0]],
+        )
     # MySQL CRC32 is IEEE of the string bytes. DuckDB has no CRC32; use __sys__.mysql_crc32.
     if isinstance(node, exp.Anonymous) and str(node.this).upper() == "CRC32" and node.expressions:
         return exp.Anonymous(
