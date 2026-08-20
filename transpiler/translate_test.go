@@ -362,6 +362,11 @@ func TestTranslate(t *testing.T) {
 			expected: "INSERT OR REPLACE INTO mytable VALUES (1, 'first row')",
 		},
 		{
+			name:     "INSERT IGNORE becomes INSERT OR IGNORE",
+			input:    "INSERT IGNORE INTO mytable VALUES (1, 'hi')",
+			expected: "INSERT OR IGNORE INTO mytable VALUES (1, 'hi')",
+		},
+		{
 			name:     "REPLACE INTO SET becomes INSERT OR REPLACE",
 			input:    "REPLACE INTO mytable SET i = 1, s = 'first row'",
 			expected: "INSERT OR REPLACE INTO mytable (i, s) VALUES (1, 'first row')",

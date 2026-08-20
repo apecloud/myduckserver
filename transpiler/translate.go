@@ -1371,8 +1371,12 @@ def transpile_mysql_to_duckdb(sql: str) -> str:
             return exp.Null()
         return rewrite_mysql_for_duckdb(node)
     tree = trees[0].transform(rewrite_with_insert_context)
-    if was_replace and isinstance(tree, exp.Insert):
-        tree.set("alternative", "REPLACE")
+    if isinstance(tree, exp.Insert):
+        if was_replace:
+            tree.set("alternative", "REPLACE")
+        elif tree.args.get("ignore"):
+            tree.set("ignore", False)
+            tree.set("alternative", "IGNORE")
     return tree.sql(dialect="duckdb")
 
 while True:
