@@ -357,6 +357,16 @@ func TestTranslate(t *testing.T) {
 			expected: "UPDATE floattable SET f32 = 4 WHERE i = 1",
 		},
 		{
+			name:     "REPLACE INTO becomes INSERT OR REPLACE",
+			input:    "REPLACE INTO mytable VALUES (1, 'first row')",
+			expected: "INSERT OR REPLACE INTO mytable VALUES (1, 'first row')",
+		},
+		{
+			name:     "REPLACE INTO SET becomes INSERT OR REPLACE",
+			input:    "REPLACE INTO mytable SET i = 1, s = 'first row'",
+			expected: "INSERT OR REPLACE INTO mytable (i, s) VALUES (1, 'first row')",
+		},
+		{
 			name:     "later SET uses earlier assignment",
 			input:    "UPDATE floattable SET f32 = f32 + f32, f64 = f32 * f64 WHERE i = 2",
 			expected: "UPDATE floattable SET f32 = f32 + f32, f64 = (f32 + f32) * f64 WHERE i = 2",
