@@ -940,8 +940,35 @@ func TestSpatialDeleteFrom(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestTruncate(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	// Foreign keys and triggers are unsupported. Run the TRUNCATE cases that work.
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	harness.Setup(setup.MydbData, setup.MytableData)
+	e := mustNewEngine(t, harness)
+	defer e.Close()
+	ctx := enginetest.NewContext(harness)
+
+	t.Run("Standard TRUNCATE", func(t *testing.T) {
+		enginetest.RunQueryWithContext(t, e, harness, ctx, "CREATE TABLE t1 (pk BIGINT PRIMARY KEY, v1 BIGINT, INDEX(v1))")
+		enginetest.RunQueryWithContext(t, e, harness, ctx, "INSERT INTO t1 VALUES (1,1), (2,2), (3,3)")
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SELECT * FROM t1 ORDER BY 1", []sql.Row{{int64(1), int64(1)}, {int64(2), int64(2)}, {int64(3), int64(3)}}, nil, nil, nil)
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "TRUNCATE t1", []sql.Row{{types.NewOkResult(3)}}, nil, nil, nil)
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SELECT * FROM t1 ORDER BY 1", []sql.Row{}, nil, nil, nil)
+
+		enginetest.RunQueryWithContext(t, e, harness, ctx, "INSERT INTO t1 VALUES (4,4), (5,5)")
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SELECT * FROM t1 WHERE v1 > 0 ORDER BY 1", []sql.Row{{int64(4), int64(4)}, {int64(5), int64(5)}}, nil, nil, nil)
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "TRUNCATE TABLE t1", []sql.Row{{types.NewOkResult(2)}}, nil, nil, nil)
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SELECT * FROM t1 ORDER BY 1", []sql.Row{}, nil, nil, nil)
+	})
+
+	t.Run("auto_increment column", func(t *testing.T) {
+		enginetest.RunQueryWithContext(t, e, harness, ctx, "CREATE TABLE t4 (pk BIGINT AUTO_INCREMENT PRIMARY KEY, v1 BIGINT)")
+		enginetest.RunQueryWithContext(t, e, harness, ctx, "INSERT INTO t4(v1) VALUES (5), (6)")
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SELECT * FROM t4 ORDER BY 1", []sql.Row{{int64(1), int64(5)}, {int64(2), int64(6)}}, nil, nil, nil)
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "TRUNCATE t4", []sql.Row{{types.NewOkResult(2)}}, nil, nil, nil)
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SELECT * FROM t4 ORDER BY 1", []sql.Row{}, nil, nil, nil)
+		enginetest.RunQueryWithContext(t, e, harness, ctx, "INSERT INTO t4(v1) VALUES (7)")
+		enginetest.TestQueryWithContext(t, ctx, e, harness, "SELECT * FROM t4 ORDER BY 1", []sql.Row{{int64(1), int64(7)}}, nil, nil, nil)
+	})
 }
 
 func TestDeleteFrom(t *testing.T) {
