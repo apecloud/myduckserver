@@ -622,8 +622,12 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 
 	// Prepare the column names for the index
 	columns := make([]string, len(indexDef.Columns))
+	prefixLengths := make([]uint16, len(indexDef.Columns))
+	hasPrefix := false
 	for i, col := range indexDef.Columns {
 		columns[i] = fmt.Sprintf(`"%s"`, col.Name)
+		prefixLengths[i] = uint16(col.Length)
+		hasPrefix = hasPrefix || col.Length != 0
 	}
 
 	unique := ""
@@ -640,11 +644,17 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 		FullTableName("", t.db.name, t.name),
 		strings.Join(columns, ", ")))
 
-	// Add the index comment if provided
-	if indexDef.Comment != "" {
+	// DuckDB does not retain the logical MySQL prefix length, so keep it in
+	// managed metadata alongside the user-visible index comment.
+	if indexDef.Comment != "" || hasPrefix {
+		meta := IndexMeta{}
+		if hasPrefix {
+			meta.PrefixLengths = prefixLengths
+		}
+		comment := NewCommentWithMeta(indexDef.Comment, meta)
 		b.WriteString(fmt.Sprintf("; COMMENT ON INDEX %s IS '%s'",
 			FullIndexName(t.db.catalog, t.db.name, EncodeIndexName(t.name, indexDef.Name)),
-			NewComment[any](indexDef.Comment).Encode()))
+			comment.Encode()))
 	}
 
 	// Execute the SQL statement to create the index
@@ -711,7 +721,7 @@ func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 		for i, ord := range pkOrds {
 			pkExprs[i] = expression.NewGetFieldWithTable(ord, 0, sch[ord].Type, t.db.name, t.name, sch[ord].Name, sch[ord].Nullable)
 		}
-		indexes = append(indexes, NewIndex(t.db.name, t.name, "PRIMARY", true, NewComment[any](""), pkExprs))
+		indexes = append(indexes, NewIndex(t.db.name, t.name, "PRIMARY", true, NewComment[IndexMeta](""), pkExprs))
 	}
 
 	columnsInfo, err := queryColumns(ctx, t.db.catalog, t.db.name, t.name)
@@ -747,7 +757,7 @@ func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 			}
 		}
 
-		indexes = append(indexes, NewIndex(t.db.name, t.name, indexName, isUnique, DecodeComment[any](comment.String), exprs))
+		indexes = append(indexes, NewIndex(t.db.name, t.name, indexName, isUnique, DecodeComment[IndexMeta](comment.String), exprs))
 	}
 
 	if err := rows.Err(); err != nil {
