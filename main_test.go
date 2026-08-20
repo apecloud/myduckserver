@@ -2174,7 +2174,6 @@ func TestJsonScripts(t *testing.T) {
 }
 
 func TestShowTableStatus(t *testing.T) {
-	t.Skip("wait for fix")
 	enginetest.TestShowTableStatus(t, NewDefaultDuckHarness())
 }
 

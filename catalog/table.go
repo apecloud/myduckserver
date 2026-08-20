@@ -11,6 +11,7 @@ import (
 	"github.com/apecloud/myduckserver/configuration"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
+	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/google/uuid"
 	"github.com/marcboeker/go-duckdb"
 )
@@ -48,6 +49,7 @@ type IndexedTable struct {
 }
 
 var _ sql.Table = (*Table)(nil)
+var _ sql.StatisticsTable = (*Table)(nil)
 var _ sql.PrimaryKeyTable = (*Table)(nil)
 var _ sql.AlterableTable = (*Table)(nil)
 var _ sql.IndexAlterableTable = (*Table)(nil)
@@ -127,6 +129,50 @@ func (t *Table) Partitions(ctx *sql.Context) (sql.PartitionIter, error) {
 // Schema implements sql.Table.
 func (t *Table) Schema() sql.Schema {
 	return t.schema.Schema
+}
+
+// RowCount implements sql.StatisticsTable.
+func (t *Table) RowCount(ctx *sql.Context) (uint64, bool, error) {
+	var n uint64
+	q := `SELECT COUNT(*) FROM ` + FullTableName(t.db.catalog, t.db.name, t.name)
+	if err := adapter.QueryRowCatalog(ctx, q).Scan(&n); err != nil {
+		return 0, false, ErrDuckDB.New(err)
+	}
+	return n, true, nil
+}
+
+// DataLength implements sql.StatisticsTable.
+func (t *Table) DataLength(ctx *sql.Context) (uint64, error) {
+	var bytesPerRow uint64
+	for _, col := range t.schema.Schema {
+		switch n := col.Type.(type) {
+		case sql.NumberType:
+			bytesPerRow += 8
+		case sql.StringType:
+			bytesPerRow += uint64(n.MaxByteLength())
+		case types.BitType:
+			bytesPerRow += 1
+		case sql.DatetimeType:
+			bytesPerRow += 8
+		case sql.DecimalType:
+			bytesPerRow += uint64(n.MaximumScale())
+		case sql.EnumType:
+			bytesPerRow += 2
+		case types.JsonType:
+			bytesPerRow += 20
+		case sql.NullType:
+			bytesPerRow += 1
+		case types.TimeType:
+			bytesPerRow += 16
+		case sql.YearType:
+			bytesPerRow += 8
+		}
+	}
+	n, _, err := t.RowCount(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return bytesPerRow * n, nil
 }
 
 func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) (sql.PrimaryKeySchema, error) {
