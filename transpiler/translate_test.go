@@ -357,6 +357,16 @@ func TestTranslate(t *testing.T) {
 			expected: "UPDATE floattable SET f32 = 4 WHERE i = 1",
 		},
 		{
+			name:     "later SET uses earlier assignment",
+			input:    "UPDATE floattable SET f32 = f32 + f32, f64 = f32 * f64 WHERE i = 2",
+			expected: "UPDATE floattable SET f32 = f32 + f32, f64 = (f32 + f32) * f64 WHERE i = 2",
+		},
+		{
+			name:     "SET substitutes then keeps last assignment",
+			input:    "UPDATE t SET a = 1, b = a, a = 2",
+			expected: "UPDATE t SET b = 1, a = 2",
+		},
+		{
 			name:     "charset introducer is stripped",
 			input:    "UPDATE mytable SET s = _binary 'updated' WHERE i = 3",
 			expected: "UPDATE mytable SET s = 'updated' WHERE i = 3",
