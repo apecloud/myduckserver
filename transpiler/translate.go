@@ -1332,6 +1332,10 @@ def transpile_mysql_to_duckdb(sql: str) -> str:
     # MySQL allows t.AND / t.OR / t.SELECT as identifiers. Quote so sqlglot parses them.
     bq = chr(96)
     sql = re.sub(r'\.(AND|OR|SELECT)\b', lambda m: '.' + bq + m.group(1) + bq, sql, flags=re.I)
+    # SQLGlot's MySQL parser treats REPLACE INTO as a Command. DuckDB uses INSERT OR REPLACE.
+    was_replace = bool(re.search(r'(?is)\breplace\s+into\b', sql))
+    if was_replace:
+        sql = re.sub(r'(?is)\breplace\s+into\b', 'INSERT INTO', sql)
     # SQLGlot rejects UPDATE ... LIMIT n OFFSET m. LIMIT offset, count parses.
     if re.match(r'(?is)^update\b', sql.strip()):
         sql = re.sub(
@@ -1366,7 +1370,10 @@ def transpile_mysql_to_duckdb(sql: str) -> str:
                 return node
             return exp.Null()
         return rewrite_mysql_for_duckdb(node)
-    return trees[0].transform(rewrite_with_insert_context).sql(dialect="duckdb")
+    tree = trees[0].transform(rewrite_with_insert_context)
+    if was_replace and isinstance(tree, exp.Insert):
+        tree.set("alternative", "REPLACE")
+    return tree.sql(dialect="duckdb")
 
 while True:
     inp = read_string()
