@@ -238,8 +238,6 @@ func TestQueriesSimple(t *testing.T) {
 		"SELECT_pk,_row_number()_over_(partition_by_v2_order_by_pk_),_max(v3)_over_(partition_by_v2_order_by_pk)_FROM_one_pk_three_idx_ORDER_BY_pk",
 
 
-		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_keyless_U0,_cte___WHERE_cte.j_=_keyless.c0____)_____ORDER_BY_c0;_",
-		"____SELECT_COUNT(*)__FROM_keyless__WHERE_keyless.c0_IN_(_____WITH_RECURSIVE_cte(depth,_i,_j)_AS_(_______SELECT_0,_T1.c0,_T1.c1_______FROM_keyless_T1_______WHERE_T1.c0_=_0_________UNION_ALL_________SELECT_cte.depth_+_1,_cte.i,_T2.c1_+_1_______FROM_cte,_keyless_T2_______WHERE_cte.depth_=_T2.c0___)_____SELECT_U0.c0___FROM_cte,_keyless_U0____WHERE_cte.j_=_keyless.c0_____)_____ORDER_BY_c0;_",
 		"_select_*_from_mytable,__lateral_(__with_recursive_cte(a)_as_(___select_y_from_xy___union___select_x_from_cte___join___(____select_*_____from_xy____where_x_=_1____)_sqa1___on_x_=_a___limit_3___)__select_*_from_cte_)_sqa2_where_i_=_a_order_by_i;",
 
 
@@ -259,8 +257,7 @@ func TestQueriesSimple(t *testing.T) {
 	// failed during CI
 	waitForFixQueries = append(waitForFixQueries,
 		"SELECT_TAN(i)_from_mytable_order_by_i_limit_1", // might be precision issue
-		"SELECT_COT(i)_from_mytable_order_by_i_limit_1",
-		"select_now()_=_sysdate(),_sleep(0.1),_now(6)_<_sysdate(6);")
+		"SELECT_COT(i)_from_mytable_order_by_i_limit_1")
 
 	panicQueries := []string{}
 
