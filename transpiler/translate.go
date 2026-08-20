@@ -287,6 +287,51 @@ def _has_outer_agg(e):
 def _has_outer_column(e):
     return _has_outer(e, lambda x: isinstance(x, exp.Column))
 
+def _lookup_assigned(col, replacements):
+    k = _col_key(col)
+    if k in replacements:
+        return replacements[k]
+    if k[0]:
+        bare = ("", k[1])
+        if bare in replacements:
+            return replacements[bare]
+        return None
+    hits = [v for rk, v in replacements.items() if rk[1] == k[1]]
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+def _seq_eval_sets(exprs):
+    # MySQL SET a = a + 1, b = a uses the new a. DuckDB uses old a for both.
+    replacements = {}
+    out = []
+    changed = False
+    for e in list(exprs or []):
+        if not (isinstance(e, exp.EQ) and isinstance(e.this, exp.Column) and e.expression is not None):
+            out.append(e)
+            continue
+        rhs = e.expression
+        if replacements:
+            used = {"n": False}
+            def _sub(n, used=used, replacements=replacements):
+                if isinstance(n, exp.Column):
+                    repl = _lookup_assigned(n, replacements)
+                    if repl is not None:
+                        used["n"] = True
+                        return repl.copy()
+                return n
+            new_rhs = rhs.transform(_sub)
+            if used["n"]:
+                changed = True
+                rhs = new_rhs
+                e = exp.EQ(this=e.this, expression=rhs)
+        out.append(e)
+        stored = rhs.copy()
+        if not isinstance(stored, (exp.Literal, exp.Column, exp.Paren)):
+            stored = exp.paren(stored)
+        replacements[_col_key(e.this)] = stored
+    return out, changed
+
 def _last_wins_sets(exprs):
     # MySQL SET a = 1, a = 2 keeps 2. DuckDB rejects two assignments.
     exprs = list(exprs or [])
@@ -306,9 +351,10 @@ def _rewrite_mysql_update(node):
     if not isinstance(node, exp.Update):
         return None
     original = list(node.expressions or [])
-    exprs = _last_wins_sets(original)
-    deduped = exprs != original
-    if deduped:
+    exprs, seqed = _seq_eval_sets(original)
+    exprs = _last_wins_sets(exprs)
+    changed = seqed or exprs != original
+    if changed:
         node = node.copy()
         node.set("expressions", exprs)
     srcs, ons = [], []
@@ -338,7 +384,7 @@ def _rewrite_mysql_update(node):
         kwargs.update(_with_kwargs(node))
         return exp.Update(**kwargs)
     if not has_join:
-        return node if deduped else None
+        return node if changed else None
     if isinstance(node.this, exp.Table):
         for j in node.this.args.get("joins") or []:
             if not _join_is_inner_or_cross(j):
