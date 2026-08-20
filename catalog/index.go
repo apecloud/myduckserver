@@ -8,13 +8,17 @@ type Index struct {
 	Exprs      []sql.Expression
 	Name       string
 	Unique     bool
-	CommentObj *Comment[any]
+	CommentObj *Comment[IndexMeta]
 	PrefixLens []uint16
+}
+
+type IndexMeta struct {
+	PrefixLengths []uint16 `json:"prefix_lengths,omitempty"`
 }
 
 var _ sql.Index = (*Index)(nil)
 
-func NewIndex(dbName, tableName, name string, unique bool, comment *Comment[any], exprs []sql.Expression) *Index {
+func NewIndex(dbName, tableName, name string, unique bool, comment *Comment[IndexMeta], exprs []sql.Expression) *Index {
 	return &Index{
 		DbName:     dbName,
 		TableName:  tableName,
@@ -22,6 +26,7 @@ func NewIndex(dbName, tableName, name string, unique bool, comment *Comment[any]
 		Unique:     unique,
 		CommentObj: comment,
 		Exprs:      exprs,
+		PrefixLens: comment.Meta.PrefixLengths,
 	}
 }
 
