@@ -742,7 +742,6 @@ func TestInsertInto(t *testing.T) {
 		"INSERT_INTO_typestable_SET____id_=_999,_i8_=_-128,_i16_=_-32768,_i32_=_-2147483648,_i64_=_-9223372036854775808,____u8_=_0,_u16_=_0,_u32_=_0,_u64_=_0,____f32_=_1.401298464324817070923729583289916131280e-45,_f64_=_4.940656458412465441765687928682213723651e-324,____ti_=_'2037-04-05_12:51:36_-0000_UTC',_da_=_'0000-00-00',____te_=_'',_bo_=_false,_js_=_'\"\"',_bl_=_'',_e1_=_'v1',_s1_=_'v2'____;",
 		"INSERT_INTO_typestable_VALUES_(____999,_-128,_-32768,_-2147483648,_-9223372036854775808,____0,_0,_0,_0,____1.401298464324817070923729583289916131280e-45,_4.940656458412465441765687928682213723651e-324,____'0000-00-00_00:00:00',_'0000-00-00',____'',_false,_'\"\"',_'',_'',_''____);",
 		"with_recursive_t_(i,f)_as_(select_4,4_from_dual_union_all_select_i_+_1,_i_+_1_from_t_where_i_<_5)_insert_into_mytable_select_i,f_from_t",
-		"with_t_(i,f)_as_(select_4,'fourth_row'_from_dual)_insert_into_mytable_select_i,f_from_t",
 		// insert_scripts (skipped by script name)
 		"Explicit_default_with_column_reference",
 		"INSERT_Accumulator_tests",
