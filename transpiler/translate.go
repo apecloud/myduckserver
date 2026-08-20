@@ -980,13 +980,19 @@ def rewrite_mysql_for_duckdb(node):
         return exp.Case(**args)
     # MySQL treats a string predicate as a number: invalid strings are 0, not an error.
     def _mysql_string_as_number(e):
-        return exp.Anonymous(
+        converted = exp.Anonymous(
             this="coalesce",
             expressions=[
-                exp.TryCast(this=e, to=exp.DataType.build("DOUBLE")),
+                exp.TryCast(this=e.copy(), to=exp.DataType.build("DOUBLE")),
                 exp.Literal.number(0),
             ],
         )
+        if isinstance(e, exp.Column):
+            return exp.Case(
+                ifs=[exp.If(this=exp.Is(this=e.copy(), expression=exp.Null()), true=exp.Null())],
+                default=converted,
+            )
+        return converted
     if isinstance(node, exp.Where) and isinstance(node.this, exp.Literal) and node.this.is_string:
         return exp.Where(
             this=exp.NEQ(this=_mysql_string_as_number(node.this), expression=exp.Literal.number(0))

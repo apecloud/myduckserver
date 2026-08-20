@@ -284,7 +284,7 @@ func TestTranslate(t *testing.T) {
 		{
 			name:     "bare column WHERE is numeric nonzero",
 			input:    "SELECT i, v FROM stringandtable WHERE v",
-			expected: "SELECT i, v FROM stringandtable WHERE COALESCE(TRY_CAST(v AS DOUBLE), 0) <> 0",
+			expected: "SELECT i, v FROM stringandtable WHERE CASE WHEN v IS NULL THEN NULL ELSE COALESCE(TRY_CAST(v AS DOUBLE), 0) END <> 0",
 		},
 		{
 			name:     "string OR is numeric 0/1 for LIKE",
@@ -324,7 +324,7 @@ func TestTranslate(t *testing.T) {
 		{
 			name:     "string column compared to number is numeric",
 			input:    "SELECT s > 2 FROM tabletest",
-			expected: "SELECT COALESCE(TRY_CAST(s AS DOUBLE), 0) > 2 FROM tabletest",
+			expected: "SELECT CASE WHEN s IS NULL THEN NULL ELSE COALESCE(TRY_CAST(s AS DOUBLE), 0) END > 2 FROM tabletest",
 		},
 		{
 			name:     "scalar subquery MAX is not an outer aggregate",
@@ -404,12 +404,12 @@ func TestTranslate(t *testing.T) {
 		{
 			name:     "string column equal to zero is numeric",
 			input:    "SELECT * FROM tabletest WHERE s = 0",
-			expected: "SELECT * FROM tabletest WHERE COALESCE(TRY_CAST(s AS DOUBLE), 0) = 0",
+			expected: "SELECT * FROM tabletest WHERE CASE WHEN s IS NULL THEN NULL ELSE COALESCE(TRY_CAST(s AS DOUBLE), 0) END = 0",
 		},
 		{
 			name:     "CASE mixed int and string casts to text",
 			input:    "SELECT CASE WHEN i > 2 THEN i ELSE 'two' END FROM mytable",
-			expected: "SELECT CASE WHEN COALESCE(TRY_CAST(i AS DOUBLE), 0) > 2 THEN CAST(i AS TEXT) ELSE CAST('two' AS TEXT) END FROM mytable",
+			expected: "SELECT CASE WHEN CASE WHEN i IS NULL THEN NULL ELSE COALESCE(TRY_CAST(i AS DOUBLE), 0) END > 2 THEN CAST(i AS TEXT) ELSE CAST('two' AS TEXT) END FROM mytable",
 		},
 		{
 			name:     "FALSE IN string is numeric",
@@ -424,7 +424,7 @@ func TestTranslate(t *testing.T) {
 		{
 			name:     "mixed IN is pairwise compare",
 			input:    "SELECT COUNT(*) FROM mytable WHERE s IN (1, 'first_row')",
-			expected: "SELECT COUNT(*) FROM mytable WHERE COALESCE(TRY_CAST(s AS DOUBLE), 0) = 1 OR s = 'first_row'",
+			expected: "SELECT COUNT(*) FROM mytable WHERE CASE WHEN s IS NULL THEN NULL ELSE COALESCE(TRY_CAST(s AS DOUBLE), 0) END = 1 OR s = 'first_row'",
 		},
 		{
 			name:     "DATE vs ISO datetime keeps time",
@@ -524,7 +524,7 @@ func TestTranslate(t *testing.T) {
 		{
 			name:     "UPDATE JOIN keeps extra WHERE",
 			input:    "UPDATE one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 SET two_pk.c1 = two_pk.c1 + 1 WHERE one_pk.c5 < 10",
-			expected: "UPDATE two_pk SET c1 = two_pk.c1 + 1 WHERE rowid IN ((SELECT DISTINCT two_pk.rowid FROM one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 WHERE COALESCE(TRY_CAST(one_pk.c5 AS DOUBLE), 0) < 10))",
+			expected: "UPDATE two_pk SET c1 = two_pk.c1 + 1 WHERE rowid IN ((SELECT DISTINCT two_pk.rowid FROM one_pk INNER JOIN two_pk ON one_pk.pk = two_pk.pk1 WHERE CASE WHEN one_pk.c5 IS NULL THEN NULL ELSE COALESCE(TRY_CAST(one_pk.c5 AS DOUBLE), 0) END < 10))",
 		},
 		{
 			name:     "UPDATE JOIN SET from other table uses FROM",

@@ -779,8 +779,16 @@ func TestInsertInto(t *testing.T) {
 }
 
 func TestInsertIgnoreInto(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestInsertIgnoreInto(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB does not coerce invalid or NULL values and report warnings like MySQL.
+		"Test that INSERT IGNORE with Non nullable columns works",
+		"Test that INSERT IGNORE properly addresses data conversion",
+		"Insert Ignore works correctly with ON DUPLICATE UPDATE",
+		// The rows are correct, but DuckDB reports zero affected rows when conflicts are ignored.
+		"Test that INSERT IGNORE INTO works with unique keys",
+	)
+	enginetest.TestInsertIgnoreInto(t, harness)
 }
 
 func TestInsertDuplicateKeyKeyless(t *testing.T) {
@@ -794,8 +802,13 @@ func TestIgnoreIntoWithDuplicateUniqueKeyKeyless(t *testing.T) {
 }
 
 func TestInsertIntoErrors(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestInsertIntoErrors(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB treats VARCHAR and VARBINARY lengths as advisory.
+		"insert into bad values ('1234567890')",
+		"insert into bad values (repeat('0', 65536))",
+	)
+	enginetest.TestInsertIntoErrors(t, harness)
 }
 
 func TestBrokenInsertScripts(t *testing.T) {
@@ -871,12 +884,21 @@ func TestSelectIntoFile(t *testing.T) {
 }
 
 func TestReplaceInto(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestReplaceInto(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB reports one affected row for a replacement; MySQL reports delete + insert.
+		"REPLACE INTO mytable VALUES (1, 'first row');",
+		"REPLACE INTO mytable SET i = 1, s = 'first row';",
+		"REPLACE INTO mytable VALUES (1, 'new row same i');",
+		"REPLACE INTO mytable SET i = 1, s = 'new row same i';",
+		// DuckDB does not accept MySQL zero dates.
+		"REPLACE_INTO_typestable_VALUES_(____999,_-128,_-32768,_-2147483648,_-9223372036854775808,____0,_0,_0,_0,____1.401298464324817070923729583289916131280e-45,_4.940656458412465441765687928682213723651e-324,____'0000-00-00_00:00:00',_'0000-00-00',____'',_false,_'\"\"',_'',_'',_''____);",
+		"REPLACE_INTO_typestable_SET____id_=_999,_i8_=_-128,_i16_=_-32768,_i32_=_-2147483648,_i64_=_-9223372036854775808,____u8_=_0,_u16_=_0,_u32_=_0,_u64_=_0,____f32_=_1.401298464324817070923729583289916131280e-45,_f64_=_4.940656458412465441765687928682213723651e-324,____ti_=_'0000-00-00_00:00:00',_da_=_'0000-00-00',____te_=_'',_bo_=_false,_js_=_'\"\"',_bl_=_'',_e1_=_'',_s1_=_''____;",
+	)
+	enginetest.TestReplaceInto(t, harness)
 }
 
 func TestReplaceIntoErrors(t *testing.T) {
-	t.Skip("wait for fix")
 	enginetest.TestReplaceIntoErrors(t, NewDefaultDuckHarness())
 }
 
@@ -911,14 +933,33 @@ func TestUpdateIgnore(t *testing.T) {
 }
 
 func TestUpdateErrors(t *testing.T) {
-	t.Skip("wait for fix")
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	harness.QueriesToSkip(
+		// DuckDB treats VARCHAR lengths as advisory.
+		"update bad set s = '1234567890'",
+	)
 	// TODO different errors
-	enginetest.TestUpdateErrors(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	enginetest.TestUpdateErrors(t, harness)
 }
 
 func TestOnUpdateExprScripts(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestOnUpdateExprScripts(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	harness.QueriesToSkip(
+		// ON UPDATE values are not stored or applied yet. Triggers, foreign keys, and procedures are unsupported.
+		"basic case",
+		"precision 3",
+		"precision 6",
+		"default time is current time",
+		"alter table",
+		"multiple columns case",
+		"before update trigger",
+		"after update trigger",
+		"insert triggers",
+		"foreign key tests",
+		"stored procedure tests",
+		"now() synonyms",
+	)
+	enginetest.TestOnUpdateExprScripts(t, harness)
 }
 
 func TestSpatialUpdate(t *testing.T) {
@@ -927,8 +968,12 @@ func TestSpatialUpdate(t *testing.T) {
 }
 
 func TestDeleteFromErrors(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestDeleteErrors(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	harness.QueriesToSkip(
+		// The query fails correctly, but the bind-parameter error text differs.
+		"DELETE FROM mytable WHERE i = ?;",
+	)
+	enginetest.TestDeleteErrors(t, harness)
 }
 
 func TestSpatialDeleteFrom(t *testing.T) {
@@ -1835,7 +1880,6 @@ func TestPkOrdinalsDDL(t *testing.T) {
 }
 
 func TestPkOrdinalsDML(t *testing.T) {
-	t.Skip("wait for fix")
 	enginetest.TestPkOrdinalsDML(t, NewDefaultDuckHarness())
 }
 
@@ -2245,8 +2289,18 @@ func TestPrepared(t *testing.T) {
 }
 
 func TestPreparedInsert(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestPreparedInsert(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	harness.QueriesToSkip(
+		// Bindings are not forwarded for general INSERTs. ON DUPLICATE KEY and foreign keys are unsupported.
+		"simple insert",
+		"Insert on duplicate key",
+		"Insert on duplicate key with row alias",
+		"Out-of-order Insert on duplicate key with row alias",
+		"Insert on duplicate key with row and column alias",
+		"Out-of-order Insert on duplicate key with row and column alias",
+		"inserts should trigger string conversion errors",
+	)
+	enginetest.TestPreparedInsert(t, harness)
 }
 
 func TestPreparedStatements(t *testing.T) {
