@@ -799,7 +799,6 @@ func TestInsertIntoErrors(t *testing.T) {
 }
 
 func TestBrokenInsertScripts(t *testing.T) {
-	t.Skip("wait for fix")
 	enginetest.TestBrokenInsertScripts(t, NewDefaultDuckHarness())
 }
 
