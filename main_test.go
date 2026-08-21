@@ -271,8 +271,31 @@ func TestQueriesSimple(t *testing.T) {
 
 // TestJoinQueries runs the canonical test queries against a single threaded index enabled harness.
 func TestJoinQueries(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestJoinQueries(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB does not allow LIMIT or OFFSET in a recursive CTE.
+		"with recursive a(x,y) as (select i,i from mytable where i < 4 union select a.x, mytable.i from a join mytable on a.x+1 = mytable.i limit 2) select * from a;",
+		// DuckDB requires explicit aliases when tables in different schemas share a base name.
+		"select * from othertable join foo.othertable on othertable.s2 = 'third'",
+		"select * from othertable join foo.othertable on mydb.othertable.s2 = 'third'",
+		"select * from othertable join foo.othertable on foo.othertable.text = 'a'",
+		"select * from foo.othertable join othertable on othertable.s2 = 'third'",
+		"select * from foo.othertable join othertable on mydb.othertable.s2 = 'third'",
+		"select * from foo.othertable join othertable on foo.othertable.text = 'a'",
+		"select * from mydb.othertable join foo.othertable on othertable.s2 = 'third'",
+		"select * from mydb.othertable join foo.othertable on mydb.othertable.s2 = 'third'",
+		"select * from mydb.othertable join foo.othertable on foo.othertable.text = 'a'",
+		"select * from foo.othertable join mydb.othertable on othertable.s2 = 'third'",
+		"select * from foo.othertable join mydb.othertable on mydb.othertable.s2 = 'third'",
+		"select * from foo.othertable join mydb.othertable on foo.othertable.text = 'a'",
+		// DuckHarness tables do not support the script's foreign key setup.
+		"Complex join query with foreign key constraints",
+		// DuckDB orders SELECT * columns differently for these USING joins.
+		"select * from t1 join t2 using (j);",
+		"select * from t1 right join t2 using (i);",
+		"select * from t1 right join t2 using (j);",
+	)
+	enginetest.TestJoinQueries(t, harness)
 }
 
 func TestLateralJoin(t *testing.T) {

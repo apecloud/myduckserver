@@ -57,6 +57,11 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT (((i AND (NOT i)) OR ((NOT i) AND i)) AND NOT (i)) OR (NOT ((i AND (NOT i)) OR ((NOT i) AND i)) AND (i)) FROM t",
 		},
 		{
+			name:     "parenthesized JOIN without ON becomes CROSS JOIN",
+			input:    "SELECT * FROM (ab JOIN pq) WHERE a IN (SELECT a FROM ab)",
+			expected: "SELECT * FROM (ab CROSS JOIN pq) WHERE a IN (SELECT a FROM ab)",
+		},
+		{
 			name:     "CHAR_LENGTH becomes DuckDB LENGTH",
 			input:    "SELECT CHAR_LENGTH(s) FROM t",
 			expected: "SELECT LENGTH(s) FROM t",

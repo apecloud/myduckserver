@@ -455,6 +455,13 @@ def _rewrite_mysql_update(node):
     return exp.Update(**kwargs)
 
 def rewrite_mysql_for_duckdb(node):
+    # SQLGlot renders a parenthesized MySQL JOIN without ON as (a, b),
+    # which DuckDB rejects. Both dialects define it as a cross join.
+    if isinstance(node, exp.Join) and isinstance(node.parent, exp.Table):
+        if not any(node.args.get(k) for k in ("on", "using", "method", "kind", "side")):
+            updated = node.copy()
+            updated.set("kind", "CROSS")
+            return updated
     # MySQL _binary 'x' / _utf8mb4 'x' are charset introducers. DuckDB has no _binary type.
     if isinstance(node, exp.Introducer):
         inner = node.args.get("expression")
