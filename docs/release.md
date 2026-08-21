@@ -8,7 +8,7 @@ published image can always be traced and rolled back.
 
 | Tag | Example | Mutable | Created by |
 | --- | --- | --- | --- |
-| Development version | `v0.1.0-dev.20260821.1` | No | Release Image workflow |
+| Development version | `v0.1.0-dev.20260822.1` | No | Release Image workflow |
 | Release candidate | `v0.1.0-rc.1` | No | Release Image workflow |
 | Source commit | `sha-5e29d94d` | No | Release Image workflow |
 | Stable version | `v0.1.0` | No | Promote Image workflow after acceptance |
@@ -47,17 +47,22 @@ must resolve to the digest returned by the build. The workflow uploads
 `release-metadata.json` with the source and workflow SHAs, run ID and URL,
 immutable tags, top-level digest, per-platform digests, and build time.
 
-The first restored baseline uses:
+The application Dockerfile must pin both its builder and runtime images with a
+readable tag and a full multi-architecture manifest digest. The workflow
+rejects an unpinned Dockerfile and records both base-image digests in the
+release evidence.
+
+The first restored baseline will use:
 
 ```text
-source_sha: 5e29d94db535e51876ec9465c5ef78a8e2c2d92a
-version: v0.1.0-dev.20260821.1
-commit tag: sha-5e29d94d
+source_sha: exact main commit containing the pinned Dockerfile and release policy
+version: v0.1.0-dev.20260822.1
+commit tag: sha-<first 8 characters of source_sha>
 ```
 
-This baseline predates the `myduckserver --version` command. Its version and
-source commit must be queried from its OCI labels. Do not apply the release
-tooling commit to the baseline source tree.
+The earlier `5e29d94db535e51876ec9465c5ef78a8e2c2d92a` commit remains the fifth
+compatibility-restoration milestone, but it is not an image release source:
+its mutable builder tag now produces a binary incompatible with its runtime.
 
 ## Inspect build identity
 
@@ -119,6 +124,7 @@ Every release record must keep:
 - full application source SHA;
 - prerelease, source-commit, and stable tags as applicable;
 - multi-architecture digest;
+- builder and runtime top-level manifest digests;
 - acceptance result and reference;
 - build or promotion time;
 - previous `latest` digest for rollback.

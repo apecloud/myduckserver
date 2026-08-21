@@ -28,12 +28,12 @@ func TestVersionInfo(t *testing.T) {
 		SourceRepository = originalSourceRepository
 	})
 
-	Version = "v0.1.0-dev.20260821.1"
+	Version = "v0.1.0-dev.20260822.1"
 	GitCommit = "5e29d94db535e51876ec9465c5ef78a8e2c2d92a"
 	BuildTime = "2026-08-21T15:35:20Z"
 	SourceRepository = "https://github.com/apecloud/myduckserver"
 
-	want := "myduckserver version=v0.1.0-dev.20260821.1 commit=5e29d94db535e51876ec9465c5ef78a8e2c2d92a build_time=2026-08-21T15:35:20Z source=https://github.com/apecloud/myduckserver"
+	want := "myduckserver version=v0.1.0-dev.20260822.1 commit=5e29d94db535e51876ec9465c5ef78a8e2c2d92a build_time=2026-08-21T15:35:20Z source=https://github.com/apecloud/myduckserver"
 	if got := versionInfo(); got != want {
 		t.Fatalf("versionInfo() = %q, want %q", got, want)
 	}
