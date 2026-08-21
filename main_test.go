@@ -516,12 +516,61 @@ func TestAnsiQuotesSqlMode(t *testing.T) {
 }
 
 func TestAnsiQuotesSqlModePrepared(t *testing.T) {
-	t.Skip("wait for fix")
 	harness := NewDefaultDuckHarness()
 	if harness.IsUsingServer() {
 		t.Skip("prepared test depend on context for current sql_mode information, but it does not get updated when using ServerEngine")
 	}
-	enginetest.TestAnsiQuotesSqlModePrepared(t, NewDefaultDuckHarness())
+
+	ansiQuotesTests := append([]queries.ScriptTest(nil), queries.AnsiQuotesTests...)
+	for i := range ansiQuotesTests {
+		script := &ansiQuotesTests[i]
+		switch script.Name {
+		case "ANSI_QUOTES: triggers", "ANSI_QUOTES: stored procedures", "ANSI_QUOTES: events":
+			// DuckDB does not provide these MySQL server-side objects.
+			script.SkipPrepared = true
+		case "ANSI_QUOTES: column defaults":
+			// DuckDB rejects DEFAULT expressions that refer to another column.
+			script.SkipPrepared = true
+		}
+	}
+
+	for _, script := range ansiQuotesTests {
+		enginetest.TestScriptPrepared(t, harness, script)
+	}
+}
+
+func TestAnsiQuotesSqlModeExecution(t *testing.T) {
+	test := queries.ScriptTest{
+		Name: "ANSI_QUOTES: ordinary execution uses the session mode",
+		SetUpScript: []string{
+			"create table auctions (ai int primary key, data varchar(100));",
+			"insert into auctions values (1, 'forty-two');",
+		},
+		Assertions: []queries.ScriptTestAssertion{
+			{
+				Query:    `select "data" from auctions order by "ai" desc;`,
+				Expected: []sql.Row{{"data"}},
+			},
+			{
+				Query:    "SET @@sql_mode='ANSI_QUOTES';",
+				Expected: []sql.Row{{}},
+			},
+			{
+				Query:    `select "data" from auctions order by "ai" desc;`,
+				Expected: []sql.Row{{"forty-two"}},
+			},
+			{
+				Query:    "SET @@sql_mode='NO_ENGINE_SUBSTITUTION';",
+				Expected: []sql.Row{{}},
+			},
+			{
+				Query:    `select "data" from auctions order by "ai" desc;`,
+				Expected: []sql.Row{{"data"}},
+			},
+		},
+	}
+
+	enginetest.TestScript(t, NewDefaultDuckHarness(), test)
 }
 
 // Tests of choosing the correct execution plan independent of result correctness. Mostly useful for confirming that

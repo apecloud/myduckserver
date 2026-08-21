@@ -26,6 +26,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/transform"
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/sirupsen/logrus"
 )
 
@@ -195,7 +196,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 		// SQLGlot cannot translate MySQL's `TABLE t` into DuckDB's `FROM t` - it produces `"table" AS t` instead.
 		duckSQL = `FROM ` + catalog.ConnectIdentifiersANSI(n.Database().Name(), n.Name())
 	default:
-		duckSQL, err = transpiler.TranslateWithSQLGlot(ctx.Query())
+		duckSQL, err = transpiler.TranslateWithSQLGlot(queryForTranslation(ctx))
 	}
 	if err != nil {
 		return nil, catalog.ErrTranspiler.New(err)
@@ -219,7 +220,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 
 func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn) (sql.RowIter, error) {
 	// Translate the MySQL query to a DuckDB query
-	duckSQL, err := transpiler.TranslateWithSQLGlot(ctx.Query())
+	duckSQL, err := transpiler.TranslateWithSQLGlot(queryForTranslation(ctx))
 	if err != nil {
 		return nil, catalog.ErrTranspiler.New(err)
 	}
@@ -265,6 +266,22 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 		InsertID:     uint64(insertId),
 		Info:         info,
 	})), nil
+}
+
+// queryForTranslation canonicalizes ANSI-quoted identifiers before SQLGlot
+// reparses the original MySQL query with its default dialect settings.
+func queryForTranslation(ctx *sql.Context) string {
+	query := ctx.Query()
+	sqlMode := sql.LoadSqlMode(ctx)
+	if !sqlMode.AnsiQuotes() {
+		return query
+	}
+
+	parsed, err := sqlparser.ParseWithOptions(ctx, query, sqlMode.ParserOptions())
+	if err != nil {
+		return query
+	}
+	return sqlparser.String(parsed)
 }
 
 // containsVariable inspects if the plan contains a system or user variable.
