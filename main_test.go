@@ -1032,8 +1032,16 @@ func TestDeleteFrom(t *testing.T) {
 }
 
 func TestConvert(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestConvert(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
+	for _, tt := range queries.ConvertTests {
+		// DuckDB does not apply MySQL's numeric coercion when a numeric column is
+		// compared with a nonnumeric string or a DATE value.
+		if tt.Operand == "'string'" || strings.HasPrefix(tt.Operand, "STR_TO_DATE(") {
+			query := fmt.Sprintf("select count(*) from typestable where %s %s %s", tt.Field, tt.Op, tt.Operand)
+			harness.QueriesToSkip(query)
+		}
+	}
+	enginetest.TestConvert(t, harness)
 }
 
 func TestScripts(t *testing.T) {
@@ -1057,7 +1065,8 @@ func TestSpatialIndexPlans(t *testing.T) {
 }
 
 func TestNumericErrorScripts(t *testing.T) {
-	t.Skip("wait for fix")
+	// The only script requires DECIMAL(65,30), but DuckDB supports at most 38 digits.
+	t.Skip("DuckDB DECIMAL precision is limited to 38; the only script requires DECIMAL(65,30)")
 	enginetest.TestNumericErrorScripts(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
 }
 
