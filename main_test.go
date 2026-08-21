@@ -501,10 +501,6 @@ func TestAnsiQuotesSqlMode(t *testing.T) {
 		`select "pk", "data" from "t" order by "pk" asc;`,
 		`insert into public_keys("item", "type", "hash", "count", "public") values (42, 'type', 1010, 1, 'public');`,
 		`select "public", "count" from view1;`,
-		// View definitions retain ANSI quotes, but MyDuck's SHOW and information_schema
-		// output does not match the MySQL representation expected by this suite.
-		`show create table view1;`,
-		`select table_name, view_definition from information_schema.views where table_name='view1';`,
 		// The skipped quoted-column INSERT leaves the view empty.
 		"select public, `count` from view1;",
 		// DuckDB does not provide MySQL triggers, stored procedures, or events.
