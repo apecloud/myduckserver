@@ -20,6 +20,12 @@ type Database struct {
 	name    string
 }
 
+type ExtraViewInfo struct {
+	TextDefinition      string `json:"text_definition,omitempty"`
+	CreateViewStatement string `json:"create_view_statement,omitempty"`
+	SqlMode             string `json:"sql_mode,omitempty"`
+}
+
 var _ sql.Database = (*Database)(nil)
 var _ sql.TableCreator = (*Database)(nil)
 var _ sql.TableDropper = (*Database)(nil)
@@ -331,7 +337,7 @@ func (d *Database) RenameTable(ctx *sql.Context, oldName string, newName string)
 // extractViewDefinitions is a helper function to extract view definitions from DuckDB
 func (d *Database) extractViewDefinitions(ctx *sql.Context, schemaName string, viewName string) ([]sql.ViewDefinition, error) {
 	query := `
-		SELECT DISTINCT view_name, sql
+		SELECT DISTINCT view_name, sql, comment
 		FROM duckdb_views()
 		WHERE schema_name = ? AND NOT internal
 	`
@@ -351,7 +357,8 @@ func (d *Database) extractViewDefinitions(ctx *sql.Context, schemaName string, v
 	var views []sql.ViewDefinition
 	for rows.Next() {
 		var name, createViewStmt string
-		if err := rows.Scan(&name, &createViewStmt); err != nil {
+		var comment stdsql.NullString
+		if err := rows.Scan(&name, &createViewStmt, &comment); err != nil {
 			return nil, ErrDuckDB.New(err)
 		}
 
@@ -360,15 +367,29 @@ func (d *Database) extractViewDefinitions(ctx *sql.Context, schemaName string, v
 			continue
 		}
 
-		views = append(views, sql.ViewDefinition{
-			Name:                name,
-			CreateViewStatement: createViewStmt,
-		})
+		views = append(views, viewDefinitionFromMetadata(name, schemaName, createViewStmt, comment.String))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, ErrDuckDB.New(err)
 	}
 	return views, nil
+}
+
+func viewDefinitionFromMetadata(name, schemaName, createViewStmt, encodedComment string) sql.ViewDefinition {
+	view := sql.ViewDefinition{
+		Name:                name,
+		CreateViewStatement: createViewStmt,
+		SchemaName:          schemaName,
+	}
+
+	meta := DecodeComment[ExtraViewInfo](encodedComment).Meta
+	if meta.CreateViewStatement != "" && meta.TextDefinition != "" && sql.NewSqlModeFromString(meta.SqlMode).AnsiQuotes() {
+		view.TextDefinition = meta.TextDefinition
+		view.CreateViewStatement = meta.CreateViewStatement
+		view.SqlMode = meta.SqlMode
+	}
+
+	return view
 }
 
 // AllViews implements sql.ViewDatabase.
@@ -401,7 +422,19 @@ func (d *Database) CreateView(ctx *sql.Context, name string, selectStatement str
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := adapter.Exec(ctx, fmt.Sprintf(`USE %s; CREATE VIEW "%s" AS %s`, FullSchemaName(d.catalog, d.name), name, selectStatement))
+	statement := fmt.Sprintf(`USE %s; CREATE VIEW "%s" AS %s`, FullSchemaName(d.catalog, d.name), name, selectStatement)
+	sqlMode := sql.LoadSqlMode(ctx)
+	if sqlMode.AnsiQuotes() {
+		meta := ExtraViewInfo{
+			TextDefinition:      selectStatement,
+			CreateViewStatement: createViewStmt,
+			SqlMode:             sqlMode.String(),
+		}
+		statement += fmt.Sprintf(`; COMMENT ON VIEW %s IS '%s'`,
+			FullTableName(d.catalog, d.name, name), NewCommentWithMeta("", meta).Encode())
+	}
+
+	_, err := adapter.Exec(ctx, statement)
 	if err != nil {
 		return ErrDuckDB.New(err)
 	}
