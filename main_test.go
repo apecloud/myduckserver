@@ -2314,9 +2314,49 @@ func TestDateParse(t *testing.T) {
 }
 
 func TestJsonScripts(t *testing.T) {
-	t.Skip("wait for fix")
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB JSON_TYPE reports the stored physical unsigned integer type.
+		"select x, JSON_TYPE(y) from xy",
+		"select JSON_TYPE(y) from xy where x = 1;",
+		// SQLGlot does not support go-mysql-server's three-argument JSON_VALUE form.
+		`select json_value(y, '$.a', 'json') from xy`,
+		`select json_value(y, '$.a[0].b', 'signed') from xy where x = 2`,
+		// DuckDB accepts an integer JSON_EXTRACT input where go-mysql-server rejects it.
+		`select json_length(json_extract(x, "$.a")) from xy`,
+		// The DuckDB execution path does not pass this assertion's positional binding.
+		`SELECT * FROM users WHERE JSON_CONTAINS (languages, JSON_ARRAY(?)) ORDER BY users.id LIMIT 1`,
+		// Upstream expects [], but the script name and MySQL semantics both require NULL.
+		"SELECT JSON_ARRAYAGG(o_id) FROM t2",
+		// DuckDB requires the ORDER BY column to be grouped or aggregated.
+		"SELECT pk, JSON_ARRAYAGG(field) FROM (SELECT * FROM j ORDER BY pk) as sub GROUP BY field ORDER BY pk",
+		// DuckDB JSON_GROUP_OBJECT rejects duplicate keys instead of keeping the last value.
+		"SELECT JSON_OBJECTAGG(val, o_id) FROM (SELECT * FROM t2 ORDER BY o_id) as sub GROUP BY val",
+		`SELECT JSON_OBJECTAGG(c0, val) from (SELECT * FROM j ORDER BY pk) as sub`,
+		// SQLGlot cannot parse an unquoted column named value inside JSON_OBJECTAGG.
+		"SELECT c0, JSON_OBJECTAGG(`attribute`, value) FROM (SELECT * FROM t ORDER BY o_id) as sub GROUP BY c0",
+		"SELECT c0, JSON_OBJECTAGG(c0, value) FROM (SELECT * FROM t ORDER BY o_id) as sub GROUP BY c0",
+		"select JSON_OBJECTAGG(c0, value) from (SELECT * FROM t ORDER BY o_id) as sub",
+		"select JSON_OBJECTAGG(`attribute`, value) from (SELECT * FROM t ORDER BY o_id) as sub",
+		// DuckDB reports a different error category for a NULL JSON object key.
+		`SELECT JSON_OBJECTAGG(c0, val) from test`,
+		// DuckDB ->> removes one quoting layer; these JSON strings contain another.
+		`select col1->>'$.key2' from t;`,
+		`select pk, col1 from t where col1->>'$.key2' = 'abc';`,
+		// DuckDB and MySQL use different JSON value ordering.
+		"select * from t order by col1 asc;",
+		"select * from t order by col1 desc;",
+		// DuckDB preserves the original JSON text formatting and object key order.
+		"select pk, cast(col1 as char) from t order by pk asc;",
+		// DuckDB wildcard extraction returns LIST<JSON> and loses missing/null distinctions.
+		"select pk, json_extract(col1, '$.items.*') from t order by pk;",
+		// DuckDB has no compatible invalid-mode error for JSON_CONTAINS_PATH.
+		"select pk, json_contains_path(col1, 'other', '$.c.d', '$.x') from t order by pk;",
+		// DuckDB 1.1.3 has no JSON_INSERT function.
+		"select pk, json_insert(col1, '$.x', 1), json_insert(col1, '$.y', 2) from t order by pk;",
+	)
 	var skippedTests []string = nil
-	enginetest.TestJsonScripts(t, NewDefaultDuckHarness(), skippedTests)
+	enginetest.TestJsonScripts(t, harness, skippedTests)
 }
 
 func TestShowTableStatus(t *testing.T) {
