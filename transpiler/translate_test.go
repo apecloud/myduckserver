@@ -62,6 +62,16 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT * FROM (ab CROSS JOIN pq) WHERE a IN (SELECT a FROM ab)",
 		},
 		{
+			name:     "RANK and DENSE_RANK return unsigned integers",
+			input:    "SELECT rank() OVER (ORDER BY b), dense_rank() OVER (PARTITION BY c ORDER BY b DESC) FROM t",
+			expected: "SELECT CAST(RANK() OVER (ORDER BY b NULLS FIRST) AS UBIGINT), CAST(DENSE_RANK() OVER (PARTITION BY c ORDER BY b DESC) AS UBIGINT) FROM t",
+		},
+		{
+			name:     "other window functions keep their native result types",
+			input:    "SELECT percent_rank() OVER (ORDER BY b), row_number() OVER (ORDER BY b), sum(a) OVER () FROM t",
+			expected: "SELECT PERCENT_RANK() OVER (ORDER BY b NULLS FIRST), ROW_NUMBER() OVER (ORDER BY b NULLS FIRST), SUM(a) OVER () FROM t",
+		},
+		{
 			name:     "CHAR_LENGTH becomes DuckDB LENGTH",
 			input:    "SELECT CHAR_LENGTH(s) FROM t",
 			expected: "SELECT LENGTH(s) FROM t",

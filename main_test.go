@@ -2124,8 +2124,7 @@ func TestNaturalJoin(t *testing.T) {
 }
 
 func TestWindowFunctions(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestWindowFunctions(t, NewDefaultDuckHarness())
+	testWindowFunctionsCompat(t)
 }
 
 func TestWindowRangeFrames(t *testing.T) {

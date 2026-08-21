@@ -468,6 +468,10 @@ def _rewrite_mysql_update(node):
     return exp.Update(**kwargs)
 
 def rewrite_mysql_for_duckdb(node):
+    # MySQL exposes ranking results as unsigned 64-bit integers. DuckDB uses
+    # signed BIGINTs unless the window result is explicitly cast.
+    if isinstance(node, exp.Window) and isinstance(node.this, (exp.Rank, exp.DenseRank)):
+        return exp.Cast(this=node.copy(), to=exp.DataType(this=exp.DataType.Type.UBIGINT))
     # SQLGlot renders a parenthesized MySQL JOIN without ON as (a, b),
     # which DuckDB rejects. Both dialects define it as a cross join.
     if isinstance(node, exp.Join) and isinstance(node.parent, exp.Table):
