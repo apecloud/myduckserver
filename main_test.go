@@ -2233,8 +2233,13 @@ func TestNullRanges(t *testing.T) {
 }
 
 func TestBlobs(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestBlobs(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	// DuckDB column defaults cannot reference another column.
+	harness.QueriesToSkip(
+		"ALTER TABLE blobt ADD COLUMN v2 BIGINT DEFAULT (i + 2) AFTER b",
+		"ALTER TABLE textt ADD COLUMN v2 BIGINT DEFAULT (i + 2) AFTER t",
+	)
+	enginetest.TestBlobs(t, harness)
 }
 
 func TestIndexes(t *testing.T) {
