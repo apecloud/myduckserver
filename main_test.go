@@ -964,8 +964,7 @@ func TestBrokenInsertScripts(t *testing.T) {
 }
 
 func TestGeneratedColumns(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestGeneratedColumns(t, NewDefaultDuckHarness())
+	testGeneratedColumns(t, NewDefaultDuckHarness())
 }
 
 func TestGeneratedColumnPlans(t *testing.T) {
