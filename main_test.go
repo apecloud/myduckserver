@@ -1946,7 +1946,6 @@ func TestDropColumn(t *testing.T) {
 }
 
 func TestDropColumnKeylessTables(t *testing.T) {
-	t.Skip("wait for fix")
 	enginetest.TestDropColumnKeylessTables(t, NewDefaultDuckHarness())
 }
 
