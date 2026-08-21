@@ -276,8 +276,13 @@ func TestJoinQueries(t *testing.T) {
 }
 
 func TestLateralJoin(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestLateralJoinQueries(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB requires a single comparison between the left and right sides for
+		// non-inner lateral joins, so it rejects this disjunctive join condition.
+		"select * from t left join lateral (select * from t1 where t.i != t1.j) as tt on t.i + 1 = tt.j or t.i + 2 = tt.j order by t.i, tt.j",
+	)
+	enginetest.TestLateralJoinQueries(t, harness)
 }
 
 // TestJoinPlanning runs join-specific tests for merge
