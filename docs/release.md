@@ -10,7 +10,7 @@ published image can always be traced and rolled back.
 | --- | --- | --- | --- |
 | Development version | `v0.1.0-dev.20260822.1` | No | Release Image workflow |
 | Release candidate | `v0.1.0-rc.1` | No | Release Image workflow |
-| Source commit | `sha-5e29d94d` | No | Release Image workflow |
+| Source commit | `sha-01234567` | No | Release Image workflow |
 | Stable version | `v0.1.0` | No | Promote Image workflow after acceptance |
 | Stable channel | `latest` | Yes | Promote Image workflow after acceptance |
 

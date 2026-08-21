@@ -115,12 +115,20 @@ jobs:
           fi
           builder_image="${BASH_REMATCH[1]}"
           builder_image_digest="${BASH_REMATCH[2]}"
+          if [[ ! "${builder_image##*/}" =~ ^[^:]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "builder image must include a readable tag before its digest" >&2
+            exit 1
+          fi
           if [[ ! "${base_images[1]}" =~ ^([^@[:space:]]+)@(sha256:[0-9a-f]{64})$ ]]; then
             echo "runtime image must include a readable tag and full sha256 manifest digest" >&2
             exit 1
           fi
           runtime_image="${BASH_REMATCH[1]}"
           runtime_image_digest="${BASH_REMATCH[2]}"
+          if [[ ! "${runtime_image##*/}" =~ ^[^:]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "runtime image must include a readable tag before its digest" >&2
+            exit 1
+          fi
           short_sha="${SOURCE_SHA:0:8}"
           {
             echo "sha_tag=sha-$short_sha"
