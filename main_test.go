@@ -2130,13 +2130,11 @@ func TestWindowFunctions(t *testing.T) {
 }
 
 func TestWindowRangeFrames(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestWindowRangeFrames(t, NewDefaultDuckHarness())
+	testWindowRangeFramesCompat(t)
 }
 
 func TestNamedWindows(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestNamedWindows(t, NewDefaultDuckHarness())
+	testNamedWindowsCompat(t)
 }
 
 func TestNaturalJoinEqual(t *testing.T) {
