@@ -182,6 +182,36 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT JSON_PRETTY(CAST(c3 AS JSON)) FROM jsontable",
 		},
 		{
+			name:     "JSON_ARRAYAGG uses DuckDB aggregate",
+			input:    "SELECT c0, JSON_ARRAYAGG(value) FROM t GROUP BY c0",
+			expected: "SELECT c0, JSON_GROUP_ARRAY(value) FROM t GROUP BY c0",
+		},
+		{
+			name:     "JSON_ARRAYAGG stays aggregate during GROUP BY rewrite",
+			input:    "SELECT pk, JSON_ARRAYAGG(field) FROM j GROUP BY field",
+			expected: "SELECT ANY_VALUE(pk), JSON_GROUP_ARRAY(field) FROM j GROUP BY field",
+		},
+		{
+			name:     "JSON_LENGTH counts arrays objects and scalars",
+			input:    "SELECT JSON_LENGTH(j) FROM t",
+			expected: "SELECT CASE WHEN j IS NULL THEN NULL WHEN JSON_TYPE(j) = 'ARRAY' THEN JSON_ARRAY_LENGTH(j) WHEN JSON_TYPE(j) = 'OBJECT' THEN ARRAY_LENGTH(JSON_KEYS(j)) ELSE 1 END FROM t",
+		},
+		{
+			name:     "JSON_LENGTH supports a path",
+			input:    "SELECT JSON_LENGTH(j, '$.a') FROM t",
+			expected: "SELECT CASE WHEN JSON_EXTRACT(j, '$.a') IS NULL THEN NULL WHEN JSON_TYPE(JSON_EXTRACT(j, '$.a')) = 'ARRAY' THEN JSON_ARRAY_LENGTH(JSON_EXTRACT(j, '$.a')) WHEN JSON_TYPE(JSON_EXTRACT(j, '$.a')) = 'OBJECT' THEN ARRAY_LENGTH(JSON_KEYS(JSON_EXTRACT(j, '$.a'))) ELSE 1 END FROM t",
+		},
+		{
+			name:     "JSON_CONTAINS_PATH one uses OR",
+			input:    "SELECT JSON_CONTAINS_PATH(j, 'one', '$.a', '$.b') FROM t",
+			expected: "SELECT JSON_EXISTS(j, '$.a') OR JSON_EXISTS(j, '$.b') FROM t",
+		},
+		{
+			name:     "JSON_CONTAINS_PATH all uses AND",
+			input:    "SELECT JSON_CONTAINS_PATH(j, 'all', '$.a', '$.b') FROM t",
+			expected: "SELECT JSON_EXISTS(j, '$.a') AND JSON_EXISTS(j, '$.b') FROM t",
+		},
+		{
 			name:     "DAYOFYEAR compact date gets dashes",
 			input:    "SELECT DAYOFYEAR('20071211') FROM mytable",
 			expected: "SELECT DAYOFYEAR(CAST('2007-12-11' AS DATE)) FROM mytable",

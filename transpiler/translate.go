@@ -282,7 +282,20 @@ def _has_outer(e, pred):
     return any(_has_outer(c, pred) for c in _iter_args(e))
 
 def _has_outer_agg(e):
-    return _has_outer(e, lambda x: isinstance(x, exp.AggFunc))
+    return _has_outer(
+        e,
+        lambda x: isinstance(x, exp.AggFunc) or (
+            isinstance(x, exp.Anonymous)
+            and str(x.this).upper() in ("JSON_ARRAYAGG", "JSON_GROUP_ARRAY")
+        ),
+    )
+
+def normalize_mysql_aggregates(node):
+    # Normalize before SELECT rewrites so JSON_ARRAYAGG is recognized as an
+    # aggregate when deciding whether other select expressions need ANY_VALUE.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "JSON_ARRAYAGG" and len(node.expressions) == 1:
+        return exp.Anonymous(this="json_group_array", expressions=[node.expressions[0]])
+    return node
 
 def _has_outer_column(e):
     return _has_outer(e, lambda x: isinstance(x, exp.Column))
@@ -834,6 +847,47 @@ def rewrite_mysql_for_duckdb(node):
             this="json_pretty",
             expressions=[exp.Cast(this=node.expressions[0], to=exp.DataType.build("JSON"))],
         )
+    # MySQL JSON_LENGTH counts array entries, object members, and scalars as one.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "JSON_LENGTH" and len(node.expressions) in (1, 2):
+        target = node.expressions[0]
+        if len(node.expressions) == 2:
+            target = exp.Anonymous(
+                this="json_extract",
+                expressions=[target, node.expressions[1]],
+            )
+        target_type = exp.Anonymous(this="json_type", expressions=[target.copy()])
+        return exp.Case(
+            ifs=[
+                exp.If(
+                    this=exp.Is(this=target.copy(), expression=exp.Null()),
+                    true=exp.Null(),
+                ),
+                exp.If(
+                    this=exp.EQ(this=target_type.copy(), expression=exp.Literal.string("ARRAY")),
+                    true=exp.Anonymous(this="json_array_length", expressions=[target.copy()]),
+                ),
+                exp.If(
+                    this=exp.EQ(this=target_type, expression=exp.Literal.string("OBJECT")),
+                    true=exp.Anonymous(
+                        this="array_length",
+                        expressions=[exp.Anonymous(this="json_keys", expressions=[target.copy()])],
+                    ),
+                ),
+            ],
+            default=exp.Literal.number(1),
+        )
+    # MySQL JSON_CONTAINS_PATH(..., 'one'|'all', paths...) maps to json_exists checks.
+    if isinstance(node, exp.Anonymous) and str(node.this).upper() == "JSON_CONTAINS_PATH" and len(node.expressions) >= 3:
+        doc, mode, *paths = node.expressions
+        if isinstance(mode, exp.Literal) and mode.is_string:
+            checks = [
+                exp.Anonymous(this="json_exists", expressions=[doc.copy(), path])
+                for path in paths
+            ]
+            if str(mode.this).lower() == "one":
+                return exp.or_(*checks)
+            if str(mode.this).lower() == "all":
+                return exp.and_(*checks)
     # MySQL JSON_KEYS returns NULL on bad JSON. DuckDB json_keys errors.
     if isinstance(node, exp.JSONKeys):
         inner = node.this.transform(rewrite_mysql_for_duckdb) if node.this is not None else node.this
@@ -1383,7 +1437,8 @@ def transpile_mysql_to_duckdb(sql: str) -> str:
                 return node
             return exp.Null()
         return rewrite_mysql_for_duckdb(node)
-    tree = trees[0].transform(rewrite_with_insert_context)
+    tree = trees[0].transform(normalize_mysql_aggregates)
+    tree = tree.transform(rewrite_with_insert_context)
     if isinstance(tree, exp.Insert):
         if was_replace:
             tree.set("alternative", "REPLACE")
