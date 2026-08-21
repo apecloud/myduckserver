@@ -84,10 +84,11 @@ Independent acceptance must cover startup, MySQL and PostgreSQL queries,
 initialization scripts, persistent data, and restart recovery. Record the test
 report or task reference before promotion.
 
-Run the **Promote Image** workflow from the `main` branch with:
+Only an accepted release candidate may become stable. Run the **Promote
+Image** workflow from the `main` branch with:
 
 - the full source SHA;
-- the existing development or release-candidate version;
+- the existing release-candidate version;
 - the accepted `sha256:...` digest;
 - the new stable version;
 - the independent acceptance reference.
@@ -119,4 +120,5 @@ Every release record must keep:
 - prerelease, source-commit, and stable tags as applicable;
 - multi-architecture digest;
 - acceptance result and reference;
+- build or promotion time;
 - previous `latest` digest for rollback.

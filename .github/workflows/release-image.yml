@@ -52,11 +52,19 @@ jobs:
           fi
 
       - name: Checkout exact application source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.source_sha }}
           path: source
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout exact release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Verify checkout and derive metadata
@@ -72,6 +80,11 @@ jobs:
             echo "checked out $actual_sha, expected $SOURCE_SHA" >&2
             exit 1
           fi
+          actual_workflow_sha="$(git -C release-tools rev-parse HEAD)"
+          if [[ "$actual_workflow_sha" != "$WORKFLOW_SHA" ]]; then
+            echo "checked out workflow commit $actual_workflow_sha, expected $WORKFLOW_SHA" >&2
+            exit 1
+          fi
           if ! git -C source cat-file -e "$WORKFLOW_SHA^{commit}"; then
             echo "workflow commit $WORKFLOW_SHA is missing from the checkout" >&2
             exit 1
@@ -85,13 +98,13 @@ jobs:
           echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: docker.io
           username: ${{ secrets.DOCKER_REGISTRY_USER }}
@@ -104,16 +117,23 @@ jobs:
           SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
         run: |
           set -euo pipefail
+          source release-tools/.github/scripts/dockerhub-manifest.sh
+          pull_token="$(dockerhub_pull_token 'apecloud/myduckserver')"
           for tag in "$VERSION" "$SHA_TAG"; do
-            if docker buildx imagetools inspect "$IMAGE:$tag" >/dev/null 2>&1; then
-              echo "refusing to overwrite existing immutable tag: $IMAGE:$tag" >&2
+            if existing_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$tag" "$pull_token")"; then
+              echo "refusing to overwrite existing immutable tag $IMAGE:$tag at $existing_digest" >&2
               exit 1
+            else
+              status=$?
+              if [[ "$status" -ne 1 ]]; then
+                exit "$status"
+              fi
             fi
           done
 
       - name: Build and push immutable image tags
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./source
           file: ./source/docker/Dockerfile
@@ -148,13 +168,22 @@ jobs:
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          inspect_digest() {
-            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' |
-              jq -r '.digest // empty'
-          }
-
-          version_digest="$(inspect_digest "$IMAGE:$VERSION")"
-          sha_digest="$(inspect_digest "$IMAGE:$SHA_TAG")"
+          source release-tools/.github/scripts/dockerhub-manifest.sh
+          pull_token="$(dockerhub_pull_token 'apecloud/myduckserver')"
+          if version_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$VERSION" "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "published version tag could not be resolved" >&2
+            exit "$status"
+          fi
+          if sha_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$SHA_TAG" "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "published commit tag could not be resolved" >&2
+            exit "$status"
+          fi
           if [[ ! "$BUILD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "build did not return a full sha256 digest: $BUILD_DIGEST" >&2
             exit 1
@@ -239,7 +268,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload release evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-metadata-${{ inputs.version }}
           path: release-metadata.json
