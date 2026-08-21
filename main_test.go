@@ -733,20 +733,52 @@ func TestMySqlDb(t *testing.T) {
 // }
 
 func TestColumnAliases(t *testing.T) {
-	t.Skip("wait for fix")
-	enginetest.TestColumnAliases(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// GROUP BY alias resolution needs the input schema to prefer a real column with the same name.
+		"SELECT s as COL1, SUM(i) COL2 FROM mytable group by col1 order by col2",
+		// DuckDB treats HAVING as an aggregate filter and rejects MySQL's row-level alias form.
+		"select t1.u as a from uv as t1 having a > 0 order by a;",
+		"select t1.u as a from uv as t1 having a = t1.u order by a;",
+		"select t1.i as a from mytable as t1 having a = t1.i;",
+		// The compatibility rewrite cannot aggregate a derived-table star as one expression.
+		"select 1 as a, one + 1 as mod1, dt.* from mytable as t1, (select 1, 2 from mytable) as dt (one, two) where dt.one > 0 group by one;",
+	)
+	enginetest.TestColumnAliases(t, harness)
 }
 
 func TestDerivedTableOuterScopeVisibility(t *testing.T) {
-	t.Skip("wait for fix")
 	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB treats HAVING as an aggregate filter and rejects these MySQL row-level filters.
+		"SELECT * FROM t1 HAVING t1.d > (SELECT dt.a FROM (SELECT t2.a AS a FROM t2 WHERE t2.b = t1.b) dt);",
+		"SELECT val, row_number() over (partition by val) as 'row_number', (SELECT two from (SELECT val*2, val*3) as dt(one, two)) as a1 from numbers having a1 > 10;",
+		"SELECT DISTINCT numbers.val, (WITH cte1 AS (SELECT val * 2 as val2 from numbers) SELECT count(*) from cte1 where numbers.val = cte1.val2) as count from numbers having count > 0;",
+		// DuckHarness tables reject the setup's FOREIGN KEY creation as unsupported.
+		"https://github.com/dolthub/go-mysql-server/issues/1282",
+	)
 	enginetest.TestDerivedTableOuterScopeVisibility(t, harness)
 }
 
 func TestOrderByGroupBy(t *testing.T) {
-	t.Skip("wait for fix")
-	// TODO: window validation expecting error message
-	enginetest.TestOrderByGroupBy(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	harness.QueriesToSkip(
+		// DuckDB cannot cast BIGINT to BLOB for MySQL's BINARY expression.
+		"SELECT DISTINCT BINARY t1.id as id FROM members AS t1 JOIN members AS t2 ON t1.id = t2.id WHERE t1.id > 0 ORDER BY BINARY t1.id",
+		"SELECT DISTINCT BINARY t1.id as id FROM members AS t1 JOIN members AS t2 ON t1.id = t2.id WHERE t1.id > 0 ORDER BY t1.id",
+		// The projected alias is not visible inside DuckDB's grouped correlated subquery.
+		"SELECT id as alias1, (SELECT alias1+1 group by alias1 having alias1 > 0) FROM members where id < 6;",
+		// DuckDB requires ORDER BY to use the same grouped BLOB expression.
+		"select binary s from t group by binary s order by s",
+		// MySQL ANY_VALUE suppresses grouping checks; DuckDB implements it as an aggregate.
+		"select any_value(id), any_value(team) from members order by id",
+	)
+	for _, script := range queries.OrderByGroupByScriptTests {
+		enginetest.TestScript(t, harness, script)
+	}
+	t.Run("non-deterministic group by", func(t *testing.T) {
+		t.Skip("DuckDB ANY_VALUE and non-strict GROUP BY semantics differ from MySQL")
+	})
 }
 
 func TestAmbiguousColumnResolution(t *testing.T) {
@@ -2040,7 +2072,7 @@ func TestNaturalJoinEqual(t *testing.T) {
 }
 
 func TestNaturalJoinDisjoint(t *testing.T) {
-	t.Skip("wait for fix")
+	t.Skip("DuckDB rejects NATURAL JOIN without shared columns; MySQL treats it as CROSS JOIN")
 	enginetest.TestNaturalJoinDisjoint(t, NewDefaultDuckHarness())
 }
 
