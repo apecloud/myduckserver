@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/apecloud/myduckserver/backend"
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/harness"
 	"github.com/stretchr/testify/require"
 
@@ -800,6 +801,29 @@ func TestQueryErrors(t *testing.T) {
 func TestInfoSchema(t *testing.T) {
 	t.Skip("wait for fix")
 	enginetest.TestInfoSchema(t, NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver))
+}
+
+func TestSchemaSummary(t *testing.T) {
+	h := NewDuckHarness("default", 1, 1, true, nil)
+	h.Setup([]setup.SetupScript{
+		{
+			"CREATE DATABASE analytics",
+			"USE analytics",
+			"CREATE TABLE events (id BIGINT PRIMARY KEY, label VARCHAR(32), score DECIMAL(10, 2))",
+			"CREATE VIEW recent_events AS SELECT id FROM events",
+		},
+	})
+	e, err := h.NewEngine(t)
+	require.NoError(t, err)
+	defer e.Close()
+
+	ctx := enginetest.NewContext(h)
+	enginetest.TestQueryWithContext(t, ctx, e, h, catalog.SchemaSummaryQuery, []sql.Row{
+		{"analytics", "events", "id", "bigint", uint64(1), "BASE TABLE"},
+		{"analytics", "events", "label", "varchar", uint64(2), "BASE TABLE"},
+		{"analytics", "events", "score", "decimal", uint64(3), "BASE TABLE"},
+		{"analytics", "recent_events", "id", "bigint", uint64(1), "VIEW"},
+	}, nil, nil, nil)
 }
 
 func TestMySqlDb(t *testing.T) {

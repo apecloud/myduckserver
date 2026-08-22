@@ -18,6 +18,38 @@ The [Model Context Protocol](https://modelcontextprotocol.io/introduction) (MCP)
     EOSQL
     ```
 
+### Discovering the schema
+
+The same read-only schema summary is available through both the MySQL and PostgreSQL wire protocols. Use this query when an agent needs to discover databases/schemas, tables, columns, and types:
+
+```sql
+SELECT
+    c.table_schema,
+    c.table_name,
+    c.column_name,
+    LOWER(CASE
+        WHEN instr(c.data_type, '(') > 0 THEN left(c.data_type, instr(c.data_type, '(') - 1)
+        ELSE c.data_type
+    END) AS data_type,
+    c.ordinal_position,
+    t.table_type
+FROM information_schema.columns AS c
+JOIN information_schema.tables AS t
+  ON c.table_catalog = t.table_catalog
+ AND c.table_schema = t.table_schema
+ AND c.table_name = t.table_name
+WHERE c.table_schema NOT IN (
+    'information_schema',
+    'pg_catalog',
+    '__sys__',
+    'mysql',
+    'performance_schema'
+)
+ORDER BY c.table_schema, c.table_name, c.ordinal_position;
+```
+
+`table_schema` is the client-visible database name for MySQL connections and schema name for PostgreSQL connections. `table_type` distinguishes `BASE TABLE` from `VIEW`, and `ordinal_position` is one-based. The explicit projection and ordering are intentional so an agent does not depend on the wider, version-specific `information_schema` column layout.
+
 4. Add the following configuration to the "mcpServers" section of your Claude Desktop configuration file. This file can be found by clicking `Settings -> Developer -> Edit Config`.
     ```json
     {
