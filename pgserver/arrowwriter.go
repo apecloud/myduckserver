@@ -11,7 +11,7 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
 )
 
 type ArrowWriter struct {

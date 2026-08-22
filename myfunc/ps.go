@@ -19,7 +19,7 @@ var _ sql.CollationCoercible = PSCurrentThreadID{}
 
 func NewPSCurrentThreadID() sql.Expression {
 	return PSCurrentThreadID{
-		NoArgFunc: function.NoArgFunc{"ps_current_thread_id", types.Uint64},
+		NoArgFunc: function.NoArgFunc{Name: "ps_current_thread_id", SQLType: types.Uint64},
 	}
 }
 

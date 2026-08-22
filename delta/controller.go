@@ -17,8 +17,8 @@ import (
 	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/marcboeker/go-duckdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -658,39 +658,25 @@ func buildCondenseDeltaSQL(viewName string, appender *DeltaAppender) string {
 		builder         strings.Builder
 	)
 	builder.Grow(512)
-	// Use the following SQL to get the latest view of the rows being updated.
-	//
-	// SELECT r[1] as action, ...
-	// FROM (
-	//   SELECT
-	//     pk1, pk2, ...,
-	//     LAST(ROW(*COLUMNS(*)) ORDER BY txn_group, txn_seq, txn_stmt, action) AS r
-	//   FROM delta
-	//   GROUP BY pk1, pk2, ...
-	// )
-	//
-	// Note that an update generates two rows: one for DELETE and one for INSERT.
-	// So the numeric value of DELETE action MUST be smaller than that of INSERT.
-	builder.Grow(512)
+	// Select the last complete row without aggregating into an unnamed struct.
+	// DuckDB 1.5 cannot extract fields from LAST(ROW(...)) reliably.
 	builder.WriteString("SELECT ")
-	builder.WriteString("r[1] AS ")
-	builder.WriteString(catalog.QuoteIdentifierANSI(augmentedSchema[0].Name))
-	for i, col := range augmentedSchema[1:] {
-		builder.WriteString(", r[")
-		builder.WriteString(strconv.Itoa(i + 2))
-		builder.WriteString("]")
+	for i, col := range augmentedSchema {
+		if i > 0 {
+			builder.WriteString(", ")
+		}
+		builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
 		if isTimestampType(col.Type) {
 			builder.WriteString("::TIMESTAMP")
 		}
 		builder.WriteString(" AS ")
 		builder.WriteString(catalog.QuoteIdentifierANSI(col.Name))
 	}
-	builder.WriteString(" FROM (SELECT ")
-	builder.WriteString(pkList)
-	builder.WriteString(", LAST(ROW(*COLUMNS(*)) ORDER BY txn_group, txn_seq, txn_stmt, action) AS r")
 	builder.WriteString(" FROM ")
 	builder.WriteString(viewName)
-	builder.WriteString(" GROUP BY ")
+	builder.WriteString(" QUALIFY ROW_NUMBER() OVER (PARTITION BY ")
+	builder.WriteString(pkList)
+	builder.WriteString(" ORDER BY txn_group, txn_seq, txn_stmt, action) = COUNT(*) OVER (PARTITION BY ")
 	builder.WriteString(pkList)
 	builder.WriteString(")")
 	return builder.String()

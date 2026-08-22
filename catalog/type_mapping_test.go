@@ -41,3 +41,17 @@ func TestNewEnumTypeKeepsExistingEmptyString(t *testing.T) {
 	require.Equal(t, "ENUM('', 'a', 'b')", got.Name())
 	require.Equal(t, []string{"", "a", "b"}, got.MySQL().Values)
 }
+
+func TestMySQLDataTypeBignum(t *testing.T) {
+	for _, name := range []string{"VARINT", "BIGNUM"} {
+		t.Run(name, func(t *testing.T) {
+			got, err := mysqlDataType(AnnotatedDuckType{name: name}, 0, 0)
+			require.NoError(t, err)
+
+			decimalType, ok := got.(sql.DecimalType)
+			require.True(t, ok)
+			require.Equal(t, uint8(65), decimalType.Precision())
+			require.Equal(t, uint8(0), decimalType.Scale())
+		})
+	}
+}

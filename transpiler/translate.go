@@ -1535,7 +1535,7 @@ func translateInternalImpl(pyStdin io.Writer, pyStdout io.Reader, sql string) (s
 	result = strings.TrimSpace(result)
 
 	if strings.HasPrefix(result, resultErr) {
-		return "", fmt.Errorf(result[len(resultErr):])
+		return "", fmt.Errorf("%s", result[len(resultErr):])
 	} else if strings.HasPrefix(result, resultOK) {
 		return strings.TrimSpace(result[len(resultOK):]), nil
 	} else {

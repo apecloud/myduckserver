@@ -16,15 +16,19 @@ package backend
 
 import (
 	stdsql "database/sql"
+	"fmt"
 	"io"
 	"math/big"
 	"reflect"
 	"strings"
 
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/charset"
+	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
-	"github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 )
 
@@ -44,6 +48,7 @@ type SQLRowIter struct {
 	pointers    []any // pointers to the buffer
 	decimals    []int
 	intervals   []int
+	jsons       []int
 	nonUTF8     []int
 	charsets    []sql.CharacterSetID
 	conversions []typeConversion
@@ -66,6 +71,13 @@ func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
 	for i, t := range columns {
 		if strings.HasPrefix(t.DatabaseTypeName(), "INTERVAL") {
 			intervals = append(intervals, i)
+		}
+	}
+
+	var jsons []int
+	for i, t := range columns {
+		if t.DatabaseTypeName() == "JSON" || (i < len(schema) && isJSONType(schema[i].Type)) {
+			jsons = append(jsons, i)
 		}
 	}
 
@@ -105,7 +117,7 @@ func NewSQLRowIter(rows *stdsql.Rows, schema sql.Schema) (*SQLRowIter, error) {
 		ptrs[i] = &buf[i]
 	}
 
-	return &SQLRowIter{rows, columns, schema, buf, ptrs, decimals, intervals, nonUTF8, charsets, conversions}, nil
+	return &SQLRowIter{rows, columns, schema, buf, ptrs, decimals, intervals, jsons, nonUTF8, charsets, conversions}, nil
 }
 
 // Next retrieves the next row. It will return io.EOF if it's the last row.
@@ -139,6 +151,19 @@ func (iter *SQLRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		case duckdb.Interval:
 			iter.buffer[idx] = t.MicrosecondsToTimespan(v.Micros + int64(v.Days)*24*60*60*1000000) // ignore the month part, which does not appear in MySQL
 		}
+	}
+
+	// Normalize JSON strings and native driver values to the representation GMS
+	// expects. SQL NULL remains nil; QueryForJSONScan preserves JSON null as text.
+	for _, idx := range iter.jsons {
+		if iter.buffer[idx] == nil {
+			continue
+		}
+		converted, _, err := types.JSON.Convert(iter.buffer[idx])
+		if err != nil {
+			return nil, err
+		}
+		iter.buffer[idx] = converted
 	}
 
 	// Process type conversions
@@ -182,6 +207,49 @@ func (iter *SQLRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 	}
 
 	return sql.NewRow(iter.buffer[:width]...), nil
+}
+
+// QueryForJSONScan casts JSON result columns to VARCHAR before the DuckDB Go
+// driver can collapse JSON null into SQL NULL.
+func QueryForJSONScan(query string, schema sql.Schema) string {
+	hasJSON := false
+	for _, column := range schema {
+		if isJSONType(column.Type) {
+			hasJSON = true
+			break
+		}
+	}
+	if !hasJSON {
+		return query
+	}
+
+	aliases := make([]string, len(schema))
+	projections := make([]string, len(schema))
+	for i, column := range schema {
+		aliases[i] = fmt.Sprintf("__myduck_col_%d", i)
+		qualified := "__myduck_json_source." + aliases[i]
+		if isJSONType(column.Type) {
+			projections[i] = "CAST(" + qualified + " AS VARCHAR)"
+		} else {
+			projections[i] = qualified
+		}
+		if column.Name != "" {
+			projections[i] += " AS " + catalog.QuoteIdentifierANSI(column.Name)
+		}
+	}
+
+	query = strings.TrimSuffix(strings.TrimSpace(query), ";")
+	return "SELECT " + strings.Join(projections, ", ") +
+		" FROM (" + query + ") AS __myduck_json_source(" + strings.Join(aliases, ", ") + ")"
+}
+
+func isJSONType(t sql.Type) bool {
+	if types.IsJSON(t) {
+		return true
+	}
+	postgresType, ok := t.(pgtypes.PostgresType)
+	return ok && postgresType.PG != nil &&
+		(postgresType.PG.OID == pgtype.JSONOID || postgresType.PG.OID == pgtype.JSONBOID)
 }
 
 // Close closes the underlying sql.Rows.

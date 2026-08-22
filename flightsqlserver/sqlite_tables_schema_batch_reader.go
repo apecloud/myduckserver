@@ -94,6 +94,8 @@ func (s *SqliteTablesSchemaBatchReader) Schema() *arrow.Schema {
 
 func (s *SqliteTablesSchemaBatchReader) Record() arrow.Record { return s.record }
 
+func (s *SqliteTablesSchemaBatchReader) RecordBatch() arrow.RecordBatch { return s.record }
+
 func getSqlTypeFromTypeName(sqltype string) int {
 	if sqltype == "" {
 		return sqlite3.SQLITE_NULL
