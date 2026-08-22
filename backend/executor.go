@@ -51,7 +51,17 @@ func (b *DuckBuilder) Provider() *catalog.DatabaseProvider {
 	return b.provider
 }
 
-func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (sql.RowIter, error) {
+func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sql.RowIter, err error) {
+	// The engine passes a nil input row for the top-level result iterator.
+	// Subquery iterators must not count intermediate rows against the limit.
+	if r == nil {
+		defer func() {
+			if err == nil {
+				iter = ApplyQueryRowLimit(ctx, root.Schema(), iter)
+			}
+		}()
+	}
+
 	// Flush the delta buffer before executing the query.
 	// TODO(fan): Be fine-grained and flush only when the replicated tables are touched.
 	if b.FlushDeltaBuffer != nil {

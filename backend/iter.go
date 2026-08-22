@@ -16,6 +16,7 @@ package backend
 
 import (
 	stdsql "database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -33,6 +34,64 @@ import (
 )
 
 var _ sql.RowIter = (*SQLRowIter)(nil)
+
+const queryRowLimitError = "query returned more than the configured row limit of %d"
+
+type queryRowLimitIter struct {
+	child       sql.RowIter
+	limit       uint64
+	rows        uint64
+	closed      bool
+	closeErr    error
+	overflowErr error
+}
+
+// ApplyQueryRowLimit wraps result rows with the limit configured on the
+// current session. Non-row results and sessions with no limit are unchanged.
+func ApplyQueryRowLimit(ctx *sql.Context, schema sql.Schema, iter sql.RowIter) sql.RowIter {
+	if iter == nil || schema == nil || types.IsOkResultSchema(schema) {
+		return iter
+	}
+	sess, ok := ctx.Session.(interface{ QueryRowLimit() uint64 })
+	if !ok || sess.QueryRowLimit() == 0 {
+		return iter
+	}
+	return &queryRowLimitIter{child: iter, limit: sess.QueryRowLimit()}
+}
+
+func (iter *queryRowLimitIter) Next(ctx *sql.Context) (sql.Row, error) {
+	if iter.overflowErr != nil {
+		return nil, iter.overflowErr
+	}
+	if iter.closed {
+		return nil, io.EOF
+	}
+	if iter.rows < iter.limit {
+		row, err := iter.child.Next(ctx)
+		if err == nil {
+			iter.rows++
+		}
+		return row, err
+	}
+
+	_, err := iter.child.Next(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	limitErr := fmt.Errorf(queryRowLimitError, iter.limit)
+	iter.overflowErr = errors.Join(limitErr, iter.Close(ctx))
+	return nil, iter.overflowErr
+}
+
+func (iter *queryRowLimitIter) Close(ctx *sql.Context) error {
+	if iter.closed {
+		return nil
+	}
+	iter.closed = true
+	iter.closeErr = iter.child.Close(ctx)
+	return iter.closeErr
+}
 
 type typeConversion struct {
 	idx  int

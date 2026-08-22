@@ -63,6 +63,7 @@ var (
 	superuserPassword = ""
 
 	defaultTimeZone = ""
+	queryRowLimit   uint64
 
 	// for Restore
 	restoreFile            = ""
@@ -94,6 +95,7 @@ func init() {
 
 	flag.IntVar(&postgresPort, "pg-port", postgresPort, "The port to bind to for PostgreSQL wire protocol.")
 	flag.StringVar(&defaultTimeZone, "default-time-zone", defaultTimeZone, "The default time zone to use.")
+	flag.Uint64Var(&queryRowLimit, "query-row-limit", queryRowLimit, "Maximum rows returned by a query in ordinary MySQL and PostgreSQL sessions; 0 means unlimited.")
 
 	flag.StringVar(&restoreFile, "restore-file", restoreFile, "The file to restore from.")
 	flag.StringVar(&restoreEndpoint, "restore-endpoint", restoreEndpoint, "The endpoint of object storage service to restore from.")
@@ -162,7 +164,7 @@ func main() {
 		Address:  fmt.Sprintf("%s:%d", address, port),
 		Socket:   socket,
 	}
-	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider), nil, backend.WrapHandler(provider))
+	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, backend.WithQueryRowLimit(queryRowLimit)), nil, backend.WrapHandler(provider))
 	if err != nil {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
