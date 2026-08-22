@@ -286,7 +286,7 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 		// MySQL does not have these types. We store them as DECIMAL.
 		return types.CreateDecimalType(39, 0)
 
-	case "VARINT":
+	case "VARINT", "BIGNUM":
 		// MySQL does not have this type. We store it as DECIMAL.
 		// Here we use the maximum supported precision for DECIMAL in MySQL.
 		return types.CreateDecimalType(65, 0)

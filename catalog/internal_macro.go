@@ -26,9 +26,13 @@ type InternalMacro struct {
 }
 
 func (v *InternalMacro) QualifiedName() string {
-	if strings.ToLower(v.Schema) == "pg_catalog" {
+	if strings.EqualFold(v.Schema, "pg_catalog") || strings.EqualFold(v.Schema, "information_schema") {
 		return "__sys__." + v.Name
 	}
+	return v.Schema + "." + v.Name
+}
+
+func (v *InternalMacro) LogicalName() string {
 	return v.Schema + "." + v.Name
 }
 

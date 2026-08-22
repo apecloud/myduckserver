@@ -13,7 +13,7 @@ import (
 	stdsql "database/sql"
 
 	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/configuration"
@@ -75,8 +75,6 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 	prov.pool = NewConnectionPool(prov.connector, prov.storage)
 
 	bootQueries := []string{
-		"INSTALL arrow",
-		"LOAD arrow",
 		"INSTALL icu",
 		"LOAD icu",
 		"INSTALL postgres_scanner",
@@ -169,7 +167,7 @@ func (prov *DatabaseProvider) initCatalog() error {
 				// Execute the COPY command to insert data into the table
 				if _, err := prov.storage.ExecContext(
 					context.Background(),
-					fmt.Sprintf("COPY %s FROM '%s' (DELIMITER ',', HEADER)", t.QualifiedName(), tmpFile.Name()),
+					fmt.Sprintf("COPY %s FROM '%s' (DELIMITER ',', HEADER, ESCAPE '\"')", t.QualifiedName(), tmpFile.Name()),
 				); err != nil {
 					return fmt.Errorf("failed to insert initial data from file into internal table %q: %w", t.Name, err)
 				}
@@ -378,7 +376,7 @@ func (prov *DatabaseProvider) DropCatalog(name string, ifExists bool) error {
 
 func (prov *DatabaseProvider) Close() error {
 	defer prov.connector.Close()
-	return prov.storage.Close()
+	return prov.pool.Close()
 }
 
 func (prov *DatabaseProvider) Connector() *duckdb.Connector {

@@ -1,7 +1,6 @@
 package pgserver
 
 import (
-	"context"
 	"os"
 	"strconv"
 	"strings"
@@ -11,7 +10,7 @@ import (
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
 )
 
 type ArrowDataLoader struct {
@@ -31,9 +30,8 @@ func NewArrowDataLoader(ctx *sql.Context, handler *DuckHandler, schema string, t
 	}
 	arrowName := "__sys_copy_from_arrow_" + strconv.Itoa(int(ctx.ID())) + "__"
 
-	// Create cancelable context
-	childCtx, cancel := context.WithCancel(ctx)
-	ctx.Context = childCtx
+	// Create a child without mutating the parent context into its own ancestor.
+	ctx, cancel := newCopyContext(ctx)
 
 	loader := &ArrowDataLoader{
 		PipeDataLoader: PipeDataLoader{

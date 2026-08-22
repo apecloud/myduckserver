@@ -38,9 +38,9 @@ import (
 	"github.com/dolthub/go-mysql-server/sql/analyzer"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/vitess/go/mysql"
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/marcboeker/go-duckdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -131,18 +131,12 @@ func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, por
 
 // ComPrepareParsed implements the Handler interface.
 func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement) (*duckdb.Stmt, []uint32, []pgproto3.FieldDescription, error) {
-	// In order to implement this correctly, we need to contribute to DuckDB's C API and go-duckdb
-	// to expose the parameter types and result types of a prepared statement.
-	// Currently, we have to work around this.
-	// Let's do some crazy stuff here:
-	// 1. Fork go-duckdb to expose the parameter types of a prepared statement.
-	//    This is relatively easy to do since the information is already available in the C API.
-	//    https://github.com/marcboeker/go-duckdb/pull/310
-	// 2. For SELECT statements, we will supply all NULL values as parameters
+	// DuckDB's official Go binding exposes prepared statement parameter types but not result types.
+	// 1. For SELECT statements, we will supply all NULL values as parameters
 	//    to execute the query with a LIMIT 0 to get the result types.
-	// 3. For SHOW/CALL/PRAGMA statements, we will just execute the query and get the result types
+	// 2. For SHOW/CALL/PRAGMA statements, we will just execute the query and get the result types
 	//    because they usually don't have parameters and are efficient to execute.
-	// 4. For other statements (DDLs and DMLs), we just return the "affected rows" field.
+	// 3. For other statements (DDLs and DMLs), we just return the "affected rows" field.
 	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
 	if err != nil {
 		return nil, nil, nil, err
@@ -168,10 +162,16 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		}
 		n := s.NumInput()
 		stmt = s.(*duckdb.Stmt)
-		stmtType = stmt.StatementType()
+		stmtType, err = stmt.StatementType()
+		if err != nil {
+			return err
+		}
 		paramTypes = make([]duckdb.Type, n)
 		for i := 0; i < n; i++ {
-			paramTypes[i] = stmt.ParamType(i + 1) // 1-based index
+			paramTypes[i], err = stmt.ParamType(i + 1) // 1-based index
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -190,16 +190,16 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		rows   *stdsql.Rows
 	)
 	switch stmtType {
-	case duckdb.DUCKDB_STATEMENT_TYPE_SELECT,
-		duckdb.DUCKDB_STATEMENT_TYPE_RELATION,
-		duckdb.DUCKDB_STATEMENT_TYPE_CALL,
-		duckdb.DUCKDB_STATEMENT_TYPE_PRAGMA,
-		duckdb.DUCKDB_STATEMENT_TYPE_EXPLAIN:
+	case duckdb.STATEMENT_TYPE_SELECT,
+		duckdb.STATEMENT_TYPE_RELATION,
+		duckdb.STATEMENT_TYPE_CALL,
+		duckdb.STATEMENT_TYPE_PRAGMA,
+		duckdb.STATEMENT_TYPE_EXPLAIN:
 
 		// Execute the query with all NULL values as parameters to get the result types.
 		query := query
-		if stmtType == duckdb.DUCKDB_STATEMENT_TYPE_SELECT ||
-			stmtType == duckdb.DUCKDB_STATEMENT_TYPE_RELATION {
+		if stmtType == duckdb.STATEMENT_TYPE_SELECT ||
+			stmtType == duckdb.STATEMENT_TYPE_RELATION {
 			// Add LIMIT 0 to avoid executing the actual query.
 			query = "SELECT * FROM (" + sql.RemoveSpaceAndDelimiter(query, ';') + ") LIMIT 0"
 		}
@@ -407,7 +407,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	// return h.e.QueryWithBindings(ctx, query, parsed, nil, nil)
 
 	sql.IncrementStatusVariable(ctx, "Questions", 1)
-	if _, ok := parsed.(tree.SelectStatement); ok {
+	if _, ok := parsed.(*tree.Select); ok {
 		sql.IncrementStatusVariable(ctx, "Com_select", 1)
 	}
 
@@ -464,6 +464,16 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		}
 		schema = types.OkResultSchema
 		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
+	case *tree.Select, tree.SelectStatement:
+		rows, schema, err = queryCatalogWithJSONScan(ctx, query)
+		if err != nil {
+			break
+		}
+		iter, err = backend.NewSQLRowIter(rows, schema)
+		if err != nil {
+			rows.Close()
+			break
+		}
 	default:
 		rows, err = adapter.QueryCatalog(ctx, query)
 		if err != nil {
@@ -487,6 +497,41 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	return schema, iter, nil, nil
 }
 
+func queryCatalogWithJSONScan(ctx *sql.Context, query string, vars ...any) (*stdsql.Rows, sql.Schema, error) {
+	probeQuery := "SELECT * FROM (" + sql.RemoveSpaceAndDelimiter(query, ';') + ") LIMIT 0"
+	probeRows, err := adapter.QueryCatalog(ctx, probeQuery, vars...)
+	if err != nil {
+		// The PostgreSQL parser can classify DuckDB-only statements such as
+		// CREATE OR REPLACE TABLE as a SelectStatement. The probe wrapper is
+		// invalid for those statements, so preserve the pre-projection direct
+		// execution path instead of returning the wrapper's parser error.
+		rows, directErr := adapter.QueryCatalog(ctx, query, vars...)
+		if directErr != nil {
+			return nil, nil, directErr
+		}
+		schema, schemaErr := pgtypes.InferSchema(rows)
+		if schemaErr != nil {
+			rows.Close()
+			return nil, nil, schemaErr
+		}
+		return rows, schema, nil
+	}
+	schema, err := pgtypes.InferSchema(probeRows)
+	closeErr := probeRows.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+	if closeErr != nil {
+		return nil, nil, closeErr
+	}
+
+	rows, err := adapter.QueryCatalog(ctx, backend.QueryForJSONScan(query, schema), vars...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rows, schema, nil
+}
+
 // executeBoundPlan is a QueryExecutor that calls QueryWithBindings on the given engine using the given query and parsed
 // statement, which may be nil.
 func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.Statement, stmt *duckdb.Stmt, vars []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
@@ -507,11 +552,11 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 	// 	err    error
 	// )
 	// switch stmt.StatementType() {
-	// case duckdb.DUCKDB_STATEMENT_TYPE_SELECT,
-	// 	duckdb.DUCKDB_STATEMENT_TYPE_RELATION,
-	// 	duckdb.DUCKDB_STATEMENT_TYPE_CALL,
-	// 	duckdb.DUCKDB_STATEMENT_TYPE_PRAGMA,
-	// 	duckdb.DUCKDB_STATEMENT_TYPE_EXPLAIN:
+	// case duckdb.STATEMENT_TYPE_SELECT,
+	// 	duckdb.STATEMENT_TYPE_RELATION,
+	// 	duckdb.STATEMENT_TYPE_CALL,
+	// 	duckdb.STATEMENT_TYPE_PRAGMA,
+	// 	duckdb.STATEMENT_TYPE_EXPLAIN:
 	// 	rows, err = stmt.QueryBound(ctx)
 	// 	if err != nil {
 	// 		break
@@ -543,21 +588,33 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 	// 	return nil, nil, nil, err
 	// }
 
+	stmtType, err := stmt.StatementType()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	var (
-		stmtType = stmt.StatementType()
-		schema   sql.Schema
-		iter     sql.RowIter
-		rows     *stdsql.Rows
-		result   stdsql.Result
-		err      error
+		schema sql.Schema
+		iter   sql.RowIter
+		rows   *stdsql.Rows
+		result stdsql.Result
 	)
 
 	switch stmtType {
-	case duckdb.DUCKDB_STATEMENT_TYPE_SELECT,
-		duckdb.DUCKDB_STATEMENT_TYPE_RELATION,
-		duckdb.DUCKDB_STATEMENT_TYPE_CALL,
-		duckdb.DUCKDB_STATEMENT_TYPE_PRAGMA,
-		duckdb.DUCKDB_STATEMENT_TYPE_EXPLAIN:
+	case duckdb.STATEMENT_TYPE_SELECT,
+		duckdb.STATEMENT_TYPE_RELATION:
+		rows, schema, err = queryCatalogWithJSONScan(ctx, query, vars...)
+		if err != nil {
+			break
+		}
+		iter, err = NewSqlRowIter(rows, schema)
+		if err != nil {
+			rows.Close()
+			break
+		}
+	case duckdb.STATEMENT_TYPE_CALL,
+		duckdb.STATEMENT_TYPE_PRAGMA,
+		duckdb.STATEMENT_TYPE_EXPLAIN:
 		rows, err = adapter.QueryCatalog(ctx, query, vars...)
 		if err != nil {
 			break
@@ -877,6 +934,11 @@ func (h *DuckHandler) rowToBytes(ctx *sql.Context, s sql.Schema, fields []pgprot
 			o[i] = nil
 			continue
 		}
+		wireValue, err := normalizePGWireValue(v)
+		if err != nil {
+			return nil, err
+		}
+		v = wireValue
 
 		// TODO(fan): Preallocate the buffer
 		if _, ok := s[i].Type.(pgtypes.PostgresType); ok {
@@ -894,4 +956,11 @@ func (h *DuckHandler) rowToBytes(ctx *sql.Context, s sql.Schema, fields []pgprot
 		}
 	}
 	return o, nil
+}
+
+func normalizePGWireValue(v any) (any, error) {
+	if jsonValue, ok := v.(interface{ JSONString() (string, error) }); ok {
+		return jsonValue.JSONString()
+	}
+	return v, nil
 }

@@ -1046,7 +1046,7 @@ func (a *binlogReplicaApplier) processRowEvent(ctx *sql.Context, event mysql.Bin
 	}
 	if flags != 0 {
 		msg := fmt.Sprintf("unsupported binlog protocol message: row event with unsupported flags '%x'", flags)
-		ctx.GetLogger().Errorf(msg)
+		ctx.GetLogger().Error(msg)
 		MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, msg)
 	}
 	pkSchema, tableName, err := a.getTableSchema(ctx, engine, tableMap.Name, tableMap.Database)

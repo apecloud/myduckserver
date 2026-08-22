@@ -12,6 +12,8 @@ VERSION := $(shell git describe --tags --always --dirty)
 BUILD_TIME := $(shell date +%Y-%m-%dT%H:%M:%S%z)
 GIT_COMMIT := $(shell git rev-parse HEAD)
 SOURCE_REPOSITORY ?= https://github.com/apecloud/myduckserver
+GOFLAGS ?= -tags=duckdb_arrow
+export GOFLAGS
 
 # Docker image information
 IMAGE_NAME ?= myduck

@@ -35,6 +35,7 @@ import (
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
+	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	_ "github.com/dolthub/go-mysql-server/sql/variables"
 	"github.com/dolthub/vitess/go/sqltypes"
@@ -305,7 +306,13 @@ func TestLateralJoin(t *testing.T) {
 		// non-inner lateral joins, so it rejects this disjunctive join condition.
 		"select * from t left join lateral (select * from t1 where t.i != t1.j) as tt on t.i + 1 = tt.j or t.i + 2 = tt.j order by t.i, tt.j",
 	)
-	enginetest.TestLateralJoinQueries(t, harness)
+	for _, script := range queries.LateralJoinScriptTests {
+		if script.Name == "multiple lateral joins with references to left tables" {
+			script.Assertions = append([]queries.ScriptTestAssertion(nil), script.Assertions...)
+			script.Assertions[0].Query += "\nORDER BY students.id"
+		}
+		enginetest.TestScript(t, harness, script)
+	}
 }
 
 // TestJoinPlanning runs join-specific tests for merge
@@ -1322,6 +1329,59 @@ func TestCreateTable(t *testing.T) {
 	harness.QueriesToSkip(waitForFixQueries...)
 	harness.QueriesToSkip(panicQueries...)
 	RunCreateTableTest(t, harness)
+}
+
+func TestCTASAffectedRows(t *testing.T) {
+	test := queries.ScriptTest{
+		Name: "CTAS reports inserted rows without changing ordinary DML results",
+		SetUpScript: []string{
+			"create table ctas_source (i int primary key);",
+			"insert into ctas_source values (1), (2), (3);",
+		},
+		Assertions: []queries.ScriptTestAssertion{
+			{
+				Query:    "create table ctas_nonempty as select i + 1 as i from ctas_source;",
+				Expected: []sql.Row{{types.NewOkResult(3)}},
+			},
+			{
+				Query:    "select * from ctas_nonempty order by i;",
+				Expected: []sql.Row{{int32(2)}, {int32(3)}, {int32(4)}},
+			},
+			{
+				Query:    "create table ctas_empty as select i + 1 as i from ctas_source where i > 100;",
+				Expected: []sql.Row{{types.NewOkResult(0)}},
+			},
+			{
+				Query:    "select count(*) from ctas_empty;",
+				Expected: []sql.Row{{int64(0)}},
+			},
+			{
+				Query:    "create table ordinary (i int);",
+				Expected: []sql.Row{{types.NewOkResult(0)}},
+			},
+			{
+				Query:    "insert into ordinary values (1), (2), (3);",
+				Expected: []sql.Row{{types.NewOkResult(3)}},
+			},
+			{
+				Query: "update ordinary set i = i + 10 where i >= 2;",
+				Expected: []sql.Row{{types.OkResult{
+					RowsAffected: 2,
+					Info:         plan.UpdateInfo{Matched: 2, Updated: 2},
+				}}},
+			},
+			{
+				Query:    "delete from ordinary where i = 1;",
+				Expected: []sql.Row{{types.NewOkResult(1)}},
+			},
+			{
+				Query:    "select * from ordinary order by i;",
+				Expected: []sql.Row{{int32(12)}, {int32(13)}},
+			},
+		},
+	}
+
+	enginetest.TestScript(t, NewDefaultDuckHarness(), test)
 }
 
 // Adapted from enginetests to skip known issues and pending fixes

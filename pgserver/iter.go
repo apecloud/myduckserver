@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/marcboeker/go-duckdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -31,7 +31,7 @@ func NewDriverRowIter(rows driver.Rows, schema sql.Schema) (*DriverRowIter, erro
 
 	iter := &DriverRowIter{rows, columns, schema, buf, row}
 	if logrus.GetLevel() >= logrus.DebugLevel {
-		logrus.Debugf("New " + iter.String() + "\n")
+		logrus.Debug("New " + iter.String())
 	}
 	return iter, nil
 }
@@ -127,7 +127,7 @@ func NewSqlRowIter(rows *stdsql.Rows, schema sql.Schema) (*SqlRowIter, error) {
 
 	iter := &SqlRowIter{rows, columns, schema, buf, ptrs, decimals, lists, hugeInts}
 	if logrus.GetLevel() >= logrus.DebugLevel {
-		logrus.Debugf("New " + iter.String() + "\n")
+		logrus.Debug("New " + iter.String())
 	}
 	return iter, nil
 }

@@ -5,7 +5,7 @@ import (
 	"database/sql/driver"
 	"math/rand"
 
-	"github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
 )
 
 // mysqlRandUDF matches go-mysql-server RAND(seed):
