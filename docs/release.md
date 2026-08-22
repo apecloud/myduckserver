@@ -89,13 +89,14 @@ Independent acceptance must cover startup, MySQL and PostgreSQL queries,
 initialization scripts, persistent data, and restart recovery. Record the test
 report or task reference before promotion.
 
-Only an accepted release candidate may become stable. Run the **Promote
-Image** workflow from the `main` branch with:
+Only an accepted immutable development build or release candidate may become
+stable. Run the **Promote Image** workflow from the `main` branch with:
 
 - the full source SHA;
-- the existing release-candidate version;
+- the existing immutable development or release-candidate version;
 - the accepted `sha256:...` digest;
-- the new stable version;
+- the explicit stable `vX.Y.Z` version (which may have a different prerelease
+  base when that product version change is intentional);
 - the independent acceptance reference.
 
 The workflow verifies that the source commit is reachable from `main` and that
@@ -107,9 +108,11 @@ including the workflow run, per-platform digests, acceptance reference, and
 previous `latest` digest.
 
 For example, after accepting `v0.1.0-rc.1`, promote its existing digest to
-`v0.1.0` and `latest`. The immutable image still reports its original build
-version (`v0.1.0-rc.1`); the stable tag records that this exact candidate passed
-release acceptance.
+`v0.1.0` and `latest`. For a development build that includes a deliberate
+product-level compatibility boundary, after accepting
+`v0.1.0-dev.20260822.3`, promote the same digest to `v0.2.0` and `latest`.
+The immutable image still reports its original build version in either case;
+the stable tag records that this exact candidate passed release acceptance.
 
 ## Roll back `latest`
 
