@@ -37,9 +37,10 @@ type Listener struct {
 	listener net.Listener
 	cfg      mysql.ListenerConfig
 
-	engine *gms.Engine
-	sm     *server.SessionManager
-	connID *atomic.Uint32
+	engine   *gms.Engine
+	sm       *server.SessionManager
+	connID   *atomic.Uint32
+	readOnly bool
 }
 
 type ListenerOpt func(*Listener)
@@ -65,6 +66,12 @@ func WithSessionManager(sm *server.SessionManager) ListenerOpt {
 func WithConnID(connID *atomic.Uint32) ListenerOpt {
 	return func(l *Listener) {
 		l.connID = connID
+	}
+}
+
+func WithReadOnly(readOnly bool) ListenerOpt {
+	return func(l *Listener) {
+		l.readOnly = readOnly
 	}
 }
 
@@ -104,7 +111,7 @@ func (l *Listener) Accept(server *Server) {
 			conn = netutil.NewConnWithTimeouts(conn, l.cfg.ConnReadTimeout, l.cfg.ConnWriteTimeout)
 		}
 
-		connectionHandler := NewConnectionHandler(conn, l.cfg.Handler, l.engine, l.sm, l.connID.Add(1), server)
+		connectionHandler := NewConnectionHandler(conn, l.cfg.Handler, l.engine, l.sm, l.connID.Add(1), server, l.readOnly)
 		go connectionHandler.HandleConnection()
 	}
 }

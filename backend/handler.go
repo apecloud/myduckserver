@@ -19,16 +19,22 @@ import (
 	"fmt"
 
 	"github.com/apecloud/myduckserver/catalog"
+	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/vitess/go/mysql"
 	"github.com/dolthub/vitess/go/sqltypes"
+	querypb "github.com/dolthub/vitess/go/vt/proto/query"
+	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/sirupsen/logrus"
 )
 
 type MyHandler struct {
 	*server.Handler
 	provider *catalog.DatabaseProvider
+	engine   *sqle.Engine
+	readOnly bool
 }
 
 func (h *MyHandler) ConnectionClosed(c *mysql.Conn) {
@@ -61,6 +67,10 @@ func (h *MyHandler) ComMultiQuery(
 	query string,
 	callback mysql.ResultSpoolFn,
 ) (string, error) {
+	if err := h.rejectReadOnly(ctx, c, query); err != nil {
+		return query, err
+	}
+
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
 
@@ -85,6 +95,10 @@ func (h *MyHandler) ComQuery(
 	query string,
 	callback mysql.ResultSpoolFn,
 ) error {
+	if err := h.rejectReadOnly(ctx, c, query); err != nil {
+		return err
+	}
+
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
 
@@ -99,6 +113,62 @@ func (h *MyHandler) ComQuery(
 		return callback(&sqltypes.Result{}, false)
 	}
 	return err
+}
+
+func (h *MyHandler) ComPrepare(ctx context.Context, c *mysql.Conn, query string, prepare *mysql.PrepareData) ([]*querypb.Field, error) {
+	if err := h.rejectReadOnly(ctx, c, query); err != nil {
+		return nil, err
+	}
+	return h.Handler.ComPrepare(ctx, c, query, prepare)
+}
+
+func (h *MyHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed sqlparser.Statement, prepare *mysql.PrepareData) (mysql.ParsedQuery, []*querypb.Field, error) {
+	if err := h.rejectReadOnly(ctx, c, query); err != nil {
+		return nil, nil, err
+	}
+	return h.Handler.ComPrepareParsed(ctx, c, query, parsed, prepare)
+}
+
+func (h *MyHandler) ComBind(ctx context.Context, c *mysql.Conn, query string, parsedQuery mysql.ParsedQuery, prepare *mysql.PrepareData) (mysql.BoundQuery, []*querypb.Field, error) {
+	if err := h.rejectReadOnly(ctx, c, query); err != nil {
+		return nil, nil, err
+	}
+	return h.Handler.ComBind(ctx, c, query, parsedQuery, prepare)
+}
+
+func (h *MyHandler) ComExecuteBound(ctx context.Context, c *mysql.Conn, query string, boundQuery mysql.BoundQuery, callback mysql.ResultSpoolFn) error {
+	if err := h.rejectReadOnly(ctx, c, query); err != nil {
+		return err
+	}
+	return h.Handler.ComExecuteBound(ctx, c, query, boundQuery, callback)
+}
+
+func (h *MyHandler) ComParsedQuery(ctx context.Context, c *mysql.Conn, query string, parsed sqlparser.Statement, callback mysql.ResultSpoolFn) error {
+	if err := h.rejectReadOnly(ctx, c, query); err != nil {
+		return err
+	}
+	return h.Handler.ComParsedQuery(ctx, c, query, parsed, callback)
+}
+
+func (h *MyHandler) rejectReadOnly(ctx context.Context, c *mysql.Conn, query string) error {
+	if !h.readOnly {
+		return nil
+	}
+
+	sqlCtx, err := h.Handler.NewContext(ctx, c, query)
+	if err == nil && h.engine != nil {
+		node, analyzeErr := h.engine.AnalyzeQuery(sqlCtx, query)
+		if analyzeErr == nil {
+			if !plan.IsReadOnly(node) {
+				return sql.ErrReadOnly.New()
+			}
+		}
+	}
+
+	if IsWriteQueryText(query) {
+		return sql.ErrReadOnly.New()
+	}
+	return nil
 }
 
 func isReplicaLoadingSnapshot() bool {
@@ -116,7 +186,7 @@ func isReplicaLoadingSnapshot() bool {
 	}
 }
 
-func WrapHandler(provider *catalog.DatabaseProvider) server.HandlerWrapper {
+func WrapHandler(provider *catalog.DatabaseProvider, engine *sqle.Engine, readOnly bool) server.HandlerWrapper {
 	return func(h mysql.Handler) (mysql.Handler, error) {
 		handler, ok := h.(*server.Handler)
 		if !ok {
@@ -126,6 +196,8 @@ func WrapHandler(provider *catalog.DatabaseProvider) server.HandlerWrapper {
 		return &MyHandler{
 			Handler:  handler,
 			provider: provider,
+			engine:   engine,
+			readOnly: readOnly,
 		}, nil
 	}
 }
