@@ -31,11 +31,26 @@ import (
 
 type Session struct {
 	*memory.Session
-	db *catalog.DatabaseProvider
+	db            *catalog.DatabaseProvider
+	queryRowLimit uint64
 }
 
-func NewSession(base *memory.Session, provider *catalog.DatabaseProvider) *Session {
-	return &Session{base, provider}
+type SessionOption func(*Session)
+
+// WithQueryRowLimit limits the number of rows returned by queries in a session.
+// A limit of zero leaves query results unlimited.
+func WithQueryRowLimit(limit uint64) SessionOption {
+	return func(sess *Session) {
+		sess.queryRowLimit = limit
+	}
+}
+
+func NewSession(base *memory.Session, provider *catalog.DatabaseProvider, opts ...SessionOption) *Session {
+	sess := &Session{Session: base, db: provider}
+	for _, opt := range opts {
+		opt(sess)
+	}
+	return sess
 }
 
 // Provider returns the database provider for the session.
@@ -43,12 +58,18 @@ func (sess *Session) Provider() *catalog.DatabaseProvider {
 	return sess.db
 }
 
+// QueryRowLimit returns the maximum number of rows a query may return. Zero
+// means unlimited.
+func (sess *Session) QueryRowLimit() uint64 {
+	return sess.queryRowLimit
+}
+
 func (sess *Session) CurrentSchemaOfUnderlyingConn() string {
 	return sess.db.Pool().CurrentSchema(sess.ID())
 }
 
 // NewSessionBuilder returns a session builder for the given database provider.
-func NewSessionBuilder(provider *catalog.DatabaseProvider) func(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
+func NewSessionBuilder(provider *catalog.DatabaseProvider, opts ...SessionOption) func(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
 	return func(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
 		host := ""
 		user := ""
@@ -68,7 +89,7 @@ func NewSessionBuilder(provider *catalog.DatabaseProvider) func(ctx context.Cont
 			memSession.SetCurrentDatabase(schema)
 		}
 
-		return &Session{memSession, provider}, nil
+		return NewSession(memSession, provider, opts...), nil
 	}
 }
 

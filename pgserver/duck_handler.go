@@ -355,6 +355,7 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 		sqlCtx.GetLogger().WithError(err).Warn("error running query")
 		return err
 	}
+	rowIter = backend.ApplyQueryRowLimit(sqlCtx, schema, rowIter)
 
 	// If the query is "USE <database>", we need to update the current database in the session.
 	if currentSchema := sqlCtx.Session.(*backend.Session).CurrentSchemaOfUnderlyingConn(); len(currentSchema) > 0 {

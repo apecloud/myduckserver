@@ -2,6 +2,7 @@ package pgserver
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"testing"
 
@@ -31,6 +32,109 @@ func TestNormalizePGWireValue(t *testing.T) {
 	value, err = normalizePGWireValue(types.JSONDocument{Val: map[string]any{"key": "value"}})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"key":"value"}`, value.(string))
+}
+
+func TestQueryRowLimitOnMySQLAndPostgresSessions(t *testing.T) {
+	originalWorkingDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, os.Chdir(originalWorkingDir))
+	}()
+
+	testDir := testutil.CreateTestDir(t)
+	testEnv := testutil.NewTestEnv()
+	testEnv.ExtraArgs = []string{"--query-row-limit=2"}
+	require.NoError(t, testutil.StartDuckSqlServer(t, testDir, nil, testEnv))
+	t.Cleanup(func() {
+		require.NoError(t, testEnv.MyDuckServer.Close())
+		testutil.StopDuckSqlServer(t, testEnv.DuckProcess)
+	})
+
+	t.Run("mysql", func(t *testing.T) {
+		ctx := context.Background()
+		rows, err := testEnv.MyDuckServer.QueryContext(ctx, "SELECT 1 AS n UNION ALL SELECT 2 AS n ORDER BY n")
+		require.NoError(t, err)
+		var got []int
+		for rows.Next() {
+			var value int
+			require.NoError(t, rows.Scan(&value))
+			got = append(got, value)
+		}
+		require.NoError(t, rows.Err())
+		require.NoError(t, rows.Close())
+		require.Equal(t, []int{1, 2}, got)
+
+		err = mysqlQueryError(ctx, testEnv, "SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n ORDER BY n")
+		require.ErrorContains(t, err, "query returned more than the configured row limit of 2")
+
+		stmt, err := testEnv.MyDuckServer.PrepareContext(ctx, "SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n ORDER BY n")
+		require.NoError(t, err)
+		preparedRows, err := stmt.QueryContext(ctx)
+		if err == nil {
+			for preparedRows.Next() {
+			}
+			err = preparedRows.Err()
+			require.NoError(t, preparedRows.Close())
+		}
+		require.ErrorContains(t, err, "query returned more than the configured row limit of 2")
+		require.NoError(t, stmt.Close())
+
+		var value int
+		require.NoError(t, testEnv.MyDuckServer.QueryRowContext(ctx, "SELECT 42").Scan(&value))
+		require.Equal(t, 42, value)
+		require.NoError(t, testEnv.MyDuckServer.QueryRowContext(
+			ctx,
+			"SELECT 42 WHERE 3 IN (SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3) AND @@autocommit = 1",
+		).Scan(&value))
+		require.Equal(t, 42, value)
+		_, err = testEnv.MyDuckServer.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS query_row_limit_mysql")
+		require.NoError(t, err)
+	})
+
+	t.Run("postgres", func(t *testing.T) {
+		ctx := context.Background()
+		conn, err := pgx.Connect(ctx, "postgresql://postgres@127.0.0.1:"+strconv.Itoa(testEnv.DuckPgPort)+"/postgres")
+		require.NoError(t, err)
+		defer conn.Close(ctx)
+
+		rows, err := conn.Query(ctx, "SELECT 1 AS n UNION ALL SELECT 2 AS n ORDER BY n")
+		require.NoError(t, err)
+		var got []int
+		for rows.Next() {
+			var value int
+			require.NoError(t, rows.Scan(&value))
+			got = append(got, value)
+		}
+		require.NoError(t, rows.Err())
+		rows.Close()
+		require.Equal(t, []int{1, 2}, got)
+
+		rows, err = conn.Query(ctx, "SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n ORDER BY n")
+		if err == nil {
+			for rows.Next() {
+			}
+			err = rows.Err()
+			rows.Close()
+		}
+		require.ErrorContains(t, err, "query returned more than the configured row limit of 2")
+
+		var value int
+		require.NoError(t, conn.QueryRow(ctx, "SELECT 42").Scan(&value))
+		require.Equal(t, 42, value)
+		_, err = conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS query_row_limit_postgres")
+		require.NoError(t, err)
+	})
+}
+
+func mysqlQueryError(ctx context.Context, testEnv *testutil.TestEnv, query string) error {
+	rows, err := testEnv.MyDuckServer.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+	}
+	return rows.Err()
 }
 
 func TestPostgresDuckDBOnlyCreateOrReplaceTable(t *testing.T) {

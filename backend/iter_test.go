@@ -3,15 +3,93 @@ package backend
 import (
 	"context"
 	stdsql "database/sql"
+	"io"
 	"testing"
 
 	"github.com/apecloud/myduckserver/pgtypes"
+	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 )
+
+type trackingRowIter struct {
+	rows       []sql.Row
+	nextCalls  int
+	closeCalls int
+}
+
+func (iter *trackingRowIter) Next(*sql.Context) (sql.Row, error) {
+	iter.nextCalls++
+	if len(iter.rows) == 0 {
+		return nil, io.EOF
+	}
+	row := iter.rows[0]
+	iter.rows = iter.rows[1:]
+	return row, nil
+}
+
+func (iter *trackingRowIter) Close(*sql.Context) error {
+	iter.closeCalls++
+	return nil
+}
+
+func TestQueryRowLimitIter(t *testing.T) {
+	tests := []struct {
+		name      string
+		rows      []sql.Row
+		wantError bool
+	}{
+		{name: "below limit", rows: []sql.Row{{1}}},
+		{name: "at limit", rows: []sql.Row{{1}, {2}}},
+		{name: "over limit", rows: []sql.Row{{1}, {2}, {3}}, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			child := &trackingRowIter{rows: tt.rows}
+			iter := &queryRowLimitIter{child: child, limit: 2}
+			rows, err := sql.RowIterToRows(sql.NewEmptyContext(), iter)
+			if tt.wantError {
+				require.ErrorContains(t, err, "query returned more than the configured row limit of 2")
+				require.Nil(t, rows)
+				require.Equal(t, 3, child.nextCalls)
+				require.Equal(t, 1, child.closeCalls, "overflow must close the source immediately and only once")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.rows, rows)
+			require.Equal(t, 1, child.closeCalls)
+		})
+	}
+}
+
+func TestQueryRowLimitIsOnlyConfiguredForOptedInSessions(t *testing.T) {
+	schema := sql.Schema{&sql.Column{Name: "value", Type: types.Int32}}
+	newBase := func() *memory.Session {
+		return memory.NewSession(sql.NewBaseSession(), nil)
+	}
+
+	internalSession := NewSession(newBase(), nil)
+	internalCtx := sql.NewContext(context.Background(), sql.WithSession(internalSession))
+	internalIter := &trackingRowIter{rows: []sql.Row{{1}, {2}, {3}}}
+	unlimited := ApplyQueryRowLimit(internalCtx, schema, internalIter)
+	require.Same(t, internalIter, unlimited)
+	require.Zero(t, internalSession.QueryRowLimit())
+	rows, err := sql.RowIterToRows(internalCtx, unlimited)
+	require.NoError(t, err)
+	require.Equal(t, []sql.Row{{1}, {2}, {3}}, rows)
+
+	ordinarySession := NewSession(newBase(), nil, WithQueryRowLimit(2))
+	ordinaryCtx := sql.NewContext(context.Background(), sql.WithSession(ordinarySession))
+	ordinaryIter := &trackingRowIter{rows: []sql.Row{{1}, {2}, {3}}}
+	limited := ApplyQueryRowLimit(ordinaryCtx, schema, ordinaryIter)
+	require.NotSame(t, ordinaryIter, limited)
+	_, err = sql.RowIterToRows(ordinaryCtx, limited)
+	require.ErrorContains(t, err, "query returned more than the configured row limit of 2")
+}
 
 func TestSQLRowIterNormalizesDuckDBJSONValues(t *testing.T) {
 	connector, err := duckdb.NewConnector("", nil)
