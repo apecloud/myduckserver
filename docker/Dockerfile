@@ -1,8 +1,12 @@
 # Step 1: Build stage
-FROM --platform=${BUILDPLATFORM} golang:latest AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.23.12-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ARG SOURCE_REPOSITORY=https://github.com/apecloud/myduckserver
 ENV GOOS=$TARGETOS
 ENV GOARCH=$TARGETARCH
 
@@ -45,15 +49,24 @@ RUN --mount=type=bind,target=. \
     --mount=type=cache,target=/go/pkg/mod \
     go env && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-      CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++" CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /myduckserver; \
+      CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++" CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
     else \
-      CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /myduckserver; \
+      CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
     fi
 
 # Step 2: Final stage
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
 ARG TARGETARCH
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ARG SOURCE_REPOSITORY=https://github.com/apecloud/myduckserver
+
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
 
 RUN apt-get update && apt-get install -y debian-archive-keyring \
     && apt-get update && apt-get install -y \

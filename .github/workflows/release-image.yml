@@ -1,17 +1,337 @@
 name: Release Image
+run-name: Build ${{ inputs.version }} from ${{ inputs.source_sha }}
 
 on:
-  push:
-    branches:
-      - 'main'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character application source commit SHA
+        required: true
+        type: string
+      version:
+        description: Immutable prerelease version (vX.Y.Z-dev.YYYYMMDD.N or vX.Y.Z-rc.N)
+        required: true
+        type: string
 
+concurrency:
+  group: myduckserver-image-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE: docker.io/apecloud/myduckserver
+  SOURCE_REPOSITORY: https://github.com/apecloud/myduckserver
 
 jobs:
   release-image:
-    uses: apecloud/apecloud-cd/.github/workflows/release-image-cache.yml@v0.1.79
-    with:
-      IMG: "apecloud/myduckserver"
-      VERSION: "latest"
-      GO_VERSION: "1.23"
-      DOCKERFILE_PATH: "./docker/Dockerfile"
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      sha_tag: ${{ steps.metadata.outputs.sha_tag }}
+      version: ${{ inputs.version }}
+    steps:
+      - name: Validate release inputs
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "release workflow must be dispatched from the main branch" >&2
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be a lowercase, full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(dev\.[0-9]{8}\.[1-9][0-9]*|rc\.[1-9][0-9]*)$ ]]; then
+            echo "version must match vX.Y.Z-dev.YYYYMMDD.N or vX.Y.Z-rc.N" >&2
+            exit 1
+          fi
+
+      - name: Checkout exact application source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout exact release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout and derive metadata
+        id: metadata
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git -C source rev-parse HEAD)"
+          if [[ "$actual_sha" != "$SOURCE_SHA" ]]; then
+            echo "checked out $actual_sha, expected $SOURCE_SHA" >&2
+            exit 1
+          fi
+          actual_workflow_sha="$(git -C release-tools rev-parse HEAD)"
+          if [[ "$actual_workflow_sha" != "$WORKFLOW_SHA" ]]; then
+            echo "checked out workflow commit $actual_workflow_sha, expected $WORKFLOW_SHA" >&2
+            exit 1
+          fi
+          if ! git -C source cat-file -e "$WORKFLOW_SHA^{commit}"; then
+            echo "workflow commit $WORKFLOW_SHA is missing from the checkout" >&2
+            exit 1
+          fi
+          if ! git -C source merge-base --is-ancestor "$SOURCE_SHA" "$WORKFLOW_SHA"; then
+            echo "source_sha must be reachable from main at workflow commit $WORKFLOW_SHA" >&2
+            exit 1
+          fi
+          mapfile -t base_images < <(
+            awk '
+              toupper($1) == "FROM" {
+                for (i = 2; i <= NF; i++) {
+                  if ($i !~ /^--/) {
+                    print $i
+                    break
+                  }
+                }
+              }
+            ' source/docker/Dockerfile
+          )
+          if [[ "${#base_images[@]}" -ne 2 ]]; then
+            echo "Dockerfile must contain exactly one builder and one runtime FROM image" >&2
+            exit 1
+          fi
+          if [[ ! "${base_images[0]}" =~ ^([^@[:space:]]+)@(sha256:[0-9a-f]{64})$ ]]; then
+            echo "builder image must include a readable tag and full sha256 manifest digest" >&2
+            exit 1
+          fi
+          builder_image="${BASH_REMATCH[1]}"
+          builder_image_digest="${BASH_REMATCH[2]}"
+          if [[ ! "${builder_image##*/}" =~ ^[^:]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "builder image must include a readable tag before its digest" >&2
+            exit 1
+          fi
+          if [[ ! "${base_images[1]}" =~ ^([^@[:space:]]+)@(sha256:[0-9a-f]{64})$ ]]; then
+            echo "runtime image must include a readable tag and full sha256 manifest digest" >&2
+            exit 1
+          fi
+          runtime_image="${BASH_REMATCH[1]}"
+          runtime_image_digest="${BASH_REMATCH[2]}"
+          if [[ ! "${runtime_image##*/}" =~ ^[^:]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "runtime image must include a readable tag before its digest" >&2
+            exit 1
+          fi
+          short_sha="${SOURCE_SHA:0:8}"
+          {
+            echo "sha_tag=sha-$short_sha"
+            echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "builder_image=$builder_image"
+            echo "builder_image_digest=$builder_image_digest"
+            echo "runtime_image=$runtime_image"
+            echo "runtime_image_digest=$runtime_image_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Enforce immutable tags
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
+        run: |
+          set -euo pipefail
+          source release-tools/.github/scripts/dockerhub-manifest.sh
+          pull_token="$(dockerhub_pull_token 'apecloud/myduckserver')"
+          for tag in "$VERSION" "$SHA_TAG"; do
+            if existing_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$tag" "$pull_token")"; then
+              echo "refusing to overwrite existing immutable tag $IMAGE:$tag at $existing_digest" >&2
+              exit 1
+            else
+              status=$?
+              if [[ "$status" -ne 1 ]]; then
+                exit "$status"
+              fi
+            fi
+          done
+
+      - name: Build and push immutable image tags
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./source
+          file: ./source/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.IMAGE }}:${{ inputs.version }}
+            ${{ env.IMAGE }}:${{ steps.metadata.outputs.sha_tag }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_REPOSITORY }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.created=${{ steps.metadata.outputs.build_time }}
+          build-args: |
+            VERSION=${{ inputs.version }}
+            GIT_COMMIT=${{ inputs.source_sha }}
+            BUILD_TIME=${{ steps.metadata.outputs.build_time }}
+            SOURCE_REPOSITORY=${{ env.SOURCE_REPOSITORY }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify published tags and record evidence
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
+          BUILD_TIME: ${{ steps.metadata.outputs.build_time }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          BUILDER_IMAGE: ${{ steps.metadata.outputs.builder_image }}
+          BUILDER_IMAGE_DIGEST: ${{ steps.metadata.outputs.builder_image_digest }}
+          RUNTIME_IMAGE: ${{ steps.metadata.outputs.runtime_image }}
+          RUNTIME_IMAGE_DIGEST: ${{ steps.metadata.outputs.runtime_image_digest }}
+        run: |
+          set -euo pipefail
+          source release-tools/.github/scripts/dockerhub-manifest.sh
+          pull_token="$(dockerhub_pull_token 'apecloud/myduckserver')"
+          if version_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$VERSION" "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "published version tag could not be resolved" >&2
+            exit "$status"
+          fi
+          if sha_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$SHA_TAG" "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "published commit tag could not be resolved" >&2
+            exit "$status"
+          fi
+          if [[ ! "$BUILD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "build did not return a full sha256 digest: $BUILD_DIGEST" >&2
+            exit 1
+          fi
+          if [[ "$version_digest" != "$BUILD_DIGEST" || "$sha_digest" != "$BUILD_DIGEST" ]]; then
+            echo "published tag digest does not match build digest $BUILD_DIGEST" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools inspect "$IMAGE@$BUILD_DIGEST" \
+            --format '{{json .Manifest}}' > published-manifest.json
+          docker buildx imagetools inspect "$IMAGE@$BUILD_DIGEST" \
+            --format '{{json .Image}}' > published-image.json
+          jq -e \
+            --arg digest "$BUILD_DIGEST" \
+            '
+              .digest == $digest and
+              (.manifests | length) == 2 and
+              ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length) == 1 and
+              ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length) == 1 and
+              all(.manifests[]; .digest | test("^sha256:[0-9a-f]{64}$"))
+            ' published-manifest.json >/dev/null
+          jq -e \
+            --arg source "$SOURCE_REPOSITORY" \
+            --arg version "$VERSION" \
+            --arg revision "$SOURCE_SHA" \
+            --arg created "$BUILD_TIME" \
+            '
+              (keys | sort) == ["linux/amd64", "linux/arm64"] and
+              all(.[];
+                .config.Labels["org.opencontainers.image.source"] == $source and
+                .config.Labels["org.opencontainers.image.version"] == $version and
+                .config.Labels["org.opencontainers.image.revision"] == $revision and
+                .config.Labels["org.opencontainers.image.created"] == $created
+              )
+            ' published-image.json >/dev/null
+
+          amd64_digest="$(
+            jq -er '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' \
+              published-manifest.json
+          )"
+          arm64_digest="$(
+            jq -er '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' \
+              published-manifest.json
+          )"
+
+          jq -n \
+            --arg image "$IMAGE" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg workflow_sha "$WORKFLOW_SHA" \
+            --arg workflow_run_id "$GITHUB_RUN_ID" \
+            --arg workflow_run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg version "$VERSION" \
+            --arg sha_tag "$SHA_TAG" \
+            --arg digest "$BUILD_DIGEST" \
+            --arg amd64_digest "$amd64_digest" \
+            --arg arm64_digest "$arm64_digest" \
+            --arg build_time "$BUILD_TIME" \
+            --arg builder_image "$BUILDER_IMAGE" \
+            --arg builder_image_digest "$BUILDER_IMAGE_DIGEST" \
+            --arg runtime_image "$RUNTIME_IMAGE" \
+            --arg runtime_image_digest "$RUNTIME_IMAGE_DIGEST" \
+            '{
+              image: $image,
+              source_sha: $source_sha,
+              workflow_sha: $workflow_sha,
+              workflow_run_id: $workflow_run_id,
+              workflow_run_url: $workflow_run_url,
+              version: $version,
+              sha_tag: $sha_tag,
+              digest: $digest,
+              platforms: {
+                "linux/amd64": $amd64_digest,
+                "linux/arm64": $arm64_digest
+              },
+              base_images: {
+                builder: {
+                  image: $builder_image,
+                  digest: $builder_image_digest
+                },
+                runtime: {
+                  image: $runtime_image,
+                  digest: $runtime_image_digest
+                }
+              },
+              build_time: $build_time
+            }' > release-metadata.json
+
+          {
+            echo "## Published immutable image"
+            echo
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Version tag: \`$IMAGE:$VERSION\`"
+            echo "- Commit tag: \`$IMAGE:$SHA_TAG\`"
+            echo "- Digest: \`$BUILD_DIGEST\`"
+            echo "- Builder: \`$BUILDER_IMAGE@$BUILDER_IMAGE_DIGEST\`"
+            echo "- Runtime: \`$RUNTIME_IMAGE@$RUNTIME_IMAGE_DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-metadata-${{ inputs.version }}
+          path: release-metadata.json
+          if-no-files-found: error

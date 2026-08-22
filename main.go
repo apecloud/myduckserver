@@ -45,7 +45,8 @@ import (
 )
 
 var (
-	initMode = false
+	initMode    = false
+	versionMode = false
 
 	address       = "0.0.0.0"
 	port          = 3306
@@ -75,6 +76,7 @@ var (
 
 func init() {
 	flag.BoolVar(&initMode, "init", initMode, "Initialize the program and exit. The necessary extensions will be installed.")
+	flag.BoolVar(&versionMode, "version", versionMode, "Print version information and exit.")
 
 	flag.StringVar(&address, "address", address, "The address to bind to.")
 	flag.IntVar(&port, "port", port, "The port to bind to.")
@@ -111,6 +113,10 @@ func ensureSQLTranslate() {
 
 func main() {
 	flag.Parse() // Parse all flags
+	if versionMode {
+		fmt.Println(versionInfo())
+		return
+	}
 
 	if replicaOptions.ReportPort == 0 {
 		replicaOptions.ReportPort = port

@@ -11,6 +11,7 @@ SRC_FILES := $(wildcard $(SRC_DIR)/*.go)
 VERSION := $(shell git describe --tags --always --dirty)
 BUILD_TIME := $(shell date +%Y-%m-%dT%H:%M:%S%z)
 GIT_COMMIT := $(shell git rev-parse HEAD)
+SOURCE_REPOSITORY ?= https://github.com/apecloud/myduckserver
 
 # Docker image information
 IMAGE_NAME ?= myduck
@@ -18,7 +19,7 @@ IMAGE_TAG ?= latest
 REGISTRY ?= apecloud
 
 # Compilation flags
-LDFLAGS := -X 'main.Version=$(VERSION)' -X 'main.BuildTime=$(BUILD_TIME)' -X 'main.GitCommit=$(GIT_COMMIT)'
+LDFLAGS := -X 'main.Version=$(VERSION)' -X 'main.BuildTime=$(BUILD_TIME)' -X 'main.GitCommit=$(GIT_COMMIT)' -X 'main.SourceRepository=$(SOURCE_REPOSITORY)'
 
 # Build target
 $(BINARY_NAME): $(SRC_FILES)

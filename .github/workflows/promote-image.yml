@@ -1,0 +1,316 @@
+name: Promote Image
+run-name: Promote ${{ inputs.source_version }} to ${{ inputs.stable_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character source commit SHA of the accepted image
+        required: true
+        type: string
+      source_version:
+        description: Existing immutable release-candidate tag
+        required: true
+        type: string
+      source_digest:
+        description: Existing accepted multi-architecture image digest (sha256:...)
+        required: true
+        type: string
+      stable_version:
+        description: Stable version to create or verify (vX.Y.Z)
+        required: true
+        type: string
+      acceptance_reference:
+        description: Task, report, or URL containing independent acceptance evidence
+        required: true
+        type: string
+
+concurrency:
+  group: myduckserver-image-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE: docker.io/apecloud/myduckserver
+  SOURCE_REPOSITORY: https://github.com/apecloud/myduckserver
+
+jobs:
+  promote-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate promotion inputs
+        id: metadata
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_VERSION: ${{ inputs.source_version }}
+          SOURCE_DIGEST: ${{ inputs.source_digest }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+          ACCEPTANCE_REFERENCE: ${{ inputs.acceptance_reference }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "promotion workflow must be dispatched from the main branch" >&2
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be a lowercase, full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$SOURCE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[1-9][0-9]*$ ]]; then
+            echo "source_version must be an immutable release-candidate version" >&2
+            exit 1
+          fi
+          if [[ ! "$STABLE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "stable_version must match vX.Y.Z" >&2
+            exit 1
+          fi
+          if [[ ! "$SOURCE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "source_digest must be a full sha256 digest" >&2
+            exit 1
+          fi
+          if [[ "${SOURCE_VERSION%%-*}" != "$STABLE_VERSION" ]]; then
+            echo "source_version and stable_version must have the same vX.Y.Z base" >&2
+            exit 1
+          fi
+          if [[ -z "${ACCEPTANCE_REFERENCE//[[:space:]]/}" ]]; then
+            echo "acceptance_reference must contain a non-whitespace value" >&2
+            exit 1
+          fi
+          if [[ "$ACCEPTANCE_REFERENCE" == *$'\n'* || "$ACCEPTANCE_REFERENCE" == *$'\r'* ]]; then
+            echo "acceptance_reference must be a single line" >&2
+            exit 1
+          fi
+          echo "sha_tag=sha-${SOURCE_SHA:0:8}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source is reachable from main
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_workflow_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_workflow_sha" != "$WORKFLOW_SHA" ]]; then
+            echo "checked out workflow commit $actual_workflow_sha, expected $WORKFLOW_SHA" >&2
+            exit 1
+          fi
+          if ! git cat-file -e "$SOURCE_SHA^{commit}"; then
+            echo "source commit $SOURCE_SHA is missing from release history" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" "$WORKFLOW_SHA"; then
+            echo "source_sha must be reachable from main at workflow commit $WORKFLOW_SHA" >&2
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Verify accepted source image
+        id: source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_VERSION: ${{ inputs.source_version }}
+          SOURCE_DIGEST: ${{ inputs.source_digest }}
+          SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/dockerhub-manifest.sh
+          pull_token="$(dockerhub_pull_token 'apecloud/myduckserver')"
+          if source_version_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$SOURCE_VERSION" "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "source release-candidate tag could not be resolved" >&2
+            exit "$status"
+          fi
+          if source_sha_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$SHA_TAG" "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "source commit tag could not be resolved" >&2
+            exit "$status"
+          fi
+          if [[ "$source_version_digest" != "$SOURCE_DIGEST" || "$source_sha_digest" != "$SOURCE_DIGEST" ]]; then
+            echo "source version, source commit tag, and accepted digest must match" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools inspect "$IMAGE@$SOURCE_DIGEST" \
+            --format '{{json .Image}}' > accepted-image.json
+          jq -e \
+            --arg source "$SOURCE_REPOSITORY" \
+            --arg version "$SOURCE_VERSION" \
+            --arg revision "$SOURCE_SHA" \
+            '
+              (keys | sort) == ["linux/amd64", "linux/arm64"] and
+              all(.[];
+                .config.Labels["org.opencontainers.image.source"] == $source and
+                .config.Labels["org.opencontainers.image.version"] == $version and
+                .config.Labels["org.opencontainers.image.revision"] == $revision
+              )
+            ' accepted-image.json >/dev/null
+
+          stable_digest=""
+          if stable_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$STABLE_VERSION" "$pull_token")"; then
+            if [[ "$stable_digest" != "$SOURCE_DIGEST" ]]; then
+              echo "refusing to overwrite immutable stable tag $IMAGE:$STABLE_VERSION" >&2
+              exit 1
+            fi
+          else
+            status=$?
+            if [[ "$status" -ne 1 ]]; then
+              exit "$status"
+            fi
+          fi
+
+          previous_latest=""
+          if previous_latest="$(dockerhub_manifest_digest 'apecloud/myduckserver' latest "$pull_token")"; then
+            :
+          else
+            status=$?
+            if [[ "$status" -ne 1 ]]; then
+              exit "$status"
+            fi
+          fi
+          echo "stable_exists=$([[ -n "$stable_digest" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "previous_latest=${previous_latest:-none}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote accepted digest without rebuilding
+        shell: bash
+        env:
+          SOURCE_DIGEST: ${{ inputs.source_digest }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+          STABLE_EXISTS: ${{ steps.source.outputs.stable_exists }}
+        run: |
+          set -euo pipefail
+          tags=(--tag "$IMAGE:latest")
+          if [[ "$STABLE_EXISTS" != "true" ]]; then
+            tags+=(--tag "$IMAGE:$STABLE_VERSION")
+          fi
+          docker buildx imagetools create "${tags[@]}" "$IMAGE@$SOURCE_DIGEST"
+
+      - name: Verify promotion and record evidence
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_VERSION: ${{ inputs.source_version }}
+          SOURCE_DIGEST: ${{ inputs.source_digest }}
+          SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+          ACCEPTANCE_REFERENCE: ${{ inputs.acceptance_reference }}
+          PREVIOUS_LATEST: ${{ steps.source.outputs.previous_latest }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/dockerhub-manifest.sh
+          pull_token="$(dockerhub_pull_token 'apecloud/myduckserver')"
+          if stable_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' "$STABLE_VERSION" "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "promoted stable tag could not be resolved" >&2
+            exit "$status"
+          fi
+          if latest_digest="$(dockerhub_manifest_digest 'apecloud/myduckserver' latest "$pull_token")"; then
+            :
+          else
+            status=$?
+            echo "promoted latest tag could not be resolved" >&2
+            exit "$status"
+          fi
+          if [[ "$stable_digest" != "$SOURCE_DIGEST" || "$latest_digest" != "$SOURCE_DIGEST" ]]; then
+            echo "stable version and latest must point to accepted digest $SOURCE_DIGEST" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools inspect "$IMAGE@$SOURCE_DIGEST" \
+            --format '{{json .Manifest}}' > promoted-manifest.json
+          jq -e \
+            --arg digest "$SOURCE_DIGEST" \
+            '
+              .digest == $digest and
+              (.manifests | length) == 2 and
+              ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length) == 1 and
+              ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length) == 1 and
+              all(.manifests[]; .digest | test("^sha256:[0-9a-f]{64}$"))
+            ' promoted-manifest.json >/dev/null
+          amd64_digest="$(
+            jq -er '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' \
+              promoted-manifest.json
+          )"
+          arm64_digest="$(
+            jq -er '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' \
+              promoted-manifest.json
+          )"
+          promoted_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          jq -n \
+            --arg image "$IMAGE" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg workflow_sha "$WORKFLOW_SHA" \
+            --arg workflow_run_id "$GITHUB_RUN_ID" \
+            --arg workflow_run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg source_version "$SOURCE_VERSION" \
+            --arg sha_tag "$SHA_TAG" \
+            --arg stable_version "$STABLE_VERSION" \
+            --arg digest "$SOURCE_DIGEST" \
+            --arg amd64_digest "$amd64_digest" \
+            --arg arm64_digest "$arm64_digest" \
+            --arg previous_latest "$PREVIOUS_LATEST" \
+            --arg acceptance_reference "$ACCEPTANCE_REFERENCE" \
+            --arg promoted_at "$promoted_at" \
+            '{
+              image: $image,
+              source_sha: $source_sha,
+              workflow_sha: $workflow_sha,
+              workflow_run_id: $workflow_run_id,
+              workflow_run_url: $workflow_run_url,
+              source_version: $source_version,
+              sha_tag: $sha_tag,
+              stable_version: $stable_version,
+              digest: $digest,
+              platforms: {
+                "linux/amd64": $amd64_digest,
+                "linux/arm64": $arm64_digest
+              },
+              previous_latest: $previous_latest,
+              acceptance_reference: $acceptance_reference,
+              promoted_at: $promoted_at
+            }' > promotion-metadata.json
+
+          {
+            echo "## Promoted accepted image"
+            echo
+            echo "- Acceptance: $ACCEPTANCE_REFERENCE"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Stable tag: \`$IMAGE:$STABLE_VERSION\`"
+            echo "- Latest: \`$IMAGE:latest\`"
+            echo "- Digest: \`$SOURCE_DIGEST\`"
+            echo "- Previous latest: \`$PREVIOUS_LATEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload promotion evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: promotion-metadata-${{ inputs.stable_version }}
+          path: promotion-metadata.json
+          if-no-files-found: error
