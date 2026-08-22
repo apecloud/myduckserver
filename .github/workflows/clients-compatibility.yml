@@ -12,7 +12,7 @@ on:
 
 jobs:
   test-mysql:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -32,10 +32,12 @@ jobs:
           python-version: '3.13'
 
       - name: Install system packages
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: bats cpanminus libmysqlclient-dev dotnet-sdk-8.0 dotnet-runtime-8.0 php-mysql r-base-core
-          version: 1.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bats cpanminus libmysqlclient-dev dotnet-sdk-8.0 \
+            dotnet-runtime-8.0 php-mysql r-base-core
+          cpanm --version
 
       - name: Install dependencies
         run: |
@@ -72,7 +74,7 @@ jobs:
           bats ./compatibility/mysql/test.bats
 
   test-postgresql:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -92,10 +94,12 @@ jobs:
           python-version: '3.13'
 
       - name: Install system packages
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 dotnet-runtime-8.0 r-base-core
-          version: 1.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bats cpanminus libpq-dev postgresql-client dotnet-sdk-8.0 \
+            dotnet-runtime-8.0 r-base-core
+          cpanm --version
 
       - name: Install dependencies
         run: |
