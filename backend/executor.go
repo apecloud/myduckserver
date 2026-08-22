@@ -201,6 +201,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	if err != nil {
 		return nil, catalog.ErrTranspiler.New(err)
 	}
+	duckSQL = QueryForJSONScan(duckSQL, n.Schema())
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
 		log.WithFields(logrus.Fields{
@@ -232,22 +233,25 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 		}).Trace("Executing DML...")
 	}
 
-	// Execute the DuckDB query
-	result, err := conn.ExecContext(ctx.Context, duckSQL)
+	var affected, insertID int64
+	if _, ok := n.(*plan.TableCopier); ok {
+		// DuckDB returns the CTAS insert count as a one-row result. Its C API
+		// rows-changed value is defined only for INSERT, UPDATE, and DELETE.
+		err = conn.QueryRowContext(ctx.Context, duckSQL).Scan(&affected)
+	} else {
+		var result stdsql.Result
+		result, err = conn.ExecContext(ctx.Context, duckSQL)
+		if err == nil {
+			affected, err = result.RowsAffected()
+		}
+		if err == nil {
+			insertID, err = result.LastInsertId()
+		}
+	}
 	if err != nil {
 		if yes, column := catalog.IsDuckDBNotNullConstraintViolationError(err); yes {
 			return nil, sql.ErrInsertIntoNonNullableProvidedNull.New(column)
 		}
-		return nil, err
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return nil, err
-	}
-
-	insertId, err := result.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 
@@ -263,7 +267,7 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 
 	return sql.RowsToRowIter(sql.NewRow(types.OkResult{
 		RowsAffected: uint64(affected),
-		InsertID:     uint64(insertId),
+		InsertID:     uint64(insertID),
 		Info:         info,
 	})), nil
 }

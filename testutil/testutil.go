@@ -210,7 +210,7 @@ func initializeDevBuild(dir string, goDirPath string) string {
 	}
 
 	fmt.Printf("building dev build at: %s \n", fullpath)
-	cmd := exec.Command("go", "build", "-o", fullpath)
+	cmd := exec.Command("go", "build", "-tags=duckdb_arrow", "-o", fullpath)
 	cmd.Dir = goDirPath
 
 	output, err := cmd.CombinedOutput()

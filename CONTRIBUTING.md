@@ -40,7 +40,7 @@ To build MyDuck Server, run the following command:
 
 ```bash
 go get -v
-go build -v
+go build -tags=duckdb_arrow -v
 ```
 
 This will compile the necessary files.

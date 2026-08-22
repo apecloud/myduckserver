@@ -165,9 +165,8 @@ func NewCsvDataLoader(
 		return nil, err
 	}
 
-	// Create cancelable context
-	childCtx, cancel := context.WithCancel(ctx)
-	ctx.Context = childCtx
+	// Create a child without mutating the parent context into its own ancestor.
+	ctx, cancel := newCopyContext(ctx)
 
 	loader := &CsvDataLoader{
 		PipeDataLoader: PipeDataLoader{
@@ -187,6 +186,10 @@ func NewCsvDataLoader(
 	}
 
 	return loader, nil
+}
+
+func newCopyContext(ctx *sql.Context) (*sql.Context, context.CancelFunc) {
+	return ctx.NewSubContext()
 }
 
 // buildSQL builds the DuckDB COPY FROM statement.

@@ -21,7 +21,7 @@ import (
 	"github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/lib/pq/oid"
-	"github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
 	"sync/atomic"
 )
 

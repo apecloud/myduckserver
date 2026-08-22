@@ -1,5 +1,5 @@
 # Step 1: Build stage
-FROM --platform=${BUILDPLATFORM} golang:1.23.12-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.24.12-bookworm@sha256:322a794c4289ad86e3043e5d9f16ead790463658a1bd2c3983427f02983ab978 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -49,9 +49,9 @@ RUN --mount=type=bind,target=. \
     --mount=type=cache,target=/go/pkg/mod \
     go env && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-      CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++" CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
+      CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++" CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags=duckdb_arrow -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
     else \
-      CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
+      CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags=duckdb_arrow -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
     fi
 
 # Step 2: Final stage

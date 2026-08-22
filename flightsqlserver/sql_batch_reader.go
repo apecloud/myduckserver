@@ -252,6 +252,8 @@ func (r *SqlBatchReader) Schema() *arrow.Schema { return r.schema }
 
 func (r *SqlBatchReader) Record() arrow.Record { return r.record }
 
+func (r *SqlBatchReader) RecordBatch() arrow.RecordBatch { return r.record }
+
 func (r *SqlBatchReader) Err() error { return r.err }
 
 func (r *SqlBatchReader) Next() bool {

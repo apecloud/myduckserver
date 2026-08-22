@@ -54,8 +54,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql/schema_ref"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/scalar"
-	"github.com/marcboeker/go-duckdb"
-	_ "github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	_ "modernc.org/sqlite"
@@ -375,7 +374,7 @@ func (s *SQLiteFlightSQLServer) DoGetTables(ctx context.Context, cmd flightsql.G
 	}
 
 	schema := rdr.Schema()
-	go flight.StreamChunksFromReader(rdr, ch)
+	go flight.StreamChunksFromReader(ctx, rdr, ch)
 	return schema, ch, nil
 }
 
@@ -504,7 +503,7 @@ func doGetQuery(ctx context.Context, db *sql.DB, query string, schema *arrow.Sch
 	}
 	schema = rdr.Schema()
 	ch := make(chan flight.StreamChunk)
-	go flight.StreamChunksFromReader(rdr, ch)
+	go flight.StreamChunksFromReader(ctx, rdr, ch)
 	return schema, ch, nil
 }
 

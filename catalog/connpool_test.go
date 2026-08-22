@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/apecloud/myduckserver/testutil"
-	"github.com/marcboeker/go-duckdb"
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/stretchr/testify/require"
 )
 

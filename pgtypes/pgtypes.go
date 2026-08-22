@@ -10,8 +10,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/dolthub/vitess/go/sqltypes"
 	"github.com/dolthub/vitess/go/vt/proto/query"
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/marcboeker/go-duckdb"
 
 	"github.com/dolthub/go-mysql-server/sql"
 )
@@ -43,6 +43,7 @@ var duckdbTypeNameToPostgresTypeName = map[string]string{
 	"UHUGEINT":     "numeric",
 	"VARCHAR":      "text",
 	"BLOB":         "bytea",
+	"JSON":         "json",
 	"DECIMAL":      "numeric",
 	"TIMESTAMP_S":  "timestamp",
 	"TIMESTAMP_MS": "timestamp",
@@ -53,7 +54,8 @@ var duckdbTypeNameToPostgresTypeName = map[string]string{
 	"TIMETZ":       "timetz",
 	"TIMESTAMPTZ":  "timestamptz",
 	"ANY":          "text",    // Generic ANY type approximated to text
-	"VARINT":       "numeric", // Variable integer, mapped to numeric
+	"VARINT":       "numeric", // Pre-1.5 variable integer name.
+	"BIGNUM":       "numeric", // DuckDB 1.5 variable integer name.
 }
 
 var DuckdbTypeToPostgresOID = map[duckdb.Type]uint32{
@@ -87,7 +89,7 @@ var DuckdbTypeToPostgresOID = map[duckdb.Type]uint32{
 	duckdb.TYPE_TIME_TZ:      pgtype.TimetzOID,
 	duckdb.TYPE_TIMESTAMP_TZ: pgtype.TimestamptzOID,
 	duckdb.TYPE_ANY:          pgtype.TextOID,
-	duckdb.TYPE_VARINT:       pgtype.NumericOID,
+	duckdb.TYPE_BIGNUM:       pgtype.NumericOID,
 }
 
 var PostgresOIDToDuckDBTypeName = map[uint32]string{

@@ -2,6 +2,8 @@ package pgserver
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestGuessStatementTag(t *testing.T) {
@@ -38,6 +40,11 @@ func TestGuessStatementTag(t *testing.T) {
 			t.Errorf("GuessStatementTag(%q) = %q; want %q", tt.query, got, tt.want)
 		}
 	}
+}
+
+func TestConvertToDuckDBMacroUsesWritableSchema(t *testing.T) {
+	query := `SELECT (information_schema._pg_expandarray(i.indkey)).n`
+	require.Equal(t, `SELECT ((FROM __sys__._pg_expandarray(i.indkey))).n`, ConvertToDuckDBMacro(query))
 }
 
 func TestRemoveLeadingComments(t *testing.T) {
