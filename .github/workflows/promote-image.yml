@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       source_version:
-        description: Existing immutable release-candidate tag
+        description: Existing immutable dev or release-candidate tag
         required: true
         type: string
       source_digest:
@@ -39,6 +39,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Validate promotion inputs
         id: metadata
         shell: bash
@@ -50,46 +57,19 @@ jobs:
           ACCEPTANCE_REFERENCE: ${{ inputs.acceptance_reference }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "promotion workflow must be dispatched from the main branch" >&2
-            exit 1
-          fi
-          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "source_sha must be a lowercase, full 40-character commit SHA" >&2
-            exit 1
-          fi
-          if [[ ! "$SOURCE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[1-9][0-9]*$ ]]; then
-            echo "source_version must be an immutable release-candidate version" >&2
-            exit 1
-          fi
-          if [[ ! "$STABLE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "stable_version must match vX.Y.Z" >&2
-            exit 1
-          fi
-          if [[ ! "$SOURCE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "source_digest must be a full sha256 digest" >&2
-            exit 1
-          fi
-          if [[ "${SOURCE_VERSION%%-*}" != "$STABLE_VERSION" ]]; then
-            echo "source_version and stable_version must have the same vX.Y.Z base" >&2
-            exit 1
-          fi
-          if [[ -z "${ACCEPTANCE_REFERENCE//[[:space:]]/}" ]]; then
-            echo "acceptance_reference must contain a non-whitespace value" >&2
-            exit 1
-          fi
-          if [[ "$ACCEPTANCE_REFERENCE" == *$'\n'* || "$ACCEPTANCE_REFERENCE" == *$'\r'* ]]; then
-            echo "acceptance_reference must be a single line" >&2
-            exit 1
-          fi
-          echo "sha_tag=sha-${SOURCE_SHA:0:8}" >> "$GITHUB_OUTPUT"
+          source .github/scripts/promote-image-validate.sh
+          promote_image_validate \
+            "$GITHUB_REF" \
+            "$SOURCE_SHA" \
+            "$SOURCE_VERSION" \
+            "$SOURCE_DIGEST" \
+            "$STABLE_VERSION" \
+            "$ACCEPTANCE_REFERENCE" \
+            "$GITHUB_OUTPUT"
 
-      - name: Checkout release history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Test promotion input validation
+        shell: bash
+        run: bash .github/scripts/promote-image-validate-test.sh
 
       - name: Verify source is reachable from main
         shell: bash
