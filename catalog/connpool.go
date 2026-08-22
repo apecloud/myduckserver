@@ -29,9 +29,11 @@ import (
 
 type ConnectionPool struct {
 	*stdsql.DB
-	connector *duckdb.Connector
-	conns     sync.Map // concurrent-safe map[uint32]*stdsql.Conn
-	txns      sync.Map // concurrent-safe map[uint32]*stdsql.Tx
+	connector             *duckdb.Connector
+	conns                 sync.Map // concurrent-safe map[uint32]*stdsql.Conn
+	txns                  sync.Map // concurrent-safe map[uint32]*stdsql.Tx
+	registerMySQLUDFsOnce sync.Once
+	registerMySQLUDFsErr  error
 }
 
 func NewConnectionPool(connector *duckdb.Connector, db *stdsql.DB) *ConnectionPool {
@@ -87,13 +89,9 @@ func (p *ConnectionPool) GetConn(ctx context.Context, id uint32) (*stdsql.Conn, 
 		if err != nil {
 			return nil, err
 		}
-		if err := registerMySQLRand(c); err != nil {
+		if err := p.registerMySQLUDFs(c); err != nil {
 			_ = c.Close()
-			return nil, fmt.Errorf("register mysql_rand: %w", err)
-		}
-		if err := registerMySQLRandomBytes(c); err != nil {
-			_ = c.Close()
-			return nil, fmt.Errorf("register mysql_random_bytes: %w", err)
+			return nil, err
 		}
 		p.conns.Store(id, c)
 		conn = c
@@ -101,6 +99,20 @@ func (p *ConnectionPool) GetConn(ctx context.Context, id uint32) (*stdsql.Conn, 
 		conn = entry.(*stdsql.Conn)
 	}
 	return conn, nil
+}
+
+// DuckDB stores registered scalar UDFs in the database catalog shared by all connections.
+func (p *ConnectionPool) registerMySQLUDFs(conn *stdsql.Conn) error {
+	p.registerMySQLUDFsOnce.Do(func() {
+		if err := registerMySQLRand(conn); err != nil {
+			p.registerMySQLUDFsErr = fmt.Errorf("register mysql_rand: %w", err)
+			return
+		}
+		if err := registerMySQLRandomBytes(conn); err != nil {
+			p.registerMySQLUDFsErr = fmt.Errorf("register mysql_random_bytes: %w", err)
+		}
+	})
+	return p.registerMySQLUDFsErr
 }
 
 func (p *ConnectionPool) GetConnForSchema(ctx context.Context, id uint32, schemaName string) (*stdsql.Conn, error) {
@@ -220,6 +232,8 @@ func (p *ConnectionPool) Reset(connector *duckdb.Connector, db *stdsql.DB) error
 	p.txns.Clear()
 	p.DB = db
 	p.connector = connector
+	p.registerMySQLUDFsOnce = sync.Once{}
+	p.registerMySQLUDFsErr = nil
 
 	return nil
 }
