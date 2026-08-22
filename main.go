@@ -54,6 +54,7 @@ var (
 	defaultDb     = "myduck"
 	dataDirectory = "."
 	logLevel      = int(logrus.InfoLevel)
+	readOnly      = false
 
 	replicaOptions replica.ReplicaOptions
 
@@ -85,6 +86,7 @@ func init() {
 	flag.StringVar(&dataDirectory, "datadir", dataDirectory, "The directory to store the database.")
 	flag.StringVar(&defaultDb, "default-db", defaultDb, "The default database name to use.")
 	flag.IntVar(&logLevel, "loglevel", logLevel, "The log level to use.")
+	flag.BoolVar(&readOnly, "read-only", readOnly, "Start ordinary MySQL/Postgres client sessions in read-only mode.")
 
 	flag.StringVar(&superuserPassword, "superuser-password", superuserPassword, "The password for the superuser account.")
 
@@ -164,7 +166,7 @@ func main() {
 		Address:  fmt.Sprintf("%s:%d", address, port),
 		Socket:   socket,
 	}
-	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, backend.WithQueryRowLimit(queryRowLimit)), nil, backend.WrapHandler(provider))
+	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, backend.WithQueryRowLimit(queryRowLimit)), nil, backend.WrapHandler(provider, engine, readOnly))
 	if err != nil {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
@@ -181,6 +183,7 @@ func main() {
 			pgserver.WithEngine(myServer.Engine),
 			pgserver.WithSessionManager(myServer.SessionManager()),
 			pgserver.WithConnID(&myServer.Listener.(*mysql.Listener).ConnectionID), // Shared connection ID counter
+			pgserver.WithReadOnly(readOnly),
 		)
 		if err != nil {
 			logrus.WithError(err).Fatalln("Failed to create Postgres-protocol server")
