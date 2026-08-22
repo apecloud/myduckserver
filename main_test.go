@@ -774,14 +774,16 @@ func TestIndexQueryPlans(t *testing.T) {
 func TestQueryErrors(t *testing.T) {
 	harness := NewDefaultDuckHarness()
 	harness.QueriesToSkip(
-		// DuckDB rejects this malformed regexp, but returns its native error text.
+		// DuckDB returns `Invalid Input Error: no argument for repetition operator: *`,
+		// while the upstream contract requires the exact text "the given regular expression is invalid".
 		`SELECT * FROM mytable WHERE s REGEXP("*main.go")`,
-		// Unbound placeholders reach DuckDB and produce an argument-count error instead
-		// of go-mysql-server's ErrUnboundPreparedStatementVariable.
+		// Both unbound placeholder forms reach DuckDB and return
+		// `incorrect argument count for command: have 0 want 1`, rather than
+		// go-mysql-server's ErrUnboundPreparedStatementVariable.
 		"SELECT pk FROM one_pk WHERE pk > ?",
 		"SELECT pk FROM one_pk WHERE pk > :pk",
-		// DuckDB rejects multi-character ESCAPE strings as syntax errors rather than
-		// go-mysql-server's ErrInvalidArgument.
+		// DuckDB returns `Syntax Error: Invalid escape string. Escape string must be empty or one character.`
+		// for each multi-character ESCAPE string, rather than go-mysql-server's ErrInvalidArgument.
 		`SELECT name FROM specialtable t WHERE t.name LIKE '$%' ESCAPE 'abc'`,
 		`SELECT name FROM specialtable t WHERE t.name LIKE '$%' ESCAPE '$$'`,
 	)
