@@ -57,6 +57,16 @@ type tableIdentifier struct {
 	dbName, tableName string
 }
 
+type sourceCapabilities struct {
+	gtidMode            bool
+	flavorName          string
+	binlogDumpGTIDFlags uint16
+}
+
+type queryExecutor interface {
+	ExecuteFetch(query string, maxrows int, wantfields bool) (*sqltypes.Result, error)
+}
+
 // binlogReplicaApplier represents the process that applies updates from a binlog connection.
 //
 // This type is NOT used concurrently – there is currently only one single applier process running to process binlog
@@ -122,47 +132,81 @@ func (a *binlogReplicaApplier) IsRunning() bool {
 	return a.running.Load()
 }
 
-// This function will connect to the MySQL server and check the GTID_MODE.
-func detectVersionAndGTIDMode(ctx *sql.Context, params mysql.ConnParams) (mariaDB, gtidMode bool, err error) {
+// This function connects to the MySQL server and detects the replication
+// capabilities needed for the binlog stream.
+func detectSourceCapabilities(ctx *sql.Context, params mysql.ConnParams) (sourceCapabilities, error) {
+	capabilities := sourceCapabilities{flavorName: replication.FilePosFlavorID}
 	conn, err := mysql.Connect(ctx, &params)
 	if err != nil {
-		return false, false, err
+		return capabilities, err
 	}
 	defer conn.Close()
+	return detectSourceCapabilitiesFromQueries(conn)
+}
+
+func detectSourceCapabilitiesFromQueries(conn queryExecutor) (sourceCapabilities, error) {
+	capabilities := sourceCapabilities{flavorName: replication.FilePosFlavorID}
 
 	var qr *sqltypes.Result
-	qr, err = conn.ExecuteFetch("SELECT VERSION()", 1, true)
+	qr, err := conn.ExecuteFetch("SELECT VERSION()", 1, true)
 	if err != nil {
-		return false, false, fmt.Errorf("failed to check MySQL version: %w", err)
+		return capabilities, fmt.Errorf("failed to check MySQL version: %w", err)
 	}
 	if len(qr.Rows) == 0 {
-		return false, false, errors.New("no rows returned when checking MySQL version")
+		return capabilities, errors.New("no rows returned when checking MySQL version")
 	}
 	version := string(qr.Rows[0][0].Raw())
 
-	mariaDB = strings.Contains(version, "MariaDB")
+	mariaDB := strings.Contains(version, "MariaDB")
 	if mariaDB {
 		qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_STRICT_MODE", 1, true)
 		if err != nil {
-			return mariaDB, false, fmt.Errorf("failed to check GTID_STRICT_MODE: %w", err)
+			return capabilities, fmt.Errorf("failed to check GTID_STRICT_MODE: %w", err)
 		}
 	} else {
+		capabilities.binlogDumpGTIDFlags = detectBinlogDumpGTIDFlags(conn)
 		qr, err = conn.ExecuteFetch("SELECT @@GLOBAL.GTID_MODE", 1, true)
 		if err != nil {
-			return mariaDB, false, fmt.Errorf("failed to check GTID_MODE: %w", err)
+			return capabilities, fmt.Errorf("failed to check GTID_MODE: %w", err)
 		}
 	}
 	if len(qr.Rows) == 0 {
-		return mariaDB, false, errors.New("no rows returned when checking GTID_MODE")
+		return capabilities, errors.New("no rows returned when checking GTID mode")
 	}
 
-	gtidMode, err = qr.Rows[0][0].ToBool()
+	gtidMode, err := qr.Rows[0][0].ToBool()
 	if err != nil {
 		gtidMode = strings.EqualFold(string(qr.Rows[0][0].Raw()), "ON") ||
 			string(qr.Rows[0][0].Raw()) == "1"
 	}
+	capabilities.gtidMode = gtidMode
 
-	return mariaDB, gtidMode, nil
+	if !gtidMode {
+		capabilities.flavorName = replication.FilePosFlavorID
+	} else if mariaDB {
+		capabilities.flavorName = replication.MariadbFlavorID
+	} else {
+		capabilities.flavorName = replication.Mysql56FlavorID
+	}
+
+	return capabilities, nil
+}
+
+// detectBinlogDumpGTIDFlags probes optional source-specific behavior. A source
+// that rejects either identity query is treated as standard MySQL.
+func detectBinlogDumpGTIDFlags(conn queryExecutor) uint16 {
+	qr, err := conn.ExecuteFetch("SELECT @@VERSION_COMMENT", 1, true)
+	if err != nil || qr == nil || len(qr.Rows) == 0 || string(qr.Rows[0][0].Raw()) != "Dolt" {
+		return 0
+	}
+
+	qr, err = conn.ExecuteFetch("SELECT DOLT_VERSION()", 1, true)
+	if err != nil || qr == nil || len(qr.Rows) == 0 || string(qr.Rows[0][0].Raw()) != "2.3.1" {
+		return 0
+	}
+
+	// Dolt 2.3.1 only decodes the SID block when this flag is set.
+	return mysql.BinlogThroughGTID
 }
 
 // connectAndStartReplicationEventStream connects to the configured MySQL replication source, including pausing
@@ -178,11 +222,9 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 	})
 
 	var (
-		conn       *mysql.Conn
-		err        error
-		gtidMode   = false
-		mariaDB    = false
-		flavorName = ""
+		conn         *mysql.Conn
+		err          error
+		capabilities sourceCapabilities
 	)
 	for connectionAttempts := uint64(0); ; connectionAttempts++ {
 		replicaSourceInfo, err := loadReplicationConfiguration(ctx, a.engine.Analyzer.Catalog.MySQLDb)
@@ -211,19 +253,11 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 			ConnectTimeoutMs: 4_000,
 		}
 
-		mariaDB, gtidMode, err = detectVersionAndGTIDMode(ctx, connParams)
+		capabilities, err = detectSourceCapabilities(ctx, connParams)
 		if err != nil && connectionAttempts >= maxConnectionAttempts {
 			return nil, err
 		}
-
-		if !gtidMode {
-			flavorName = replication.FilePosFlavorID
-		} else if mariaDB {
-			flavorName = replication.MariadbFlavorID
-		} else {
-			flavorName = replication.Mysql56FlavorID
-		}
-		connParams.Flavor = flavorName
+		connParams.Flavor = capabilities.flavorName
 
 		conn, err = mysql.Connect(ctx, &connParams)
 		if err != nil {
@@ -252,7 +286,7 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 
 	// Request binlog events to start
 	// TODO: This should also have retry logic
-	err = a.startReplicationEventStream(ctx, conn, gtidMode, flavorName)
+	err = a.startReplicationEventStream(ctx, conn, capabilities)
 	if err != nil {
 		return nil, err
 	}
@@ -336,15 +370,15 @@ func (a *binlogReplicaApplier) loadLogFilePosition(ctx *sql.Context, positionSto
 
 // startReplicationEventStream sends a request over |conn|, the connection to the MySQL source server, to begin
 // sending binlog events.
-func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, conn *mysql.Conn, gtidMode bool, flavorName string) error {
+func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, conn *mysql.Conn, capabilities sourceCapabilities) error {
 	serverId, err := loadReplicaServerId()
 	if err != nil {
 		return err
 	}
 
 	var position replication.Position
-	if gtidMode {
-		position, err = a.loadGtidPosition(ctx, positionStore, flavorName)
+	if capabilities.gtidMode {
+		position, err = a.loadGtidPosition(ctx, positionStore, capabilities.flavorName)
 		if err != nil {
 			return err
 		}
@@ -352,7 +386,7 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 			ctx.GetLogger().Errorf("unable to set @@GLOBAL.gtid_executed: %s", err.Error())
 		}
 	} else {
-		position, err = a.loadLogFilePosition(ctx, positionStore, flavorName)
+		position, err = a.loadLogFilePosition(ctx, positionStore, capabilities.flavorName)
 		if err != nil {
 			return err
 		}
@@ -397,7 +431,45 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 		"position":   position.String(),
 	}).Trace("Sending binlog dump command to source")
 
-	return conn.SendBinlogDumpCommand(serverId, binlogFile, position)
+	return sendBinlogDumpCommand(conn, serverId, binlogFile, position, capabilities.binlogDumpGTIDFlags)
+}
+
+type mysql56BinlogDumpRequest struct {
+	serverID   uint32
+	binlogFile string
+	binlogPos  uint64
+	flags      uint16
+	sidBlock   []byte
+}
+
+func sendBinlogDumpCommand(conn *mysql.Conn, serverID uint32, binlogFile string, position replication.Position, flags uint16) error {
+	request, ok := newMySQL56BinlogDumpRequest(serverID, binlogFile, position, flags)
+	if !ok {
+		return conn.SendBinlogDumpCommand(serverID, binlogFile, position)
+	}
+
+	return conn.WriteComBinlogDumpGTID(
+		request.serverID,
+		request.binlogFile,
+		request.binlogPos,
+		request.flags,
+		request.sidBlock,
+	)
+}
+
+func newMySQL56BinlogDumpRequest(serverID uint32, binlogFile string, position replication.Position, flags uint16) (mysql56BinlogDumpRequest, bool) {
+	gtidSet, ok := position.GTIDSet.(replication.Mysql56GTIDSet)
+	if !ok {
+		return mysql56BinlogDumpRequest{}, false
+	}
+
+	return mysql56BinlogDumpRequest{
+		serverID:   serverID,
+		binlogFile: binlogFile,
+		binlogPos:  4,
+		flags:      flags,
+		sidBlock:   gtidSet.SIDBlock(),
+	}, true
 }
 
 // replicaBinlogEventHandler runs a loop, processing binlog events until the applier's stop replication channel
