@@ -328,7 +328,7 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 	if err != nil {
 		return err
 	}
-	err = h.duckHandler.ComQuery(context.Background(), h.mysqlConn, useStmt, parsed.AST, func(res *Result) error {
+	err = h.duckHandler.ComQuery(context.Background(), h.mysqlConn, useStmt, "", parsed.AST, func(res *Result) error {
 		return nil
 	})
 	// If a database isn't specified, then we attempt to connect to a database with the same name as the user,
@@ -1043,6 +1043,7 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 		context.Background(),
 		h.mysqlConn,
 		statement.String,
+		statement.QueryForAudit(),
 		statement.AST,
 		callback,
 	); err != nil {
@@ -1134,6 +1135,7 @@ func (h *ConnectionHandler) sendDescribeResponse(fields []pgproto3.FieldDescript
 
 // handledPSQLCommands handles the special PSQL commands, such as \l and \dt.
 func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) {
+	originalStatement := statement
 	statement = strings.ToLower(statement)
 	// Command: \l
 	if statement == "select d.datname as \"name\",\n       pg_catalog.pg_get_userbyid(d.datdba) as \"owner\",\n       pg_catalog.pg_encoding_to_char(d.encoding) as \"encoding\",\n       d.datcollate as \"collate\",\n       d.datctype as \"ctype\",\n       d.daticulocale as \"icu locale\",\n       case d.datlocprovider when 'c' then 'libc' when 'i' then 'icu' end as \"locale provider\",\n       pg_catalog.array_to_string(d.datacl, e'\\n') as \"access privileges\"\nfrom pg_catalog.pg_database d\norder by 1;" {
@@ -1141,6 +1143,7 @@ func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) 
 		if err != nil {
 			return false, err
 		}
+		query[0].OriginalString = originalStatement
 		return true, h.run(query[0])
 	}
 	// Command: \l on psql 16
@@ -1149,27 +1152,31 @@ func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) 
 		if err != nil {
 			return false, err
 		}
+		query[0].OriginalString = originalStatement
 		return true, h.run(query[0])
 	}
 	// Command: \dt
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\n     left join pg_catalog.pg_am am on am.oid = c.relam\nwhere c.relkind in ('r','p','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'table' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' ORDER BY 2;`,
-			Tag:    "SELECT",
+			String:         `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'table' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' ORDER BY 2;`,
+			OriginalString: originalStatement,
+			Tag:            "SELECT",
 		})
 	}
 	// Command: \d
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\n     left join pg_catalog.pg_am am on am.oid = c.relam\nwhere c.relkind in ('r','p','v','m','s','f','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
-			Tag:    "SELECT",
+			String:         `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
+			OriginalString: originalStatement,
+			Tag:            "SELECT",
 		})
 	}
 	// Alternate \d for psql 14
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 's' then 'special' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\n     left join pg_catalog.pg_am am on am.oid = c.relam\nwhere c.relkind in ('r','p','v','m','s','f','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
-			Tag:    "SELECT",
+			String:         `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'BASE TABLE' OR TABLE_TYPE = 'VIEW' ORDER BY 2;`,
+			OriginalString: originalStatement,
+			Tag:            "SELECT",
 		})
 	}
 	// Command: \d table_name
@@ -1181,30 +1188,34 @@ func (h *ConnectionHandler) handledPSQLCommands(statement string) (bool, error) 
 	// Command: \dn
 	if statement == "select n.nspname as \"name\",\n  pg_catalog.pg_get_userbyid(n.nspowner) as \"owner\"\nfrom pg_catalog.pg_namespace n\nwhere n.nspname !~ '^pg_' and n.nspname <> 'information_schema'\norder by 1;" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT 'public' AS "Name", 'pg_database_owner' AS "Owner";`,
-			Tag:    "SELECT",
+			String:         `SELECT 'public' AS "Name", 'pg_database_owner' AS "Owner";`,
+			OriginalString: originalStatement,
+			Tag:            "SELECT",
 		})
 	}
 	// Command: \df
 	if statement == "select n.nspname as \"schema\",\n  p.proname as \"name\",\n  pg_catalog.pg_get_function_result(p.oid) as \"result data type\",\n  pg_catalog.pg_get_function_arguments(p.oid) as \"argument data types\",\n case p.prokind\n  when 'a' then 'agg'\n  when 'w' then 'window'\n  when 'p' then 'proc'\n  else 'func'\n end as \"type\"\nfrom pg_catalog.pg_proc p\n     left join pg_catalog.pg_namespace n on n.oid = p.pronamespace\nwhere pg_catalog.pg_function_is_visible(p.oid)\n      and n.nspname <> 'pg_catalog'\n      and n.nspname <> 'information_schema'\norder by 1, 2, 4;" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT '' AS "Schema", '' AS "Name", '' AS "Result data type", '' AS "Argument data types", '' AS "Type" LIMIT 0;`,
-			Tag:    "SELECT",
+			String:         `SELECT '' AS "Schema", '' AS "Name", '' AS "Result data type", '' AS "Argument data types", '' AS "Type" LIMIT 0;`,
+			OriginalString: originalStatement,
+			Tag:            "SELECT",
 		})
 	}
 	// Command: \dv
 	if statement == "select n.nspname as \"schema\",\n  c.relname as \"name\",\n  case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized view' when 'i' then 'index' when 's' then 'sequence' when 't' then 'toast table' when 'f' then 'foreign table' when 'p' then 'partitioned table' when 'i' then 'partitioned index' end as \"type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"owner\"\nfrom pg_catalog.pg_class c\n     left join pg_catalog.pg_namespace n on n.oid = c.relnamespace\nwhere c.relkind in ('v','')\n      and n.nspname <> 'pg_catalog'\n      and n.nspname !~ '^pg_toast'\n      and n.nspname <> 'information_schema'\n  and pg_catalog.pg_table_is_visible(c.oid)\norder by 1,2;" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'view' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'VIEW' ORDER BY 2;`,
-			Tag:    "SELECT",
+			String:         `SELECT table_schema AS "Schema", TABLE_NAME AS "Name", 'view' AS "Type", 'postgres' AS "Owner" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'pg_catalog' AND TABLE_SCHEMA <> 'information_schema' AND TABLE_TYPE = 'VIEW' ORDER BY 2;`,
+			OriginalString: originalStatement,
+			Tag:            "SELECT",
 		})
 	}
 	// Command: \du
 	if statement == "select r.rolname, r.rolsuper, r.rolinherit,\n  r.rolcreaterole, r.rolcreatedb, r.rolcanlogin,\n  r.rolconnlimit, r.rolvaliduntil,\n  array(select b.rolname\n        from pg_catalog.pg_auth_members m\n        join pg_catalog.pg_roles b on (m.roleid = b.oid)\n        where m.member = r.oid) as memberof\n, r.rolreplication\n, r.rolbypassrls\nfrom pg_catalog.pg_roles r\nwhere r.rolname !~ '^pg_'\norder by 1;" {
 		// We don't support users yet, so we'll just return nothing for now
 		return true, h.run(ConvertedStatement{
-			String: `SELECT '' FROM dual LIMIT 0;`,
-			Tag:    "SELECT",
+			String:         `SELECT '' FROM dual LIMIT 0;`,
+			OriginalString: originalStatement,
+			Tag:            "SELECT",
 		})
 	}
 	return false, nil
@@ -1215,14 +1226,16 @@ func (h *ConnectionHandler) handledWorkbenchCommands(statement string) (bool, er
 	lower := strings.ToLower(statement)
 	if lower == "select * from current_schema()" || lower == "select * from current_schema();" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT search_path AS "current_schema";`,
-			Tag:    "SELECT",
+			String:         `SELECT search_path AS "current_schema";`,
+			OriginalString: statement,
+			Tag:            "SELECT",
 		})
 	}
 	if lower == "select * from current_database()" || lower == "select * from current_database();" {
 		return true, h.run(ConvertedStatement{
-			String: `SELECT DATABASE() AS "current_database";`,
-			Tag:    "SELECT",
+			String:         `SELECT DATABASE() AS "current_database";`,
+			OriginalString: statement,
+			Tag:            "SELECT",
 		})
 	}
 	return false, nil
@@ -1260,6 +1273,7 @@ func (h *ConnectionHandler) sendError(err error) {
 
 // convertQuery takes the given Postgres query, and converts it as a list of ast.ConvertedStatement that will work with the handler.
 func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifier) ([]ConvertedStatement, error) {
+	originalQuery := query
 	for _, modifier := range modifiers {
 		query = modifier(query)
 	}
@@ -1269,6 +1283,7 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 	if subscriptionConfig != nil && err == nil {
 		return []ConvertedStatement{{
 			String:             query,
+			OriginalString:     originalQuery,
 			PgParsable:         true,
 			SubscriptionConfig: subscriptionConfig,
 		}}, nil
@@ -1278,17 +1293,19 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 	backupConfig, err := parseBackupSQL(query)
 	if backupConfig != nil && err == nil {
 		return []ConvertedStatement{{
-			String:       query,
-			PgParsable:   true,
-			BackupConfig: backupConfig,
+			String:         query,
+			OriginalString: originalQuery,
+			PgParsable:     true,
+			BackupConfig:   backupConfig,
 		}}, nil
 	}
 	restoreConfig, err := parseRestoreSQL(query)
 	if restoreConfig != nil && err == nil {
 		return []ConvertedStatement{{
-			String:        query,
-			PgParsable:    true,
-			RestoreConfig: restoreConfig,
+			String:         query,
+			OriginalString: originalQuery,
+			PgParsable:     true,
+			RestoreConfig:  restoreConfig,
 		}}, nil
 	}
 
@@ -1297,15 +1314,16 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 		// DuckDB syntax is not fully compatible with PostgreSQL, so we need to handle some queries differently.
 		stmts, _ = parser.Parse("SELECT 'SQL syntax is incompatible with PostgreSQL' AS error")
 		return []ConvertedStatement{{
-			String:     query,
-			AST:        stmts[0].AST,
-			Tag:        GuessStatementTag(query),
-			PgParsable: false,
+			String:         query,
+			OriginalString: originalQuery,
+			AST:            stmts[0].AST,
+			Tag:            GuessStatementTag(query),
+			PgParsable:     false,
 		}}, nil
 	}
 
 	if len(stmts) == 0 {
-		return []ConvertedStatement{{String: query}}, nil
+		return []ConvertedStatement{{String: query, OriginalString: originalQuery}}, nil
 	}
 
 	convertedStmts := make([]ConvertedStatement, len(stmts))
@@ -1316,6 +1334,11 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 			convertedStmts[i].String = fullMatchQuery
 		} else {
 			convertedStmts[i].String = stmt.SQL
+		}
+		if len(stmts) == 1 {
+			convertedStmts[i].OriginalString = originalQuery
+		} else {
+			convertedStmts[i].OriginalString = stmt.SQL
 		}
 		convertedStmts[i].AST = stmt.AST
 		convertedStmts[i].Tag = stmt.AST.StatementTag()

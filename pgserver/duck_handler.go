@@ -124,7 +124,7 @@ func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, por
 	if err := h.rejectReadOnly(portal.Statement); err != nil {
 		return err
 	}
-	err := h.doQuery(ctx, conn, portal.Statement.String, portal.Statement.AST, portal.Stmt, portal.Vars, portal.ResultFormatCodes, ExtendedQueryMode, h.executeBoundPlan, callback)
+	err := h.doQuery(ctx, conn, portal.Statement.String, portal.Statement.QueryForAudit(), portal.Statement.AST, portal.Stmt, portal.Vars, portal.ResultFormatCodes, ExtendedQueryMode, h.executeBoundPlan, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -239,11 +239,11 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 }
 
 // ComQuery implements the Handler interface.
-func (h *DuckHandler) ComQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, callback func(*Result) error) error {
+func (h *DuckHandler) ComQuery(ctx context.Context, c *mysql.Conn, query string, auditQuery string, parsed tree.Statement, callback func(*Result) error) error {
 	if err := h.rejectReadOnly(ConvertedStatement{String: query, AST: parsed}); err != nil {
 		return err
 	}
-	err := h.doQuery(ctx, c, query, parsed, nil, nil, nil, SimpleQueryMode, h.executeQuery, callback)
+	err := h.doQuery(ctx, c, query, auditQuery, parsed, nil, nil, nil, SimpleQueryMode, h.executeQuery, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
@@ -327,7 +327,22 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 
 var queryLoggingRegex = regexp.MustCompile(`[\r\n\t ]+`)
 
-func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, resultFormatCodes []int16, mode QueryMode, queryExec QueryExecutor, callback func(*Result) error) error {
+func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, auditQuery string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, resultFormatCodes []int16, mode QueryMode, queryExec QueryExecutor, callback func(*Result) error) (returnErr error) {
+	if auditQuery != "" {
+		audit := backend.NewQueryAudit(c, "postgres", auditQuery)
+		originalCallback := callback
+		callback = func(res *Result) error {
+			if err := originalCallback(res); err != nil {
+				return err
+			}
+			audit.AddRows(len(res.Rows))
+			return nil
+		}
+		defer func() {
+			audit.Complete(returnErr)
+		}()
+	}
+
 	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
 	if err != nil {
 		return err

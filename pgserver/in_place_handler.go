@@ -323,8 +323,9 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 					return false, err
 				}
 				return true, h.run(ConvertedStatement{
-					String: fmt.Sprintf(`SELECT '%s' AS "%s";`, fmt.Sprintf("%v", setting), key),
-					Tag:    "SELECT",
+					String:         fmt.Sprintf(`SELECT '%s' AS "%s";`, fmt.Sprintf("%v", setting), key),
+					OriginalString: query.QueryForAudit(),
+					Tag:            "SELECT",
 				})
 			}
 			// TODO(sean): Implement SHOW ALL
