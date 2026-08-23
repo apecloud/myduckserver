@@ -121,6 +121,9 @@ func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared Prepa
 
 // ComExecuteBound implements the Handler interface.
 func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, portal PortalData, callback func(*Result) error) error {
+	if err := h.rejectReadOnly(portal.Statement); err != nil {
+		return err
+	}
 	err := h.doQuery(ctx, conn, portal.Statement.String, portal.Statement.AST, portal.Stmt, portal.Vars, portal.ResultFormatCodes, ExtendedQueryMode, h.executeBoundPlan, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
@@ -131,6 +134,9 @@ func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, por
 
 // ComPrepareParsed implements the Handler interface.
 func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement) (*duckdb.Stmt, []uint32, []pgproto3.FieldDescription, error) {
+	if err := h.rejectReadOnly(ConvertedStatement{String: query, AST: parsed}); err != nil {
+		return nil, nil, nil, err
+	}
 	// DuckDB's official Go binding exposes prepared statement parameter types but not result types.
 	// 1. For SELECT statements, we will supply all NULL values as parameters
 	//    to execute the query with a LIMIT 0 to get the result types.
@@ -234,11 +240,21 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 
 // ComQuery implements the Handler interface.
 func (h *DuckHandler) ComQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, callback func(*Result) error) error {
+	if err := h.rejectReadOnly(ConvertedStatement{String: query, AST: parsed}); err != nil {
+		return err
+	}
 	err := h.doQuery(ctx, c, query, parsed, nil, nil, nil, SimpleQueryMode, h.executeQuery, callback)
 	if err != nil {
 		err = sql.CastSQLError(err)
 	}
 	return err
+}
+
+func (h *DuckHandler) rejectReadOnly(statement ConvertedStatement) error {
+	if h.connectionHandler == nil {
+		return nil
+	}
+	return h.connectionHandler.rejectReadOnly(statement)
 }
 
 // ComResetConnection implements the Handler interface.

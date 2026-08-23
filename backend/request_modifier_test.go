@@ -9,9 +9,9 @@ import (
 
 func TestSkipUnsupportedRoutineDDL(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		skip   bool
+		name  string
+		input string
+		skip  bool
 	}{
 		{
 			name:  "versioned drop function",
@@ -118,4 +118,22 @@ func TestApplyRequestModifiersIssue329(t *testing.T) {
 	)
 	require.Contains(t, view, "VIEW log_report_count AS SELECT 1 WHERE 1 > 0")
 	require.NotContains(t, view, "AS (")
+}
+
+func TestIsWriteQueryText(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		write bool
+	}{
+		{name: "select", query: "SELECT 1", write: false},
+		{name: "create table", query: "CREATE OR REPLACE TABLE t (id INT)", write: true},
+		{name: "versioned drop routine", query: "/*!50003 DROP FUNCTION IF EXISTS f */", write: true},
+		{name: "line comment", query: "-- dump\nINSERT INTO t VALUES (1)", write: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.write, IsWriteQueryText(tc.query))
+		})
+	}
 }

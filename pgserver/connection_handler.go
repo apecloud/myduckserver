@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/backend"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	gms "github.com/dolthub/go-mysql-server"
@@ -56,8 +57,9 @@ type ConnectionHandler struct {
 	// COPY DATA messages from the client to import data into tables.
 	copyFromStdinState *copyFromStdinState
 
-	server *Server
-	logger *logrus.Entry
+	server   *Server
+	readOnly bool
+	logger   *logrus.Entry
 }
 
 // Set this env var to disable panic handling in the connection, which is useful when debugging a panic
@@ -73,7 +75,7 @@ func init() {
 }
 
 // NewConnectionHandler returns a new ConnectionHandler for the connection provided
-func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engine, sm *server.SessionManager, connID uint32, server *Server) *ConnectionHandler {
+func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engine, sm *server.SessionManager, connID uint32, server *Server, readOnly bool) *ConnectionHandler {
 	mysqlConn := &mysql.Conn{
 		Conn:        conn,
 		PrepareData: make(map[uint32]*mysql.PrepareData),
@@ -104,7 +106,8 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 		backend:            pgproto3.NewBackend(conn, conn),
 		pgTypeMap:          pgtype.NewMap(),
 
-		server: server,
+		server:   server,
+		readOnly: readOnly,
 		logger: logrus.WithFields(logrus.Fields{
 			"connectionID": connID,
 			"protocol":     "pg",
@@ -482,6 +485,9 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 
 	for _, statement := range statements {
 		statement.IsExtendedQuery = false
+		if err := h.rejectReadOnly(statement); err != nil {
+			return true, err
+		}
 		// Certain statement types get handled directly by the handler instead of being passed to the engine
 		handled, endOfMessages, err = h.handleStatementOutsideEngine(statement)
 		if handled {
@@ -572,6 +578,9 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	// TODO(Noy): handle multiple statements
 	statement := statements[0]
 	statement.IsExtendedQuery = true
+	if err := h.rejectReadOnly(statement); err != nil {
+		return err
+	}
 	if statement.AST == nil && strings.TrimSpace(statement.String) == "" {
 		// special case: empty query
 		h.preparedStatements[message.Name] = PreparedStatementData{
@@ -1041,6 +1050,24 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 	}
 
 	return h.send(makeCommandComplete(statement.Tag, rowsAffected))
+}
+
+func (h *ConnectionHandler) rejectReadOnly(statement ConvertedStatement) error {
+	if !h.readOnly {
+		return nil
+	}
+	if statement.SubscriptionConfig != nil || statement.BackupConfig != nil || statement.RestoreConfig != nil {
+		return sql.ErrReadOnly.New()
+	}
+	if statement.AST != nil {
+		if tree.CanWriteData(statement.AST) || tree.CanModifySchema(statement.AST) {
+			return sql.ErrReadOnly.New()
+		}
+	}
+	if backend.IsWriteQueryText(statement.String) {
+		return sql.ErrReadOnly.New()
+	}
+	return nil
 }
 
 // spoolRowsCallback returns a callback function that will send RowDescription message,

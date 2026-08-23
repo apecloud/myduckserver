@@ -12,6 +12,7 @@ type Server struct {
 	Listener       *Listener
 	Provider       *catalog.DatabaseProvider
 	NewInternalCtx func() *sql.Context
+	ReadOnly       bool
 }
 
 func NewServer(provider *catalog.DatabaseProvider, host string, port int, password string, newCtx func() *sql.Context, options ...ListenerOpt) (*Server, error) {
@@ -32,7 +33,7 @@ func NewServer(provider *catalog.DatabaseProvider, host string, port int, passwo
 	if err != nil {
 		return nil, err
 	}
-	return &Server{Listener: listener, Provider: provider, NewInternalCtx: newCtx}, nil
+	return &Server{Listener: listener, Provider: provider, NewInternalCtx: newCtx, ReadOnly: listener.readOnly}, nil
 }
 
 func (s *Server) Start() {
