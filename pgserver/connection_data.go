@@ -16,13 +16,14 @@ package pgserver
 
 import (
 	"fmt"
+	"sync/atomic"
+
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/vt/proto/query"
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/lib/pq/oid"
-	"github.com/duckdb/duckdb-go/v2"
-	"sync/atomic"
 )
 
 // ErrorResponseSeverity represents the severity of an ErrorResponse message.
@@ -54,6 +55,7 @@ const (
 // otherwise always prefer to AST.
 type ConvertedStatement struct {
 	String             string
+	OriginalString     string
 	AST                tree.Statement
 	Tag                string
 	PgParsable         bool
@@ -67,6 +69,7 @@ type ConvertedStatement struct {
 func (cs ConvertedStatement) WithQueryString(queryString string) ConvertedStatement {
 	return ConvertedStatement{
 		String:             queryString,
+		OriginalString:     cs.OriginalString,
 		AST:                cs.AST,
 		Tag:                cs.Tag,
 		PgParsable:         cs.PgParsable,
@@ -76,6 +79,13 @@ func (cs ConvertedStatement) WithQueryString(queryString string) ConvertedStatem
 		BackupConfig:       cs.BackupConfig,
 		RestoreConfig:      cs.RestoreConfig,
 	}
+}
+
+func (cs ConvertedStatement) QueryForAudit() string {
+	if cs.OriginalString != "" {
+		return cs.OriginalString
+	}
+	return cs.String
 }
 
 // copyFromStdinState tracks the metadata for an import of data into a table using a COPY FROM STDIN statement. When

@@ -20,8 +20,8 @@ import (
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
-	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/duckdb/duckdb-go/v2"
+	"github.com/jackc/pgx/v5/pgproto3"
 )
 
 type Handler interface {
@@ -33,7 +33,7 @@ type Handler interface {
 	ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement) (*duckdb.Stmt, []uint32, []pgproto3.FieldDescription, error)
 	// ComQuery is called when a connection receives a query. Note the contents of the query slice may change
 	// after the first call to callback. So the DoltgresHandler should not hang on to the byte slice.
-	ComQuery(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement, callback func(*Result) error) error
+	ComQuery(ctx context.Context, c *mysql.Conn, query string, auditQuery string, parsed tree.Statement, callback func(*Result) error) error
 	// ComResetConnection resets the connection's session, clearing out any cached prepared statements, locks, user and
 	// session variables. The currently selected database is preserved.
 	ComResetConnection(c *mysql.Conn) error

@@ -61,30 +61,45 @@ func wrapResultCallback(callback mysql.ResultSpoolFn, modifiers ...ResultModifie
 	}
 }
 
+func auditResultCallback(audit *QueryAudit, callback mysql.ResultSpoolFn, modifiers ...ResultModifier) mysql.ResultSpoolFn {
+	return wrapResultCallback(func(res *sqltypes.Result, more bool) error {
+		if err := callback(res, more); err != nil {
+			return err
+		}
+		audit.AddRows(len(res.Rows))
+		return nil
+	}, modifiers...)
+}
+
 func (h *MyHandler) ComMultiQuery(
 	ctx context.Context,
 	c *mysql.Conn,
 	query string,
 	callback mysql.ResultSpoolFn,
-) (string, error) {
-	if err := h.rejectReadOnly(ctx, c, query); err != nil {
-		return query, err
+) (rest string, returnErr error) {
+	audit := NewQueryAudit(c, "mysql", query)
+	defer func() {
+		audit.Complete(returnErr)
+	}()
+
+	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
+		return query, returnErr
 	}
 
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
 
 	called := false
-	cb := func(res *sqltypes.Result, more bool) error {
+	cb := auditResultCallback(audit, func(res *sqltypes.Result, more bool) error {
 		called = true
-		return wrapResultCallback(callback, modifiers...)(res, more)
+		return callback(res, more)
+	}, modifiers...)
+	rest, returnErr = h.Handler.ComMultiQuery(ctx, c, query, cb)
+	if returnErr != nil && !called && shouldIgnoreFailedView(query, isReplicaLoadingSnapshot()) {
+		logrus.WithError(returnErr).Warn("skipping CREATE VIEW during replica snapshot")
+		returnErr = cb(&sqltypes.Result{}, false)
 	}
-	rest, err := h.Handler.ComMultiQuery(ctx, c, query, cb)
-	if err != nil && !called && shouldIgnoreFailedView(query, isReplicaLoadingSnapshot()) {
-		logrus.WithError(err).Warn("skipping CREATE VIEW during replica snapshot")
-		return rest, callback(&sqltypes.Result{}, false)
-	}
-	return rest, err
+	return rest, returnErr
 }
 
 // Naive query rewriting. This is just a temporary solution
@@ -94,25 +109,50 @@ func (h *MyHandler) ComQuery(
 	c *mysql.Conn,
 	query string,
 	callback mysql.ResultSpoolFn,
-) error {
-	if err := h.rejectReadOnly(ctx, c, query); err != nil {
-		return err
+) (returnErr error) {
+	audit := NewQueryAudit(c, "mysql", query)
+	defer func() {
+		audit.Complete(returnErr)
+	}()
+
+	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
+		return returnErr
 	}
 
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
 
 	called := false
-	cb := func(res *sqltypes.Result, more bool) error {
+	cb := auditResultCallback(audit, func(res *sqltypes.Result, more bool) error {
 		called = true
-		return wrapResultCallback(callback, modifiers...)(res, more)
+		return callback(res, more)
+	}, modifiers...)
+	returnErr = h.Handler.ComQuery(ctx, c, query, cb)
+	if returnErr != nil && !called && shouldIgnoreFailedView(query, isReplicaLoadingSnapshot()) {
+		logrus.WithError(returnErr).Warn("skipping CREATE VIEW during replica snapshot")
+		returnErr = cb(&sqltypes.Result{}, false)
 	}
-	err := h.Handler.ComQuery(ctx, c, query, cb)
-	if err != nil && !called && shouldIgnoreFailedView(query, isReplicaLoadingSnapshot()) {
-		logrus.WithError(err).Warn("skipping CREATE VIEW during replica snapshot")
-		return callback(&sqltypes.Result{}, false)
+	return returnErr
+}
+
+func (h *MyHandler) ComStmtExecute(ctx context.Context, c *mysql.Conn, prepare *mysql.PrepareData, callback func(*sqltypes.Result) error) (returnErr error) {
+	query := ""
+	if prepare != nil {
+		query = prepare.PrepareStmt
 	}
-	return err
+	audit := NewQueryAudit(c, "mysql", query)
+	defer func() {
+		audit.Complete(returnErr)
+	}()
+
+	returnErr = h.Handler.ComStmtExecute(ctx, c, prepare, func(res *sqltypes.Result) error {
+		if err := callback(res); err != nil {
+			return err
+		}
+		audit.AddRows(len(res.Rows))
+		return nil
+	})
+	return returnErr
 }
 
 func (h *MyHandler) ComPrepare(ctx context.Context, c *mysql.Conn, query string, prepare *mysql.PrepareData) ([]*querypb.Field, error) {
@@ -136,18 +176,28 @@ func (h *MyHandler) ComBind(ctx context.Context, c *mysql.Conn, query string, pa
 	return h.Handler.ComBind(ctx, c, query, parsedQuery, prepare)
 }
 
-func (h *MyHandler) ComExecuteBound(ctx context.Context, c *mysql.Conn, query string, boundQuery mysql.BoundQuery, callback mysql.ResultSpoolFn) error {
-	if err := h.rejectReadOnly(ctx, c, query); err != nil {
-		return err
+func (h *MyHandler) ComExecuteBound(ctx context.Context, c *mysql.Conn, query string, boundQuery mysql.BoundQuery, callback mysql.ResultSpoolFn) (returnErr error) {
+	audit := NewQueryAudit(c, "mysql", query)
+	defer func() {
+		audit.Complete(returnErr)
+	}()
+	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
+		return returnErr
 	}
-	return h.Handler.ComExecuteBound(ctx, c, query, boundQuery, callback)
+	returnErr = h.Handler.ComExecuteBound(ctx, c, query, boundQuery, auditResultCallback(audit, callback))
+	return returnErr
 }
 
-func (h *MyHandler) ComParsedQuery(ctx context.Context, c *mysql.Conn, query string, parsed sqlparser.Statement, callback mysql.ResultSpoolFn) error {
-	if err := h.rejectReadOnly(ctx, c, query); err != nil {
-		return err
+func (h *MyHandler) ComParsedQuery(ctx context.Context, c *mysql.Conn, query string, parsed sqlparser.Statement, callback mysql.ResultSpoolFn) (returnErr error) {
+	audit := NewQueryAudit(c, "mysql", query)
+	defer func() {
+		audit.Complete(returnErr)
+	}()
+	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
+		return returnErr
 	}
-	return h.Handler.ComParsedQuery(ctx, c, query, parsed, callback)
+	returnErr = h.Handler.ComParsedQuery(ctx, c, query, parsed, auditResultCallback(audit, callback))
+	return returnErr
 }
 
 func (h *MyHandler) rejectReadOnly(ctx context.Context, c *mysql.Conn, query string) error {
