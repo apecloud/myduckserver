@@ -2,18 +2,20 @@ package catalog
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	stdsql "database/sql"
 
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/duckdb/duckdb-go/v2"
+	"github.com/sirupsen/logrus"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/configuration"
@@ -38,8 +40,6 @@ var _ sql.DatabaseProvider = (*DatabaseProvider)(nil)
 var _ sql.MutableDatabaseProvider = (*DatabaseProvider)(nil)
 var _ sql.ExternalStoredProcedureProvider = (*DatabaseProvider)(nil)
 var _ configuration.DataDirProvider = (*DatabaseProvider)(nil)
-
-const readOnlySuffix = "?access_mode=read_only"
 
 func NewInMemoryDBProvider() *DatabaseProvider {
 	prov, err := NewDBProvider("", ".", "")
@@ -67,12 +67,9 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 		prov.dsn = filepath.Join(prov.dataDir, prov.dbFile)
 	}
 
-	prov.connector, err = duckdb.NewConnector(prov.dsn, nil)
-	if err != nil {
+	if err = prov.openStorage(false); err != nil {
 		return nil, err
 	}
-	prov.storage = stdsql.OpenDB(prov.connector)
-	prov.pool = NewConnectionPool(prov.connector, prov.storage)
 
 	bootQueries := []string{
 		"INSTALL icu",
@@ -101,6 +98,77 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 
 	prov.ready = true
 	return prov, nil
+}
+
+func (prov *DatabaseProvider) openStorage(readOnly bool) error {
+	connectorDSN := prov.dsn
+	if readOnly && prov.dsn == "" {
+		connectorDSN = "?access_mode=read_only"
+	}
+	var attached atomic.Bool
+	var connInitFn func(driver.ExecerContext) error
+	if prov.dsn != "" {
+		// WAL replay for an attached database runs after DuckDB has initialized
+		// its default database. This avoids replay binding against an unset
+		// default database while keeping the configured catalog as the session
+		// default for every connection.
+		connectorDSN = ""
+		connInitFn = func(execer driver.ExecerContext) error {
+			if !attached.Load() {
+				return nil
+			}
+			_, err := execer.ExecContext(context.Background(), "USE "+QuoteIdentifierANSI(prov.defaultCatalogName), nil)
+			return err
+		}
+	}
+
+	connector, err := duckdb.NewConnector(connectorDSN, connInitFn)
+	if err != nil {
+		return err
+	}
+	storage := stdsql.OpenDB(connector)
+	if prov.pool == nil {
+		prov.pool = NewConnectionPool(connector, storage)
+	} else if err := prov.pool.Reset(connector, storage); err != nil {
+		_ = storage.Close()
+		_ = connector.Close()
+		return err
+	}
+	prov.connector = connector
+	prov.storage = storage
+
+	if prov.dsn == "" {
+		return nil
+	}
+
+	ctx := context.Background()
+	conn, err := storage.Conn(ctx)
+	if err != nil {
+		_ = storage.Close()
+		_ = connector.Close()
+		return err
+	}
+	defer conn.Close()
+
+	// Generated expressions may reference MyDuck UDFs. Register them before
+	// ATTACH triggers WAL replay so the expression binder can resolve them.
+	if err := prov.pool.registerMySQLUDFs(conn); err != nil {
+		_ = storage.Close()
+		_ = connector.Close()
+		return err
+	}
+
+	attachSQL := "ATTACH '" + strings.ReplaceAll(prov.dsn, "'", "''") + "' AS " + QuoteIdentifierANSI(prov.defaultCatalogName)
+	if readOnly {
+		attachSQL += " (READ_ONLY)"
+	}
+	if _, err := conn.ExecContext(ctx, attachSQL+"; USE "+QuoteIdentifierANSI(prov.defaultCatalogName)); err != nil {
+		_ = storage.Close()
+		_ = connector.Close()
+		return err
+	}
+	attached.Store(true)
+	return nil
 }
 
 func (prov *DatabaseProvider) initCatalog() error {
@@ -523,18 +591,5 @@ func (prov *DatabaseProvider) Restart(readOnly bool) error {
 		return err
 	}
 
-	dsn := prov.dsn
-	if readOnly {
-		dsn += readOnlySuffix
-	}
-
-	connector, err := duckdb.NewConnector(dsn, nil)
-	if err != nil {
-		return err
-	}
-	storage := stdsql.OpenDB(connector)
-	prov.connector = connector
-	prov.storage = storage
-
-	return prov.pool.Reset(connector, storage)
+	return prov.openStorage(readOnly)
 }
