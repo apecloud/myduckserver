@@ -26,11 +26,11 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/charset"
 	"github.com/apecloud/myduckserver/pgtypes"
+	"github.com/cockroachdb/apd/v3"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/shopspring/decimal"
 )
 
 var _ sql.RowIter = (*SQLRowIter)(nil)
@@ -195,11 +195,34 @@ func (iter *SQLRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 
 	// Process decimal values
 	for _, idx := range iter.decimals {
+		var decimalValue *apd.Decimal
 		switch v := iter.buffer[idx].(type) {
 		case duckdb.Decimal:
-			iter.buffer[idx] = decimal.NewFromBigInt(v.Value, -int32(v.Scale))
+			coeff := new(apd.BigInt).SetMathBigInt(v.Value)
+			decimalValue = apd.NewWithBigInt(coeff, -int32(v.Scale))
 		case string:
-			iter.buffer[idx], _ = decimal.NewFromString(v)
+			var err error
+			decimalValue, _, err = apd.NewFromString(v)
+			if err != nil {
+				return nil, fmt.Errorf("convert decimal column %d: %w", idx, err)
+			}
+		case *apd.Decimal:
+			decimalValue = v
+		default:
+			continue
+		}
+
+		// DuckDB reports CEIL/FLOOR over decimals as DECIMAL even though GMS
+		// declares the selected result as an integer. Convert through the
+		// selected schema type so signedness and bounds remain authoritative.
+		if idx < len(iter.schema) && types.IsInteger(iter.schema[idx].Type) {
+			converted, err := convertDecimalToInteger(ctx, iter.schema[idx].Type, decimalValue)
+			if err != nil {
+				return nil, fmt.Errorf("convert decimal column %d to %s: %w", idx, iter.schema[idx].Type, err)
+			}
+			iter.buffer[idx] = converted
+		} else {
+			iter.buffer[idx] = decimalValue
 		}
 	}
 
@@ -218,7 +241,7 @@ func (iter *SQLRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 		if iter.buffer[idx] == nil {
 			continue
 		}
-		converted, _, err := types.JSON.Convert(iter.buffer[idx])
+		converted, _, err := types.JSON.Convert(ctx, iter.buffer[idx])
 		if err != nil {
 			return nil, err
 		}
@@ -266,6 +289,23 @@ func (iter *SQLRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 	}
 
 	return sql.NewRow(iter.buffer[:width]...), nil
+}
+
+func convertDecimalToInteger(ctx *sql.Context, target sql.Type, value *apd.Decimal) (any, error) {
+	reduced := new(apd.Decimal)
+	reduced.Reduce(value)
+	if reduced.Exponent < 0 {
+		return nil, fmt.Errorf("decimal %s is not an integer", value)
+	}
+
+	converted, inRange, err := target.Convert(ctx, value)
+	if err != nil {
+		return nil, err
+	}
+	if inRange != sql.InRange {
+		return nil, fmt.Errorf("decimal %s is out of range", value)
+	}
+	return converted, nil
 }
 
 // QueryForJSONScan casts JSON result columns to VARCHAR before the DuckDB Go

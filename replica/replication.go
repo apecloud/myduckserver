@@ -20,10 +20,9 @@ import (
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/sirupsen/logrus"
-	"vitess.io/vitess/go/mysql"
 
-	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/binlogreplication"
@@ -51,24 +50,10 @@ func RegisterReplicaController(provider *catalog.DatabaseProvider, engine *sqle.
 
 	replica.SetTableWriterProvider(twp)
 	builder.FlushDeltaBuffer = func(ctx *sql.Context) error {
-		conn, err := adapter.GetCatalogConn(ctx)
-		if err != nil {
-			return err
+		if mycontext.IsReplicationQuery(ctx.Context) {
+			return nil
 		}
-		existed := adapter.TryGetTxn(ctx) != nil
-		tx, err := adapter.GetCatalogTxn(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if err := twp.FlushDeltaBuffer(ctx, conn, tx, delta.QueryFlushReason); err != nil {
-			return err
-		}
-		// If this query opened the txn just to flush, commit so the following
-		// SELECT can see the replicated rows.
-		if !existed {
-			return adapter.CommitAndCloseTxn(ctx)
-		}
-		return nil
+		return replica.RequestQueryFlush(ctx.Context)
 	}
 
 	engine.Analyzer.Catalog.BinlogReplicaController = binlogreplication.MyBinlogReplicaController

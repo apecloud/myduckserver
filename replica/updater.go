@@ -9,8 +9,8 @@ import (
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/binlogreplication"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/sirupsen/logrus"
-	"vitess.io/vitess/go/mysql"
 )
 
 var ErrPartialPrimaryKeyUpdate = errors.New("primary key columns are (partially) updated but are not fully specified in the binlog")
@@ -330,7 +330,7 @@ func (tu *tableUpdater) doInsertThenDelete(ctx *sql.Context, beforeRows []sql.Ro
 		for j, idx := range tu.pkIndicesInData {
 			afterKey[j] = after[idx]
 		}
-		if yes, err := beforeKey.Equals(afterKey, tu.pkSubSchema); err != nil {
+		if yes, err := beforeKey.Equals(ctx, afterKey, tu.pkSubSchema); err != nil {
 			return err
 		} else if yes {
 			// the row has already been deleted by the INSERT OR REPLACE statement

@@ -17,7 +17,7 @@ func (c PSCurrentThreadID) IsNonDeterministic() bool {
 var _ sql.FunctionExpression = PSCurrentThreadID{}
 var _ sql.CollationCoercible = PSCurrentThreadID{}
 
-func NewPSCurrentThreadID() sql.Expression {
+func NewPSCurrentThreadID(_ *sql.Context) sql.Expression {
 	return PSCurrentThreadID{
 		NoArgFunc: function.NoArgFunc{Name: "ps_current_thread_id", SQLType: types.Uint64},
 	}
@@ -45,6 +45,6 @@ func (c PSCurrentThreadID) Eval(ctx *sql.Context, row sql.Row) (interface{}, err
 }
 
 // WithChildren implements sql.Expression
-func (c PSCurrentThreadID) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (c PSCurrentThreadID) WithChildren(_ *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	return function.NoArgFuncWithChildren(c, children)
 }

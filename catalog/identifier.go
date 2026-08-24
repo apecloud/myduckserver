@@ -57,7 +57,7 @@ func DecodeCreateindex(createIndexSQL string) ([]string, error) {
 	switch stmt := stmt.(type) {
 	case *sqlparser.AlterTable:
 		var columnNames []string
-		for _, column := range stmt.Statements[0].IndexSpec.Columns {
+		for _, column := range stmt.Statements[0].IndexSpec.Fields {
 			columnNames = append(columnNames, column.Column.String())
 		}
 		return columnNames, nil

@@ -29,11 +29,11 @@ import (
 	"github.com/apecloud/myduckserver/charset"
 	"github.com/cockroachdb/apd/v3"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/sqltypes"
+	querypb "github.com/dolthub/vitess/go/vt/proto/query"
+	"github.com/dolthub/vitess/go/vt/proto/vtrpc"
+	"github.com/dolthub/vitess/go/vt/vterrors"
 	vtbinlog "vitess.io/vitess/go/mysql/binlog"
-	"vitess.io/vitess/go/sqltypes"
-	querypb "vitess.io/vitess/go/vt/proto/query"
-	"vitess.io/vitess/go/vt/proto/vtrpc"
-	"vitess.io/vitess/go/vt/vterrors"
 )
 
 // ZeroTimestamp is the special value 0 for a timestamp.

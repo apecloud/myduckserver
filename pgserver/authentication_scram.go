@@ -47,6 +47,9 @@ func InitSuperuser(password string) {
 
 	var err error
 	postgres := auth.CreateDefaultRole("postgres")
+	postgres.IsSuperUser = true
+	postgres.CanCreateRoles = true
+	postgres.CanCreateDB = true
 	postgres.CanLogin = true
 	postgres.Password, err = auth.NewScramSha256Password(password)
 	if err != nil {
@@ -56,9 +59,7 @@ func InitSuperuser(password string) {
 
 	// Postgres does not allow empty passwords,
 	// so we disable authentication if the superuser password is empty.
-	if password == "" {
-		EnableAuthentication = false
-	}
+	EnableAuthentication = password != ""
 }
 
 // SASLBindingFlag are the flags for gs2-cbind-flag, used in SASL authentication.

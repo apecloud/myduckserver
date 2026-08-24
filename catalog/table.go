@@ -12,8 +12,8 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/dolthub/go-mysql-server/sql/types"
-	"github.com/google/uuid"
 	"github.com/duckdb/duckdb-go/v2"
+	"github.com/google/uuid"
 )
 
 type Table struct {
@@ -60,6 +60,7 @@ var _ sql.DeletableTable = (*Table)(nil)
 var _ sql.TruncateableTable = (*Table)(nil)
 var _ sql.ReplaceableTable = (*Table)(nil)
 var _ sql.CommentedTable = (*Table)(nil)
+var _ sql.CommentAlterableTable = (*Table)(nil)
 var _ sql.AutoIncrementTable = (*Table)(nil)
 var _ sql.CheckTable = (*Table)(nil)
 var _ sql.CheckAlterableTable = (*Table)(nil)
@@ -127,7 +128,7 @@ func (t *Table) Partitions(ctx *sql.Context) (sql.PartitionIter, error) {
 }
 
 // Schema implements sql.Table.
-func (t *Table) Schema() sql.Schema {
+func (t *Table) Schema(_ *sql.Context) sql.Schema {
 	return t.schema.Schema
 }
 
@@ -196,13 +197,30 @@ func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) (sql.P
 			extra = "auto_increment"
 		}
 
+		nullable := columnInfo.IsNullable
+		if decodedComment.Meta.Nullable != nil {
+			nullable = *decodedComment.Meta.Nullable
+		}
+
+		var generated *sql.ColumnDefaultValue
+		if decodedComment.Meta.Generated != "" {
+			generated = sql.NewUnresolvedColumnDefaultValue(decodedComment.Meta.Generated)
+			if decodedComment.Meta.Virtual {
+				extra = "VIRTUAL GENERATED"
+			} else {
+				extra = "STORED GENERATED"
+			}
+		}
+
 		column := &sql.Column{
 			Name:           columnInfo.ColumnName,
 			Type:           columnInfo.DataType,
-			Nullable:       columnInfo.IsNullable,
+			Nullable:       nullable,
 			Source:         tableName,
 			DatabaseSource: dbName,
 			Default:        defaultValue,
+			Generated:      generated,
+			Virtual:        decodedComment.Meta.Virtual,
 			AutoIncrement:  decodedComment.Meta.AutoIncrement,
 			Comment:        decodedComment.Text,
 			Extra:          extra,
@@ -230,7 +248,7 @@ func (t *Table) String() string {
 }
 
 // PrimaryKeySchema implements sql.PrimaryKeyTable.
-func (t *Table) PrimaryKeySchema() sql.PrimaryKeySchema {
+func (t *Table) PrimaryKeySchema(_ *sql.Context) sql.PrimaryKeySchema {
 	return t.schema
 }
 
@@ -534,17 +552,16 @@ func (e *EmptyTableEditor) Close(*sql.Context) error {
 
 // DiscardChanges implements sql.RowUpdater.
 func (e *EmptyTableEditor) DiscardChanges(ctx *sql.Context, errorEncountered error) error {
-	panic("unimplemented")
+	return nil
 }
 
 // StatementBegin implements sql.RowUpdater.
 func (e *EmptyTableEditor) StatementBegin(ctx *sql.Context) {
-	panic("unimplemented")
 }
 
 // StatementComplete implements sql.RowUpdater.
 func (e *EmptyTableEditor) StatementComplete(ctx *sql.Context) error {
-	panic("unimplemented")
+	return nil
 }
 
 // Update implements sql.RowUpdater.
@@ -768,7 +785,7 @@ func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 }
 
 // IndexedAccess implements sql.IndexAddressableTable.
-func (t *Table) IndexedAccess(lookup sql.IndexLookup) sql.IndexedTable {
+func (t *Table) IndexedAccess(_ *sql.Context, lookup sql.IndexLookup) sql.IndexedTable {
 	return &IndexedTable{Table: t, Lookup: lookup}
 }
 
@@ -783,6 +800,20 @@ func (t *Table) Comment() string {
 	defer t.mu.RUnlock()
 
 	return t.comment.Text
+}
+
+// ModifyComment implements sql.CommentAlterableTable.
+func (t *Table) ModifyComment(ctx *sql.Context, text string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	comment := NewCommentWithMeta(text, t.comment.Meta)
+	_, err := adapter.Exec(ctx, `COMMENT ON TABLE `+FullTableName(t.db.catalog, t.db.name, t.name)+` IS '`+comment.Encode()+`'`)
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+	t.comment = comment
+	return nil
 }
 
 func queryColumns(ctx *sql.Context, catalogName, schemaName, tableName string) ([]*ColumnInfo, error) {

@@ -23,7 +23,7 @@ var _ DataLoader = (*ArrowDataLoader)(nil)
 
 func NewArrowDataLoader(ctx *sql.Context, handler *DuckHandler, schema string, table sql.InsertableTable, columns tree.NameList, options string) (DataLoader, error) {
 	// Create the FIFO pipe
-	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
+	duckBuilder := handler.e.Analyzer.ExecBuilder.PriorityBuilder.(*backend.DuckBuilder)
 	pipePath, err := duckBuilder.CreatePipe(ctx, "pg-from-arrow")
 	if err != nil {
 		return nil, err

@@ -7,13 +7,14 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/cockroachdb/apd/v3"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
-	"github.com/shopspring/decimal"
 )
 
 type ArrowAppender struct {
 	*array.RecordBuilder
+	schema sql.Schema
 }
 
 func NewArrowAppender(schema sql.Schema, dictionary ...int) (ArrowAppender, error) {
@@ -22,7 +23,7 @@ func NewArrowAppender(schema sql.Schema, dictionary ...int) (ArrowAppender, erro
 	if err != nil {
 		return ArrowAppender{}, err
 	}
-	return ArrowAppender{array.NewRecordBuilder(pool, arrowSchema)}, nil
+	return ArrowAppender{RecordBuilder: array.NewRecordBuilder(pool, arrowSchema), schema: schema}, nil
 }
 
 // Build creates a new arrow.Record from the memory buffers and resets the builder.
@@ -46,6 +47,16 @@ func (a *ArrowAppender) Append(row sql.Row) error {
 		if v == nil {
 			b.AppendNull()
 			continue
+		}
+		if vectorType, ok := a.schema[i].Type.(types.VectorType); ok {
+			encoded, ok := v.([]byte)
+			if !ok {
+				return fmt.Errorf("vector column %d has value of type %T", i, v)
+			}
+			expectedBytes := vectorType.Dimensions * 4
+			if len(encoded) != expectedBytes {
+				return fmt.Errorf("vector column %d dimension mismatch: expected %d bytes, got %d", i, expectedBytes, len(encoded))
+			}
 		}
 		switch b.Type().ID() {
 		case arrow.UINT8:
@@ -72,9 +83,14 @@ func (a *ArrowAppender) Append(row sql.Row) error {
 			b.(*array.StringBuilder).Append(v.(string))
 		case arrow.BINARY:
 			b.(*array.BinaryBuilder).Append(v.([]byte))
-		case arrow.DECIMAL:
-			dv := v.(decimal.Decimal)
-			b.AppendValueFromString(dv.String())
+		case arrow.DECIMAL128, arrow.DECIMAL256:
+			dv, ok := v.(*apd.Decimal)
+			if !ok || dv == nil {
+				return fmt.Errorf("decimal column %d has value of type %T", i, v)
+			}
+			if err := b.AppendValueFromString(dv.String()); err != nil {
+				return fmt.Errorf("append decimal column %d: %w", i, err)
+			}
 		case arrow.TIMESTAMP:
 			tv := v.(time.Time)
 			at, err := arrow.TimestampFromTime(tv, b.Type().(*arrow.TimestampType).Unit)

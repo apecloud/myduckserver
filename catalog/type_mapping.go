@@ -38,6 +38,9 @@ type MySQLType struct {
 	Collation     uint16   `json:",omitempty"` // For string types
 	Values        []string `json:",omitempty"` // For ENUM and SET
 	Default       string   `json:",omitempty"` // Default value of column
+	Generated     string   `json:",omitempty"` // Generated column expression
+	Virtual       bool     `json:",omitempty"`
+	Nullable      *bool    `json:",omitempty"` // Preserve constraints DuckDB cannot attach to generated columns.
 	AutoIncrement bool     `json:",omitempty"` // Auto increment flag
 }
 
@@ -124,6 +127,13 @@ func newSetType(typ sql.SetType) AnnotatedDuckType {
 	return AnnotatedDuckType{"VARCHAR", MySQLType{Name: "SET", Values: typ.Values(), Collation: uint16(typ.Collation())}}
 }
 
+func newVectorType(typ types.VectorType) AnnotatedDuckType {
+	return AnnotatedDuckType{
+		"BLOB",
+		MySQLType{Name: "VECTOR", Length: uint32(typ.Dimensions)},
+	}
+}
+
 const DuckDBDecimalTypeMaxPrecision = 38
 
 func DuckdbDataType(mysqlType sql.Type) (AnnotatedDuckType, error) {
@@ -159,7 +169,7 @@ func DuckdbDataType(mysqlType sql.Type) (AnnotatedDuckType, error) {
 	case sqltypes.Time:
 		// https://dev.mysql.com/doc/refman/8.4/en/time.html
 		// MySQL's TIME type can store a value within the range of '-838:59:59.000000' to '838:59:59.000000'.
-		return newSimpleType("INTERVAL", "TIME"), nil
+		return newPrecisionType("INTERVAL", "TIME", uint8(mysqlType.(types.TimeType).Precision())), nil
 	case sqltypes.Datetime:
 		return newDateTimeType("DATETIME", mysqlType.(sql.DatetimeType).Precision()), nil
 	case sqltypes.Year:
@@ -200,6 +210,8 @@ func DuckdbDataType(mysqlType sql.Type) (AnnotatedDuckType, error) {
 		return newEnumType(mysqlType.(types.EnumType)), nil
 	case sqltypes.Set:
 		return newSetType(mysqlType.(types.SetType)), nil
+	case sqltypes.Vector:
+		return newVectorType(mysqlType.(types.VectorType)), nil
 	case sqltypes.Geometry, sqltypes.Expression:
 		return newCommonType(""), fmt.Errorf("unsupported MySQL type: %s", mysqlType.String())
 	default:
@@ -277,7 +289,7 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 	case "DATE":
 		return types.Date, nil
 	case "INTERVAL", "TIME":
-		return types.Time, nil
+		return types.CreateTimeType(precision)
 
 	case "DECIMAL":
 		return types.CreateDecimalType(numericPrecision, numericScale)
@@ -312,7 +324,9 @@ func mysqlDataType(duckType AnnotatedDuckType, numericPrecision uint8, numericSc
 		return types.Text, nil
 
 	case "BLOB":
-		if mysqlName == "BLOB" {
+		if mysqlName == "VECTOR" {
+			return types.CreateVectorType(int(length))
+		} else if mysqlName == "BLOB" {
 			if length <= types.TinyTextBlobMax {
 				return types.TinyBlob, nil
 			} else if length <= types.TextBlobMax {

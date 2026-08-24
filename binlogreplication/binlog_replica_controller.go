@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"vitess.io/vitess/go/mysql/sqlerror"
 
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -208,6 +207,12 @@ func (d *myBinlogReplicaController) SetTableWriterProvider(provider TableWriterP
 	d.applier.tableWriterProvider = provider
 }
 
+// RequestQueryFlush asks the replication applier to commit completed batched
+// work before a foreground query reads it.
+func (d *myBinlogReplicaController) RequestQueryFlush(ctx context.Context) error {
+	return d.applier.RequestQueryFlush(ctx)
+}
+
 // StopReplica implements the BinlogReplicaController interface.
 func (d *myBinlogReplicaController) StopReplica(ctx *sql.Context) error {
 	if d.applier.IsRunning() == false {
@@ -241,6 +246,13 @@ func (d *myBinlogReplicaController) SetReplicationSourceOptions(ctx *sql.Context
 	if replicaSourceInfo == nil {
 		replicaSourceInfo = mysql_db.NewReplicaSourceInfo()
 	}
+
+	var sourceLogFile string
+	var sourceLogPos uint64
+	if position, loadErr := positionStore.Load(filePosFlavorID, ctx, d.engine); loadErr == nil {
+		sourceLogFile, sourceLogPos, _ = parseFilePosition(position)
+	}
+	sourcePositionChanged := false
 
 	for _, option := range options {
 		switch strings.ToUpper(option.Name) {
@@ -285,13 +297,15 @@ func (d *myBinlogReplicaController) SetReplicationSourceOptions(ctx *sql.Context
 			if err != nil {
 				return err
 			}
-			replicaSourceInfo.SourceLogFile = value
+			sourceLogFile = value
+			sourcePositionChanged = true
 		case "SOURCE_LOG_POS":
 			intValue, err := getOptionValueAsInt(option)
 			if err != nil {
 				return err
 			}
-			replicaSourceInfo.SourceLogPos = uint64(intValue)
+			sourceLogPos = uint64(intValue)
+			sourcePositionChanged = true
 		case "SOURCE_AUTO_POSITION":
 			intValue, err := getOptionValueAsInt(option)
 			if err != nil {
@@ -305,7 +319,18 @@ func (d *myBinlogReplicaController) SetReplicationSourceOptions(ctx *sql.Context
 		}
 	}
 
-	// Persist the updated replica source configuration to disk
+	// Upstream GMS no longer stores file positions in ReplicaSourceInfo. MyDuck's
+	// position store is the durable source of truth for file-based replication.
+	if sourcePositionChanged {
+		position, err := newFilePosition(sourceLogFile, sourceLogPos)
+		if err != nil {
+			return err
+		}
+		if err := positionStore.SaveConfiguration(ctx, position); err != nil {
+			return err
+		}
+	}
+
 	return persistReplicationConfiguration(ctx, replicaSourceInfo, d.engine.Analyzer.Catalog.MySQLDb)
 }
 
@@ -357,14 +382,6 @@ func (d *myBinlogReplicaController) SetReplicationFilterOptions(_ *sql.Context, 
 	return nil
 }
 
-func changeSourceLogFileToInvalidIfEmpty(status *binlogreplication.ReplicaStatus) {
-	// As the original design of go-mysql-server, the source log file should be "INVALID" if GTID_MODE is ON.
-	// An empty string of source log file means GTID_MODE is ON, and we should set it to "INVALID" here.
-	if status.SourceLogFile == "" {
-		status.SourceLogFile = "INVALID"
-	}
-}
-
 // GetReplicaStatus implements the BinlogReplicaController interface
 func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogreplication.ReplicaStatus, error) {
 	replicaSourceInfo, err := loadReplicationConfiguration(ctx, d.engine.Analyzer.Catalog.MySQLDb)
@@ -378,15 +395,12 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	var copy = d.status
 
 	if replicaSourceInfo == nil {
-		changeSourceLogFileToInvalidIfEmpty(&copy)
 		return &copy, nil
 	}
 
 	copy.SourceUser = replicaSourceInfo.User
 	copy.SourceHost = replicaSourceInfo.Host
 	copy.SourcePort = uint(replicaSourceInfo.Port)
-	copy.SourceLogFile = replicaSourceInfo.SourceLogFile
-	copy.SourceLogPos = replicaSourceInfo.SourceLogPos
 	copy.SourceServerUuid = replicaSourceInfo.Uuid
 	copy.ConnectRetry = replicaSourceInfo.ConnectRetryInterval
 	copy.SourceRetryCount = replicaSourceInfo.ConnectRetryCount
@@ -395,12 +409,18 @@ func (d *myBinlogReplicaController) GetReplicaStatus(ctx *sql.Context) (*binlogr
 	copy.ReplicateDoTables = d.filters.getDoTables()
 	copy.ReplicateIgnoreTables = d.filters.getIgnoreTables()
 
-	if !d.applier.currentPosition.IsZero() {
-		copy.ExecutedGtidSet = d.applier.currentPosition.GTIDSet.String()
+	position := d.applier.currentPosition
+	if position.IsZero() {
+		position, err = positionStore.LoadEncoded(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !position.IsZero() {
+		copy.ExecutedGtidSet = position.GTIDSet.String()
 		copy.RetrievedGtidSet = copy.ExecutedGtidSet
 	}
 
-	changeSourceLogFileToInvalidIfEmpty(&copy)
 	return &copy, nil
 }
 
@@ -428,6 +448,9 @@ func (d *myBinlogReplicaController) ResetReplica(ctx *sql.Context, resetAll bool
 		if err != nil {
 			return err
 		}
+		if err := positionStore.DeleteFilePosition(ctx, d.engine); err != nil {
+			return err
+		}
 
 		d.filters = newFilterConfiguration()
 	}
@@ -445,7 +468,7 @@ func (d *myBinlogReplicaController) updateStatus(f func(status *binlogreplicatio
 }
 
 // setIoError updates the current replication status with the specific |errno| and |message| to describe an IO error.
-func (d *myBinlogReplicaController) setIoError(errno sqlerror.ErrorCode, message string) {
+func (d *myBinlogReplicaController) setIoError(errno int, message string) {
 	d.statusMutex.Lock()
 	defer d.statusMutex.Unlock()
 
@@ -461,7 +484,7 @@ func (d *myBinlogReplicaController) setIoError(errno sqlerror.ErrorCode, message
 }
 
 // setSqlError updates the current replication status with the specific |errno| and |message| to describe an SQL error.
-func (d *myBinlogReplicaController) setSqlError(errno sqlerror.ErrorCode, message string) {
+func (d *myBinlogReplicaController) setSqlError(errno int, message string) {
 	d.statusMutex.Lock()
 	defer d.statusMutex.Unlock()
 

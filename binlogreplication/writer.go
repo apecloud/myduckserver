@@ -7,7 +7,7 @@ import (
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/delta"
 	"github.com/dolthub/go-mysql-server/sql"
-	"vitess.io/vitess/go/mysql"
+	"github.com/dolthub/vitess/go/mysql"
 )
 
 type TableWriter interface {

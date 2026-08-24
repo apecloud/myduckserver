@@ -17,6 +17,23 @@ var defaultRequestModifiers = []RequestModifier{
 	skipUnsupportedRoutineDDL,
 	unwrapCreateViewParens,
 	replaceMariaDBCollation,
+	exposeReplicaFilePosition,
+}
+
+// exposeReplicaFilePosition restores file/position columns that the selected
+// GMS row executor hardcodes for GTID-only replication.
+func exposeReplicaFilePosition(query string, modifiers *[]ResultModifier) string {
+	if modifiers == nil || !isShowReplicaStatus(query) {
+		return query
+	}
+	*modifiers = append(*modifiers, setReplicaFilePosition)
+	return query
+}
+
+func isShowReplicaStatus(query string) bool {
+	query = strings.TrimSpace(query)
+	query = strings.TrimSpace(strings.TrimSuffix(query, ";"))
+	return strings.EqualFold(query, "SHOW REPLICA STATUS")
 }
 
 // Newer MariaDB versions use utf8mb4_uca1400_ai_ci as the default collation,

@@ -69,7 +69,7 @@ func StartDuckSqlServer(t *testing.T, dir string, persistentSystemVars map[strin
 	}
 	fmt.Printf("Starting MyDuck on port: %d, PgPort: %d, with data dir %s\n", testEnv.DuckPort, testEnv.DuckPgPort, dir)
 
-	// take the CWD and move up four directories to find the go directory
+	// Resolve the repository root from the calling package directory.
 	if testEnv.OriginalWorkingDir == "" {
 		var err error
 		testEnv.OriginalWorkingDir, err = os.Getwd()
@@ -78,10 +78,6 @@ func StartDuckSqlServer(t *testing.T, dir string, persistentSystemVars map[strin
 		}
 	}
 	goDirPath := filepath.Join(testEnv.OriginalWorkingDir, "..")
-	err = os.Chdir(goDirPath)
-	if err != nil {
-		panic(err)
-	}
 
 	args := []string{"go", "run", ".",
 		fmt.Sprintf("--port=%v", testEnv.DuckPort),
@@ -99,6 +95,7 @@ func StartDuckSqlServer(t *testing.T, dir string, persistentSystemVars map[strin
 		args = args[2:]
 	}
 	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Dir = goDirPath
 
 	// Set a unique process group ID so that we can cleanly kill this process, as well as
 	// any spawned child processes later. Mac/Unix can set the "Setpgid" field directly, but

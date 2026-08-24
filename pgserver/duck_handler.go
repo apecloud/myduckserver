@@ -195,6 +195,15 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		fields []pgproto3.FieldDescription
 		rows   *stdsql.Rows
 	)
+	if insert, ok := postgresInsertReturningRows(parsed); ok {
+		schema, schemaErr := inferPostgresInsertReturningSchema(sqlCtx, insert)
+		if schemaErr != nil {
+			defer stmt.Close()
+			return nil, nil, nil, schemaErr
+		}
+		fields = schemaToFieldDescriptions(sqlCtx, schema, nil, ExtendedQueryMode)
+		return stmt, paramOIDs, fields, nil
+	}
 	switch stmtType {
 	case duckdb.STATEMENT_TYPE_SELECT,
 		duckdb.STATEMENT_TYPE_RELATION,
@@ -273,7 +282,7 @@ func (h *DuckHandler) ComResetConnection(c *mysql.Conn) error {
 	if err != nil {
 		return err
 	}
-	return h.sm.SetDB(c, db)
+	return h.sm.SetDB(context.Background(), c, db)
 }
 
 // ConnectionClosed implements the Handler interface.
@@ -297,7 +306,7 @@ func (h *DuckHandler) NewConnection(c *mysql.Conn) {
 
 // NewContext implements the Handler interface.
 func (h *DuckHandler) NewContext(ctx context.Context, c *mysql.Conn, query string) (*sql.Context, error) {
-	return h.sm.NewContext(ctx, c, query)
+	return h.sm.NewContextWithQuery(ctx, c, query)
 }
 
 func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (string, error) {
@@ -453,10 +462,10 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 
 	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
 	//   Consequently, the following classification is not perfect.
-	switch parsed.(type) {
+	switch parsed := parsed.(type) {
 	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
 		*tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
-		*tree.Insert, *tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo, *tree.SetVar:
+		*tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo, *tree.SetVar:
 		result, err = adapter.Exec(ctx, query)
 		if err != nil {
 			break
@@ -468,15 +477,42 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			RowsAffected: uint64(affected),
 			InsertID:     uint64(insertId),
 		}))
+	case *tree.Insert:
+		if _, ok := postgresInsertReturningRows(parsed); ok {
+			rows, err = adapter.QueryCatalog(ctx, query)
+			if err != nil {
+				break
+			}
+			schema, err = pgtypes.InferSchema(rows)
+			if err != nil {
+				rows.Close()
+				break
+			}
+			iter, err = backend.NewSQLRowIter(rows, schema)
+			if err != nil {
+				rows.Close()
+			}
+			break
+		}
+		result, err = adapter.Exec(ctx, query)
+		if err != nil {
+			break
+		}
+		affected, _ := result.RowsAffected()
+		insertID, _ := result.LastInsertId()
+		schema = types.OkResultSchema
+		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{
+			RowsAffected: uint64(affected),
+			InsertID:     uint64(insertID),
+		}))
 	case *tree.CreateDatabase:
 		provider := h.GetCatalogProvider()
 		if provider == nil {
 			err = fmt.Errorf("database provider not found")
 			break
 		}
-		p := parsed.(*tree.CreateDatabase)
-		dbName := p.Name.String()
-		err = provider.CreateCatalog(dbName, p.IfNotExists)
+		dbName := parsed.Name.String()
+		err = provider.CreateCatalog(dbName, parsed.IfNotExists)
 		if err != nil {
 			break
 		}
@@ -488,9 +524,8 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			err = fmt.Errorf("database provider not found")
 			break
 		}
-		p := parsed.(*tree.DropDatabase)
-		dbName := parsed.(*tree.DropDatabase).Name.String()
-		err = provider.DropCatalog(dbName, p.IfExists)
+		dbName := parsed.Name.String()
+		err = provider.DropCatalog(dbName, parsed.IfExists)
 		if err != nil {
 			break
 		}
@@ -566,7 +601,7 @@ func queryCatalogWithJSONScan(ctx *sql.Context, query string, vars ...any) (*std
 
 // executeBoundPlan is a QueryExecutor that calls QueryWithBindings on the given engine using the given query and parsed
 // statement, which may be nil.
-func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.Statement, stmt *duckdb.Stmt, vars []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
+func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
 	// return h.e.PrepQueryPlanForExecution(ctx, query, plan, nil)
 
 	// TODO(fan): Currently, the result of executing the bound query is occasionally incorrect.
@@ -631,6 +666,19 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 		rows   *stdsql.Rows
 		result stdsql.Result
 	)
+	if _, ok := postgresInsertReturningRows(parsed); ok {
+		rows, err = adapter.QueryCatalog(ctx, query, vars...)
+		if err == nil {
+			schema, err = pgtypes.InferSchema(rows)
+		}
+		if err == nil {
+			iter, err = NewSqlRowIter(rows, schema)
+		}
+		if err != nil && rows != nil {
+			rows.Close()
+		}
+		return schema, iter, nil, err
+	}
 
 	switch stmtType {
 	case duckdb.STATEMENT_TYPE_SELECT,
@@ -679,6 +727,27 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, _ tree.St
 	}
 
 	return schema, iter, nil, nil
+}
+
+func postgresInsertReturningRows(stmt tree.Statement) (*tree.Insert, bool) {
+	insert, ok := stmt.(*tree.Insert)
+	if !ok {
+		return nil, false
+	}
+	_, ok = insert.Returning.(*tree.ReturningExprs)
+	return insert, ok
+}
+
+func inferPostgresInsertReturningSchema(ctx *sql.Context, insert *tree.Insert) (sql.Schema, error) {
+	returning := insert.Returning.(*tree.ReturningExprs)
+	query := "SELECT " + tree.AsString((*tree.SelectExprs)(returning)) +
+		" FROM " + tree.AsString(insert.Table) + " LIMIT 0"
+	rows, err := adapter.QueryCatalog(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgtypes.InferSchema(rows)
 }
 
 // maybeReleaseAllLocks makes a best effort attempt to release all locks on the given connection. If the attempt fails,

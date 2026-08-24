@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dolthub/vitess/go/sqltypes"
+	querypb "github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/stretchr/testify/require"
 )
 
@@ -118,6 +120,52 @@ func TestApplyRequestModifiersIssue329(t *testing.T) {
 	)
 	require.Contains(t, view, "VIEW log_report_count AS SELECT 1 WHERE 1 > 0")
 	require.NotContains(t, view, "AS (")
+}
+
+func TestExposeReplicaFilePosition(t *testing.T) {
+	query, modifiers := applyRequestModifiers(" SHOW REPLICA STATUS; ", defaultRequestModifiers)
+	require.Equal(t, " SHOW REPLICA STATUS; ", query)
+	require.Len(t, modifiers, 1)
+
+	result := &sqltypes.Result{
+		Fields: []*querypb.Field{
+			{Name: "Source_Log_File", Type: querypb.Type_VARCHAR},
+			{Name: "Read_Source_Log_Pos", Type: querypb.Type_VARCHAR},
+			{Name: "Executed_Gtid_Set", Type: querypb.Type_VARCHAR},
+		},
+		Rows: [][]sqltypes.Value{{
+			sqltypes.NewVarChar("INVALID"),
+			sqltypes.NewVarChar("0"),
+			sqltypes.NewVarChar("mysql-bin.000042:987654"),
+		}},
+	}
+
+	modified := modifiers[0](result)
+	require.Equal(t, "mysql-bin.000042", modified.Rows[0][0].ToString())
+	require.Equal(t, "987654", modified.Rows[0][1].ToString())
+}
+
+func TestExposeReplicaFilePositionLeavesGTIDStatus(t *testing.T) {
+	_, modifiers := applyRequestModifiers("SHOW REPLICA STATUS", defaultRequestModifiers)
+	require.Len(t, modifiers, 1)
+
+	gtid := "24bc7850-2c16-11e6-a073-0242ac110002:1-42"
+	result := &sqltypes.Result{
+		Fields: []*querypb.Field{
+			{Name: "Source_Log_File", Type: querypb.Type_VARCHAR},
+			{Name: "Read_Source_Log_Pos", Type: querypb.Type_VARCHAR},
+			{Name: "Executed_Gtid_Set", Type: querypb.Type_VARCHAR},
+		},
+		Rows: [][]sqltypes.Value{{
+			sqltypes.NewVarChar("INVALID"),
+			sqltypes.NewVarChar("0"),
+			sqltypes.NewVarChar(gtid),
+		}},
+	}
+
+	modified := modifiers[0](result)
+	require.Equal(t, "INVALID", modified.Rows[0][0].ToString())
+	require.Equal(t, "0", modified.Rows[0][1].ToString())
 }
 
 func TestIsWriteQueryText(t *testing.T) {

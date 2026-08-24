@@ -106,20 +106,25 @@ func (prov *DatabaseProvider) openStorage(readOnly bool) error {
 		connectorDSN = "?access_mode=read_only"
 	}
 	var attached atomic.Bool
-	var connInitFn func(driver.ExecerContext) error
+	connInitFn := func(execer driver.ExecerContext) error {
+		if prov.defaultTimeZone != "" {
+			timeZone := strings.ReplaceAll(prov.defaultTimeZone, "'", "''")
+			if _, err := execer.ExecContext(context.Background(), "SET TimeZone = '"+timeZone+"'", nil); err != nil {
+				return err
+			}
+		}
+		if prov.dsn != "" && attached.Load() {
+			_, err := execer.ExecContext(context.Background(), "USE "+QuoteIdentifierANSI(prov.defaultCatalogName), nil)
+			return err
+		}
+		return nil
+	}
 	if prov.dsn != "" {
 		// WAL replay for an attached database runs after DuckDB has initialized
 		// its default database. This avoids replay binding against an unset
 		// default database while keeping the configured catalog as the session
 		// default for every connection.
 		connectorDSN = ""
-		connInitFn = func(execer driver.ExecerContext) error {
-			if !attached.Load() {
-				return nil
-			}
-			_, err := execer.ExecContext(context.Background(), "USE "+QuoteIdentifierANSI(prov.defaultCatalogName), nil)
-			return err
-		}
 	}
 
 	connector, err := duckdb.NewConnector(connectorDSN, connInitFn)
@@ -128,7 +133,7 @@ func (prov *DatabaseProvider) openStorage(readOnly bool) error {
 	}
 	storage := stdsql.OpenDB(connector)
 	if prov.pool == nil {
-		prov.pool = NewConnectionPool(connector, storage)
+		prov.pool = NewConnectionPool(connector, storage, prov.defaultCatalogName)
 	} else if err := prov.pool.Reset(connector, storage); err != nil {
 		_ = storage.Close()
 		_ = connector.Close()
@@ -286,13 +291,6 @@ func (prov *DatabaseProvider) initCatalog() error {
 
 	if _, err := prov.pool.ExecContext(context.Background(), "PRAGMA enable_checkpoint_on_shutdown"); err != nil {
 		logrus.WithError(err).Fatalln("Failed to enable checkpoint on shutdown")
-	}
-
-	if prov.defaultTimeZone != "" {
-		_, err := prov.pool.ExecContext(context.Background(), fmt.Sprintf(`SET TimeZone = '%s'`, prov.defaultTimeZone))
-		if err != nil {
-			logrus.WithError(err).Fatalln("Failed to set the default time zone")
-		}
 	}
 
 	// Postgres tables are created in the `public` schema by default.
