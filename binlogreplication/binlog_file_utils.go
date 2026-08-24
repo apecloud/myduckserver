@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"vitess.io/vitess/go/mysql"
+	"github.com/dolthub/vitess/go/mysql"
 )
 
 // binlogFileMagicNumber holds the four bytes that start off every

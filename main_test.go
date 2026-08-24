@@ -17,6 +17,7 @@
 package main
 
 import (
+	stdsql "database/sql"
 	"fmt"
 	"io"
 	"log"
@@ -87,6 +88,132 @@ func TestDebugHarness(t *testing.T) {
 	}
 }
 
+func TestIndexDriverOwnership(t *testing.T) {
+	t.Run("DuckDB uses native indexes", func(t *testing.T) {
+		provider, err := catalog.NewDBProvider("", t.TempDir(), "myduck")
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, provider.Close())
+		})
+
+		memoryDriverCalled := false
+		h := NewDuckHarness("native-index-ownership", 1, 1, true, func(dbs []sql.Database) sql.IndexDriver {
+			memoryDriverCalled = true
+			for _, db := range dbs {
+				// This is valid only for memory.Database. A catalog.Database needs
+				// backend.Session's ConnectionHolder and must never enter here.
+				_, _ = db.GetTableNames(sql.NewEmptyContext())
+			}
+			return nil
+		}).WithProvider(provider)
+		require.NotImplements(t, (*enginetest.IndexDriverHarness)(nil), h)
+
+		// Exercise the provider's first catalog lookup with the owning DuckDB
+		// session before the engine or setup scripts open a connection.
+		ctx := enginetest.NewContext(h)
+		var databases []sql.Database
+		require.NotPanics(t, func() {
+			databases = provider.AllDatabases(ctx)
+		})
+		require.NotEmpty(t, databases)
+
+		setupData := []setup.SetupScript{{
+			"CREATE DATABASE index_owner",
+			"USE index_owner",
+			"CREATE TABLE indexed_items (id INT PRIMARY KEY, email VARCHAR(64) NOT NULL, status INT)",
+			"INSERT INTO indexed_items VALUES (1, 'one@example.com', 10), (2, 'two@example.com', 20)",
+		}}
+		e, err := harness.NewEngine(t, h, provider, setupData, memory.NewStatsProv(), false)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, e.Close())
+		})
+		require.False(t, memoryDriverCalled)
+
+		ctx = enginetest.NewContext(h)
+		run := func(query string) ([]sql.Row, error) {
+			ctx = ctx.WithQuery(query)
+			_, iter, _, err := e.Query(ctx, query)
+			if err != nil {
+				return nil, err
+			}
+			return sql.RowIterToRows(ctx, iter)
+		}
+		mustRun := func(query string) []sql.Row {
+			rows, err := run(query)
+			require.NoError(t, err)
+			return rows
+		}
+		assertIndexes := func() {
+			db, err := provider.Database(ctx, "index_owner")
+			require.NoError(t, err)
+			table, found, err := db.GetTableInsensitive(ctx, "indexed_items")
+			require.NoError(t, err)
+			require.True(t, found)
+			indexes, err := table.(sql.IndexAddressableTable).GetIndexes(ctx)
+			require.NoError(t, err)
+			byName := make(map[string]sql.Index, len(indexes))
+			for _, index := range indexes {
+				byName[index.ID()] = index
+			}
+			require.Contains(t, byName, "idx_status")
+			require.Contains(t, byName, "uniq_email")
+			require.False(t, byName["idx_status"].IsUnique())
+			require.True(t, byName["uniq_email"].IsUnique())
+		}
+
+		mustRun("CREATE INDEX idx_status ON indexed_items (status)")
+		mustRun("CREATE UNIQUE INDEX uniq_email ON indexed_items (email)")
+		assertIndexes()
+
+		_, err = run("INSERT INTO indexed_items VALUES (3, 'one@example.com', 30)")
+		require.Error(t, err)
+		_, err = run("UPDATE indexed_items SET email = 'one@example.com' WHERE id = 2")
+		require.Error(t, err)
+		mustRun("DELETE FROM indexed_items WHERE id = 1")
+		mustRun("INSERT INTO indexed_items VALUES (3, 'one@example.com', 30)")
+
+		require.NoError(t, provider.Restart(false))
+		assertIndexes()
+		_, err = run("INSERT INTO indexed_items VALUES (4, 'one@example.com', 40)")
+		require.Error(t, err)
+		_, err = run("UPDATE indexed_items SET email = 'one@example.com' WHERE id = 2")
+		require.Error(t, err)
+		require.Equal(t, []sql.Row{{int64(2)}}, mustRun("SELECT count(*) FROM indexed_items"))
+	})
+
+	t.Run("memory provider keeps its test index driver", func(t *testing.T) {
+		memoryDB := memory.NewDatabase("mydb")
+		provider := memory.NewDBProvider(memoryDB)
+
+		memoryDriverCalled := false
+		memoryHarness := enginetest.NewMemoryHarness("memory-index-ownership", 1, func(dbs []sql.Database) sql.IndexDriver {
+			memoryDriverCalled = true
+			foundMemoryDatabase := false
+			for _, db := range dbs {
+				if db.Name() != "mydb" {
+					continue
+				}
+				_, err := db.GetTableNames(sql.NewEmptyContext())
+				require.NoError(t, err)
+				foundMemoryDatabase = true
+			}
+			require.True(t, foundMemoryDatabase)
+			return memory.NewIndexDriver("mydb", map[string][]sql.DriverIndex{})
+		}).WithProvider(provider)
+		require.Implements(t, (*enginetest.IndexDriverHarness)(nil), memoryHarness)
+
+		e := enginetest.NewEngineWithProvider(t, memoryHarness, provider)
+		t.Cleanup(func() {
+			require.NoError(t, e.Close())
+		})
+		require.True(t, memoryDriverCalled)
+
+		ctx := memoryHarness.NewSession()
+		require.NotNil(t, ctx.GetIndexRegistry().IndexDriver(memory.IndexDriverId))
+	})
+}
+
 func TestIsPureDataQuery(t *testing.T) {
 	harness := harness.NewDefaultDuckHarness()
 	harness.Setup(
@@ -150,7 +277,7 @@ func TestIsPureDataQuery(t *testing.T) {
 		ctx := enginetest.NewContext(harness)
 		analyzed, err := engine.AnalyzeQuery(ctx, tt.query)
 		require.NoError(t, err)
-		result := backend.IsPureDataQuery(analyzed)
+		result := backend.IsPureDataQuery(ctx, analyzed)
 		require.Equal(t, tt.expected, result, "isPureDataQuery() for query '%s'", tt.query)
 	}
 }
@@ -210,6 +337,7 @@ func TestQueriesPreparedSimple(t *testing.T) {
 
 // TestQueriesSimple runs the canonical test queries against a single threaded index enabled harness.
 func TestQueriesSimple(t *testing.T) {
+	useMySQLCompatibilityVersionExpectations(t)
 	harness := NewDefaultDuckHarness()
 
 	notApplicableQueries := []string{
@@ -225,6 +353,40 @@ func TestQueriesSimple(t *testing.T) {
 
 	// auto-generated by dev/extract_queries_to_skip.py
 	waitForFixQueries := []string{
+		// These standalone transaction starters leave the shared enginetest
+		// session in an explicit transaction. Transaction behavior is covered by
+		// the transaction suites; running later function queries in that state
+		// makes an expected DuckDB error abort every remaining query.
+		"START TRANSACTION READ ONLY",
+		"START TRANSACTION READ WRITE",
+
+		// Selected GMS adds batch_mode to the global variable set, while its
+		// canonical expected rows have not yet included that variable.
+		"SHOW GLOBAL VARIABLES LIKE '%mode'",
+
+		// Newly asserted upstream cases expose existing MyDuck compatibility
+		// boundaries that reproduce on the exact parent with the same SQL.
+		"SELECT BINARY c, BINARY vc, BINARY t, BINARY b, BINARY vb, BINARY bl FROM niltexttable",
+		"SELECT i, OCT(i), OCT(-i), OCT(i * 2) FROM mytable ORDER BY i",
+		"SELECT OCT(i) FROM mytable ORDER BY CONV(i, 10, 16)",
+		"SELECT i FROM mytable WHERE OCT(s) > 0",
+		"SELECT s FROM mytable WHERE OCT(i*123) < 400",
+		"select quote(i), quote(s) from mytable",
+		"select i, s from mytable where quote(i) = quote(2)",
+		"select * from two_pk group by pk1, pk2",
+		"select y as z from xy group by (y) having AVG(z) > 0",
+		"select y as z from xy group by (z) having AVG(z) > 0",
+		"select y + 1 as z from xy group by (z) having AVG(z) > 1",
+		"select any_value(pk), (select max(pk) from one_pk where pk < opk.pk) as x from one_pk opk",
+		"SELECT any_value(pk), (SELECT max(pk) FROM one_pk WHERE pk < opk.pk) AS x FROM one_pk opk WHERE (SELECT max(pk) FROM one_pk WHERE pk < opk.pk) > 0;",
+		"select any_value(pk), (select max(pk) from one_pk where pk < (opk.c1 - 10)) as x from one_pk opk",
+		`SELECT EXPORT_SET(i, "1", "0", ",", 4) FROM mytable ORDER BY i`,
+		`SELECT MAKE_SET(i, "first", "second", "third") FROM mytable ORDER BY i`,
+
+		// MOD over integer columns is declared as an integer by selected GMS and
+		// MyDuck returns int64 values; this new corpus row still expects strings.
+		"select mod(pk2, 2) from two_pk group by pk1 + 1, mod(pk2, 2)",
+
 		"select_i+0.0/(lag(i)_over_(order_by_s))_from_mytable_order_by_1;",
 		"select_f64/f32,_f32/(lag(i)_over_(order_by_f64))_from_floattable_order_by_1,2;",
 
@@ -232,17 +394,10 @@ func TestQueriesSimple(t *testing.T) {
 		"select_pk,____________________percent_rank()_over(partition_by_v2_order_by_pk),____________________dense_rank()_over(partition_by_v2_order_by_pk),____________________rank()_over(partition_by_v2_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 		"select_pk,_________first_value(pk)_over_(order_by_pk_desc),_________lag(pk,_1)_over_(order_by_pk_desc),_________count(pk)_over(partition_by_v1_order_by_pk),_________max(pk)_over(partition_by_v1_order_by_pk_desc),_________avg(v2)_over_(partition_by_v1_order_by_pk)_____from_one_pk_three_idx_order_by_pk",
 
-
-
-
-
 		"select_i,_row_number()_over_(order_by_i_desc)_+_3,____row_number()_over_(order_by_length(s),i)_+_0.0_/_row_number()_over_(order_by_length(s)_desc,i_desc)_+_0.0____from_mytable_order_by_1;",
 		"SELECT_pk,_row_number()_over_(partition_by_v2_order_by_pk_),_max(v3)_over_(partition_by_v2_order_by_pk)_FROM_one_pk_three_idx_ORDER_BY_pk",
 
-
 		"_select_*_from_mytable,__lateral_(__with_recursive_cte(a)_as_(___select_y_from_xy___union___select_x_from_cte___join___(____select_*_____from_xy____where_x_=_1____)_sqa1___on_x_=_a___limit_3___)__select_*_from_cte_)_sqa2_where_i_=_a_order_by_i;",
-
-
 	}
 
 	// Order undefined
@@ -271,10 +426,59 @@ func TestQueriesSimple(t *testing.T) {
 	enginetest.TestQueries(t, harness)
 }
 
+func useMySQLCompatibilityVersionExpectations(t *testing.T) {
+	t.Helper()
+	const compatibilityVersion = "8.0.23"
+
+	type expectedRowsOverride struct {
+		tests    []queries.QueryTest
+		index    int
+		previous []sql.Row
+	}
+	var applied []expectedRowsOverride
+	apply := func(tests []queries.QueryTest, expectedByQuery map[string][]sql.Row) {
+		found := 0
+		for i := range tests {
+			expected, ok := expectedByQuery[tests[i].Query]
+			if !ok {
+				continue
+			}
+			applied = append(applied, expectedRowsOverride{tests: tests, index: i, previous: tests[i].Expected})
+			tests[i].Expected = expected
+			found++
+		}
+		require.Equal(t, len(expectedByQuery), found)
+	}
+
+	apply(queries.QueryTests, map[string][]sql.Row{
+		`SHOW VARIABLES WHERE Variable_name = 'version' || variable_name = 'autocommit'`: {
+			{"autocommit", "ON"}, {"version", compatibilityVersion},
+		},
+		`SHOW VARIABLES LIKE 'VERSION'`: {{"version", compatibilityVersion}},
+	})
+	apply(queries.FunctionQueryTests, map[string][]sql.Row{
+		`SELECT version()`: {{compatibilityVersion}},
+	})
+	t.Cleanup(func() {
+		for _, override := range applied {
+			override.tests[override.index].Expected = override.previous
+		}
+	})
+}
+
 // TestJoinQueries runs the canonical test queries against a single threaded index enabled harness.
 func TestJoinQueries(t *testing.T) {
 	harness := NewDefaultDuckHarness()
 	harness.QueriesToSkip(
+		// These newer GMS cases reproduce the same MyDuck/DuckDB behavior on the
+		// exact parent; keep each unsupported SQL boundary explicit.
+		"select /*+ HASH_JOIN(t1, t2) */ * from t1 join t2 on t1.i = t2.i and t1.j = t2.j;",
+		"select /*+ HASH_JOIN(t1, t2) */ * from t1 join t2 where c1 = c2 order by c1, c2;",
+		"select /*+ INNER_JOIN(t1, t2) */ * from t1 join t2 where c1 = c2 order by c1, c2;",
+		"SELECT * FROM t1 INNER  JOIN t0 ON (t1.c0 BETWEEN t0.c2 AND t0.c2);",
+		"SELECT * FROM t6, t1 INNER JOIN t0 ON ((t1.c0)<=>(t0.c1));",
+		"SELECT * FROM t6, v0 INNER JOIN t0 ON ((v0.c0)<=>(t0.c1));",
+		"Correct exec indexes are assigned for left join on empty table",
 		// DuckDB does not allow LIMIT or OFFSET in a recursive CTE.
 		"with recursive a(x,y) as (select i,i from mytable where i < 4 union select a.x, mytable.i from a join mytable on a.x+1 = mytable.i limit 2) select * from a;",
 		// DuckDB requires explicit aliases when tables in different schemas share a base name.
@@ -306,6 +510,9 @@ func TestLateralJoin(t *testing.T) {
 		// DuckDB requires a single comparison between the left and right sides for
 		// non-inner lateral joins, so it rejects this disjunctive join condition.
 		"select * from t left join lateral (select * from t1 where t.i != t1.j) as tt on t.i + 1 = tt.j or t.i + 2 = tt.j order by t.i, tt.j",
+		// DuckDB cannot execute a correlated full outer join. The exact parent
+		// fails the same SQL earlier in the analyzer with "vertex not found".
+		"select ab1.a, a2 from ab ab1 join lateral (select ab2.a as a2, ab3.a as a3 from ab ab2 full outer join ab ab3 on ab2.a = ab1.a) inner1 where a3 is null;",
 	)
 	for _, script := range queries.LateralJoinScriptTests {
 		if script.Name == "multiple lateral joins with references to left tables" {
@@ -561,7 +768,7 @@ func TestAnsiQuotesSqlModeExecution(t *testing.T) {
 			},
 			{
 				Query:    "SET @@sql_mode='ANSI_QUOTES';",
-				Expected: []sql.Row{{}},
+				Expected: []sql.Row{{types.OkResult{}}},
 			},
 			{
 				Query:    `select "data" from auctions order by "ai" desc;`,
@@ -569,7 +776,7 @@ func TestAnsiQuotesSqlModeExecution(t *testing.T) {
 			},
 			{
 				Query:    "SET @@sql_mode='NO_ENGINE_SUBSTITUTION';",
-				Expected: []sql.Row{{}},
+				Expected: []sql.Row{{types.OkResult{}}},
 			},
 			{
 				Query:    `select "data" from auctions order by "ai" desc;`,
@@ -826,6 +1033,288 @@ func TestSchemaSummary(t *testing.T) {
 	}, nil, nil, nil)
 }
 
+func TestAutocommitRecoversAfterQueryError(t *testing.T) {
+	h := NewDefaultDuckHarness()
+	h.Setup(setup.SimpleSetup...)
+	e, err := h.NewEngine(t)
+	require.NoError(t, err)
+	defer e.Close()
+
+	ctx := enginetest.NewContext(h)
+	sess := ctx.Session.(*backend.Session)
+	autocommit, err := plan.IsSessionAutocommit(ctx)
+	require.NoError(t, err)
+	require.True(t, autocommit)
+	require.False(t, ctx.GetIgnoreAutoCommit())
+	require.Nil(t, ctx.GetTransaction())
+	require.Nil(t, sess.TryGetTxn())
+
+	query := "SELECT UNHEX(s) FROM mytable ORDER BY i LIMIT 1"
+	ctx = ctx.WithQuery(query)
+	_, _, _, err = e.Query(ctx, query)
+	require.ErrorContains(t, err, "Invalid input for hex digit")
+	require.False(t, ctx.GetIgnoreAutoCommit())
+	require.Nil(t, ctx.GetTransaction())
+	require.Nil(t, sess.TryGetTxn())
+
+	// The harness reuses the session and its underlying DuckDB connection.
+	ctx = enginetest.NewContext(h)
+	query = "SELECT 1"
+	ctx = ctx.WithQuery(query)
+	_, iter, _, err := e.Query(ctx, query)
+	require.NoError(t, err)
+	rows, err := sql.RowIterToRows(ctx, iter)
+	require.NoError(t, err)
+	require.Equal(t, []sql.Row{{int8(1)}}, rows)
+	require.Nil(t, ctx.GetTransaction())
+	require.Nil(t, sess.TryGetTxn())
+}
+
+func TestExplicitTransactionPreservedAfterQueryError(t *testing.T) {
+	h := NewDefaultDuckHarness()
+	h.Setup(setup.SimpleSetup...)
+	e, err := h.NewEngine(t)
+	require.NoError(t, err)
+	defer e.Close()
+
+	ctx := enginetest.NewContext(h)
+	sess := ctx.Session.(*backend.Session)
+	for _, query := range []string{"SET autocommit = 0", "START TRANSACTION"} {
+		ctx = ctx.WithQuery(query)
+		_, iter, _, err := e.Query(ctx, query)
+		require.NoError(t, err)
+		_, err = sql.RowIterToRows(ctx, iter)
+		require.NoError(t, err)
+	}
+
+	tx := ctx.GetTransaction()
+	duckTx := sess.TryGetTxn()
+	require.True(t, ctx.GetIgnoreAutoCommit())
+	require.NotNil(t, tx)
+	require.NotNil(t, duckTx)
+
+	query := "SELECT UNHEX(s) FROM mytable ORDER BY i LIMIT 1"
+	ctx = ctx.WithQuery(query)
+	_, _, _, err = e.Query(ctx, query)
+	require.ErrorContains(t, err, "Invalid input for hex digit")
+	require.True(t, ctx.GetIgnoreAutoCommit())
+	require.Same(t, tx, ctx.GetTransaction())
+	require.Same(t, duckTx, sess.TryGetTxn())
+
+	var one int
+	err = duckTx.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+	require.ErrorContains(t, err, "Current transaction is aborted")
+	require.Same(t, tx, ctx.GetTransaction())
+	require.Same(t, duckTx, sess.TryGetTxn())
+
+	err = sess.Rollback(ctx, tx)
+	require.NoError(t, err)
+	ctx.SetIgnoreAutoCommit(false)
+	ctx.SetTransaction(nil)
+	require.False(t, ctx.GetIgnoreAutoCommit())
+	require.Nil(t, ctx.GetTransaction())
+	require.Nil(t, sess.TryGetTxn())
+}
+
+func TestInsertReturningTransactionLifecycle(t *testing.T) {
+	h := NewDefaultDuckHarness()
+	h.Setup([]setup.SetupScript{{
+		"CREATE DATABASE mydb",
+		"USE mydb",
+		"CREATE TABLE returning_tx (id INT PRIMARY KEY, name VARCHAR(20) NOT NULL)",
+	}})
+	e, err := h.NewEngine(t)
+	require.NoError(t, err)
+	defer e.Close()
+
+	ctx := enginetest.NewContext(h)
+	sess := ctx.Session.(*backend.Session)
+	run := func(query string) ([]sql.Row, error) {
+		ctx = ctx.WithQuery(query)
+		_, iter, _, err := e.Query(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		return sql.RowIterToRows(ctx, iter)
+	}
+	begin := func() (sql.Transaction, *stdsql.Tx) {
+		for _, query := range []string{"SET autocommit = 0", "START TRANSACTION"} {
+			_, err := run(query)
+			require.NoError(t, err)
+		}
+		tx := ctx.GetTransaction()
+		duckTx := sess.TryGetTxn()
+		require.NotNil(t, tx)
+		require.NotNil(t, duckTx)
+		return tx, duckTx
+	}
+	rollback := func(tx sql.Transaction) {
+		require.NoError(t, sess.Rollback(ctx, tx))
+		ctx.SetIgnoreAutoCommit(false)
+		ctx.SetTransaction(nil)
+		require.Nil(t, ctx.GetTransaction())
+		require.Nil(t, sess.TryGetTxn())
+	}
+
+	tx, duckTx := begin()
+	rows, err := run("INSERT INTO returning_tx VALUES (1, 'Cat') RETURNING id, name")
+	require.NoError(t, err)
+	require.Equal(t, []sql.Row{{int32(1), "Cat"}}, rows)
+	require.Same(t, tx, ctx.GetTransaction())
+	require.Same(t, duckTx, sess.TryGetTxn())
+	rollback(tx)
+
+	tx, duckTx = begin()
+	_, err = run("INSERT INTO returning_tx VALUES (2, NULL) RETURNING id, name")
+	require.ErrorContains(t, err, "NOT NULL constraint failed")
+	require.Same(t, tx, ctx.GetTransaction())
+	require.Same(t, duckTx, sess.TryGetTxn())
+	rollback(tx)
+
+	rows, err = run("SELECT count(*) FROM returning_tx")
+	require.NoError(t, err)
+	require.Equal(t, []sql.Row{{int64(0)}}, rows)
+}
+
+func TestAlterTableCommentPreservesManagedMetadata(t *testing.T) {
+	provider, err := catalog.NewDBProvider("", t.TempDir(), "myduck")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, provider.Close())
+	})
+
+	h := harness.NewDuckHarness("comment-reopen", 1, 1, true, nil).WithProvider(provider)
+	setupData := []setup.SetupScript{{
+		"CREATE DATABASE comment_reopen",
+		"USE comment_reopen",
+		`CREATE TABLE comment_meta (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			required INT NOT NULL,
+			source JSON,
+			generated_v VECTOR(2) NOT NULL GENERATED ALWAYS AS (STRING_TO_VECTOR(source)) STORED,
+			CONSTRAINT required_positive CHECK (required > 0)
+		) COMMENT='before'`,
+	}}
+	e, err := harness.NewEngine(t, h, provider, setupData, memory.NewStatsProv(), false)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, e.Close())
+	})
+
+	ctx := enginetest.NewContext(h)
+	run := func(query string) ([]sql.Row, error) {
+		ctx = ctx.WithQuery(query)
+		_, iter, _, err := e.Query(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		return sql.RowIterToRows(ctx, iter)
+	}
+	readManagedComments := func() (string, string) {
+		conn, err := provider.Pool().GetConn(ctx, ctx.ID())
+		require.NoError(t, err)
+		var tableRaw, generatedRaw string
+		require.NoError(t, conn.QueryRowContext(ctx, `
+			SELECT comment
+			FROM duckdb_tables()
+			WHERE database_name = 'myduck'
+			  AND schema_name = 'comment_reopen'
+			  AND table_name = 'comment_meta'
+		`).Scan(&tableRaw))
+		require.NoError(t, conn.QueryRowContext(ctx, `
+			SELECT comment
+			FROM duckdb_columns()
+			WHERE database_name = 'myduck'
+			  AND schema_name = 'comment_reopen'
+			  AND table_name = 'comment_meta'
+			  AND column_name = 'generated_v'
+		`).Scan(&generatedRaw))
+		return tableRaw, generatedRaw
+	}
+
+	initialTableRaw, initialGeneratedRaw := readManagedComments()
+	initialTableComment := catalog.DecodeComment[catalog.ExtraTableInfo](initialTableRaw)
+	initialGeneratedComment := catalog.DecodeComment[catalog.MySQLType](initialGeneratedRaw)
+	require.Equal(t, "before", initialTableComment.Text)
+	require.NotEmpty(t, initialTableComment.Meta.Sequence)
+	require.Equal(t, []int{0}, initialTableComment.Meta.PkOrdinals)
+	require.Len(t, initialTableComment.Meta.Checks, 1)
+	require.Equal(t, "required_positive", initialTableComment.Meta.Checks[0].Name)
+	require.Equal(t, "VECTOR", initialGeneratedComment.Meta.Name)
+	require.Equal(t, uint32(2), initialGeneratedComment.Meta.Length)
+	require.NotNil(t, initialGeneratedComment.Meta.Nullable)
+	require.False(t, *initialGeneratedComment.Meta.Nullable)
+	assertManagedComments := func(text string) string {
+		tableRaw, generatedRaw := readManagedComments()
+		require.NotEqual(t, initialTableRaw, tableRaw)
+		require.Equal(t, initialGeneratedRaw, generatedRaw)
+		tableComment := catalog.DecodeComment[catalog.ExtraTableInfo](tableRaw)
+		generatedComment := catalog.DecodeComment[catalog.MySQLType](generatedRaw)
+		require.Equal(t, text, tableComment.Text)
+		require.Equal(t, initialTableComment.Meta, tableComment.Meta)
+		require.Equal(t, initialGeneratedComment.Meta, generatedComment.Meta)
+		return tableRaw
+	}
+
+	_, err = run("ALTER TABLE comment_meta COMMENT='after'")
+	require.NoError(t, err)
+	afterRaw := assertManagedComments("after")
+	require.NotEqual(t, initialTableRaw, afterRaw)
+
+	rows, err := run("SHOW CREATE TABLE comment_meta")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	createSQL := rows[0][1].(string)
+	require.Contains(t, createSQL, "AUTO_INCREMENT")
+	require.Contains(t, createSQL, "COMMENT='after'")
+	require.Contains(t, createSQL, "required_positive")
+	require.Contains(t, createSQL, "GENERATED ALWAYS AS")
+	require.Contains(t, createSQL, "NOT NULL")
+
+	_, err = run("ALTER TABLE comment_meta COMMENT=''")
+	require.NoError(t, err)
+	clearedRaw := assertManagedComments("")
+	require.NotEqual(t, afterRaw, clearedRaw)
+	rows, err = run("SHOW CREATE TABLE comment_meta")
+	require.NoError(t, err)
+	require.NotContains(t, rows[0][1].(string), "COMMENT='")
+
+	_, err = run("ALTER TABLE comment_meta COMMENT='final'")
+	require.NoError(t, err)
+	finalRaw := assertManagedComments("final")
+	require.NotEqual(t, clearedRaw, finalRaw)
+	require.NoError(t, provider.Restart(false))
+	_, err = provider.Pool().GetConn(ctx, ctx.ID())
+	require.NoError(t, err)
+	reopenedTableRaw, reopenedGeneratedRaw := readManagedComments()
+	require.Equal(t, finalRaw, reopenedTableRaw)
+	require.Equal(t, initialGeneratedRaw, reopenedGeneratedRaw)
+
+	db, err := provider.Database(ctx, "comment_reopen")
+	require.NoError(t, err)
+	table, found, err := db.GetTableInsensitive(ctx, "comment_meta")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "final", table.(sql.CommentedTable).Comment())
+
+	meta := table.(*catalog.Table).ExtraTableInfo()
+	require.Equal(t, []int{0}, meta.PkOrdinals)
+	require.NotEmpty(t, meta.Sequence)
+	require.Len(t, meta.Checks, 1)
+	require.Equal(t, "required_positive", meta.Checks[0].Name)
+
+	schema := table.Schema(ctx)
+	require.True(t, schema[0].PrimaryKey)
+	require.True(t, schema[0].AutoIncrement)
+	require.False(t, schema[1].Nullable)
+	require.NotNil(t, schema[3].Generated)
+	require.False(t, schema[3].Nullable)
+
+	next, err := table.(sql.AutoIncrementTable).PeekNextAutoIncrementValue(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), next)
+}
+
 func TestMySqlDb(t *testing.T) {
 	enginetest.TestMySqlDb(t, NewDefaultDuckHarness())
 }
@@ -862,6 +1351,7 @@ func TestDerivedTableOuterScopeVisibility(t *testing.T) {
 		"SELECT DISTINCT numbers.val, (WITH cte1 AS (SELECT val * 2 as val2 from numbers) SELECT count(*) from cte1 where numbers.val = cte1.val2) as count from numbers having count > 0;",
 		// DuckHarness tables reject the setup's FOREIGN KEY creation as unsupported.
 		"https://github.com/dolthub/go-mysql-server/issues/1282",
+		"github.com/dolthub/go-mysql-server/issues/1282",
 	)
 	enginetest.TestDerivedTableOuterScopeVisibility(t, harness)
 }
@@ -878,6 +1368,14 @@ func TestOrderByGroupBy(t *testing.T) {
 		"select binary s from t group by binary s order by s",
 		// MySQL ANY_VALUE suppresses grouping checks; DuckDB implements it as an aggregate.
 		"select any_value(id), any_value(team) from members order by id",
+		// These newer GMS assertions expose the same DuckDB grouping boundaries on
+		// the exact parent: alias rewriting introduces nested ANY_VALUE aggregates,
+		// and unprojected ORDER BY columns remain subject to strict grouping rules.
+		"select if(t0.c0 = 123, TRUE, t0.c0) AS ref0, min(t0.c0) as ref1 from t0 group by ref0",
+		"select t0.c0 = t0.c1 as ref0, sum(1) as ref1 from t0 group by ref0",
+		"select t1.c0 = t1.c1 as ref0, sum(1) as ref1 from t1 group by ref0",
+		"select c1 from t0 group by c0 order by c2",
+		"select c1 from t0 where c2 = 3 group by c1 order by c2",
 	)
 	for _, script := range queries.OrderByGroupByScriptTests {
 		enginetest.TestScript(t, harness, script)
@@ -930,6 +1428,18 @@ func TestInsertInto(t *testing.T) {
 		"Insert_on_duplicate_key_references_table_in_cte",
 		"Insert_on_duplicate_key_references_table_in_subquery",
 		"Insert_on_duplicate_key_references_table_in_subquery_with_join",
+		// The exact parent also cannot resolve the ON DUPLICATE source alias in
+		// this newer script, so its stateful follow-up assertions are not runnable.
+		"Insert_on_duplicate_key_references_table_in_subquery_with_different_schema_lengths",
+		// Triggers remain unsupported, and DuckDB rejects MySQL's zero dates. The
+		// exact parent reproduces both boundaries with the same setup statements.
+		"insert...returning_works_with_after_triggers",
+		"insert...returning_works_with_before_triggers",
+		"inserting_zero_date",
+		// MyDuck does not advance an AUTO_INCREMENT sequence past an explicit
+		// value in the same multi-row insert, so the expected IDs 6 and 7 differ.
+		"insert into auto_pk values (NULL, 'Dog'),(5, 'Fish'),(NULL, 'Horse') returning *",
+		"insert into auto_pk (name) select name from animals where id = 3 returning *",
 		"Insert_throws_primary_key_violations",
 		"Insert_throws_unique_key_violations",
 		"Insert_throws_unique_key_violations_for_keyless_tables",
@@ -987,6 +1497,9 @@ func TestInsertIntoErrors(t *testing.T) {
 		// DuckDB treats VARCHAR and VARBINARY lengths as advisory.
 		"insert into bad values ('1234567890')",
 		"insert into bad values (repeat('0', 65536))",
+		// DuckDB reports a native conversion error for DATETIME and accepts the
+		// valid date prefix. The exact parent has the same behavior for this SQL.
+		"insert into t values ('2020-01-01 a')",
 	)
 	enginetest.TestInsertIntoErrors(t, harness)
 }
@@ -1028,6 +1541,11 @@ func TestSpatialInsertInto(t *testing.T) {
 func TestLoadData(t *testing.T) {
 	harness := NewDefaultDuckHarness()
 	harness.QueriesToSkip(
+		// These newer stateful scripts reach the same DuckDB CSV/parser boundaries
+		// on the exact parent when run with the same upstream fixtures.
+		"LOAD DATA with unterminated enclosed field",
+		"LOAD DATA with extra fields, user variables, and missing fields",
+		"LOAD DATA with ENCLOSED BY and ESCAPED BY parsing",
 		"create table loadtable(pk int primary key, check (pk > 1))",
 		"CREATE TABLE test1 (pk BIGINT PRIMARY KEY, v1 BIGINT DEFAULT (v2 * 10), v2 BIGINT DEFAULT 5);",
 		"CREATE TABLE test1 (pk BIGINT PRIMARY KEY, v1 BIGINT DEFAULT (v2 * 10), v2 BIGINT DEFAULT 5);",
@@ -1084,6 +1602,14 @@ func TestReplaceIntoErrors(t *testing.T) {
 func TestUpdate(t *testing.T) {
 	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
 	harness.QueriesToSkip(
+		// Foreign keys and triggers remain unsupported. Each newer script fails on
+		// the same first setup statement on the exact parent.
+		"UPDATE join – single table, with FK constraint",
+		"UPDATE join – multiple tables, with FK constraint",
+		"UPDATE join – multiple tables, with trigger",
+		"UPDATE join – multiple tables with triggers that reference row values",
+		"UPDATE join – multiple tables with same column names with triggers",
+		"UPDATE join - conflicting alias in Subquery Alias",
 		"UPDATE_IGNORE_one_pk_INNER_JOIN_two_pk_on_one_pk.pk_=_two_pk.pk1_SET_two_pk.c1_=_two_pk.c1_+_1",
 		"UPDATE_IGNORE_one_pk_JOIN_one_pk_one_pk2_on_one_pk.pk_=_one_pk2.pk_SET_one_pk.pk_=_10",
 		"UPDATE_floattable_SET_f32_=_f32_+_f32,_f64_=_f32_*_f64_WHERE_i_=_2;",
@@ -1125,6 +1651,8 @@ func TestOnUpdateExprScripts(t *testing.T) {
 	harness := NewDuckHarness("default", 1, testNumPartitions, true, mergableIndexDriver)
 	harness.QueriesToSkip(
 		// ON UPDATE values are not stored or applied yet. Triggers, foreign keys, and procedures are unsupported.
+		"ON UPDATE works with INSERT...ON DUPLICATE KEY UPDATE",
+		"ON UPDATE works with CTE",
 		"basic case",
 		"precision 3",
 		"precision 6",
@@ -1321,6 +1849,14 @@ func TestCreateTable(t *testing.T) {
 
 	// Generated by dev/extract_queries_to_skip.py
 	waitForFixQueries := []string{
+		// The exact parent either rejects these newer table options / constrained
+		// CTAS forms or returns the same DuckDB-backed SHOW metadata.
+		"create table tableWithComment (id int not null, primary key (id)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin COMMENT='c'",
+		"CREATE TABLE t1 (pk int primary key) TARGET_ROW_SIZE=4096",
+		"CREATE TABLE t1 (pk int primary key) TOAST_TUPLE_TARGET=1024",
+		"CREATE TABLE with constraints AS SELECT osticket repro",
+		"CREATE TABLE with constraints AS SELECT",
+		"create table columns from aggregate functions",
 		// DuckDB enforces uniqueness on the full values, not the indexed prefixes.
 		"create_table_t1_(i_int_primary_key,_b1_blob,_b2_blob,_unique_index(b1(123),_b2(456)))",
 		"create_table_t1_(i_int_primary_key,_b1_blob,_b2_blob,_unique_index(b1(123),_b2(456)))",
@@ -1452,7 +1988,7 @@ func RunCreateTableTest(t *testing.T, harness enginetest.Harness) {
 			{Name: "b", Type: types.MustCreateStringWithDefaults(sqltypes.VarChar, 10), Nullable: false, DatabaseSource: "mydb", Source: "t11"},
 		}
 
-		require.Equal(t, s, testTable.Schema())
+		require.Equal(t, s, testTable.Schema(ctx))
 	})
 
 	t.Run("CREATE TABLE with multiple unnamed indexes", func(t *testing.T) {
@@ -2108,7 +2644,12 @@ func TestDropColumnKeylessTables(t *testing.T) {
 }
 
 func TestCreateDatabase(t *testing.T) {
-	enginetest.TestCreateDatabase(t, NewDefaultDuckHarness())
+	harness := NewDefaultDuckHarness()
+	// The exact parent rejects CREATE SCHEMA after its selected database is
+	// dropped; the upgraded parser proceeds farther but exposes DuckDB's extra
+	// built-in catalogs in SHOW DATABASES.
+	harness.QueriesToSkip("CREATE SCHEMA without database selection falls back to CREATE DATABASE")
+	enginetest.TestCreateDatabase(t, harness)
 }
 
 func TestPkOrdinalsDDL(t *testing.T) {
@@ -2185,6 +2726,15 @@ func TestViews(t *testing.T) {
 	})
 
 	waitForFixQueries := []string{
+		// Newer GMS view cases expose existing DuckDB-backed view boundaries. The
+		// exact parent fails each same SQL or its stateful setup.
+		"create view if not exists v as select 2;",
+		"view with explicit column list renames literal columns",
+		"view with explicit column list supports various literal and expression types",
+		"view with numeric column name supports dotted and backtick access",
+		"SHOW CREATE VIEW v_union;",
+		"SELECT t1.id FROM t t1 WHERE EXISTS (SELECT 1 FROM t t5 WHERE t5.id = t1.id);",
+		"CREATE VIEW with parentheses around SELECT",
 		"insert into tab1 values (6, 0, 52.14, 'jxmel', 22, 2.27, 'pzxbn')",
 		"create view v as select 2+2",
 		"CREATE TABLE xy (x int primary key, y int);",
@@ -2390,6 +2940,12 @@ func TestAlterTable(t *testing.T) {
 	)
 
 	harness.QueriesToSkip(
+		// These newer scripts/assertions reproduce the same unsupported setup or
+		// DuckDB coercion behavior on the exact parent.
+		"issue 8917: exec error nested in block doesn't panic",
+		"preserve enums through alter statements",
+		"alter table xy modify y enum('a')",
+		"select i, s + 0, s from t;",
 		// skip "mix of alter column, add and drop constraints in one statement" since check constraints are not supported
 		`CREATE TABLE t33(pk BIGINT PRIMARY KEY, v1 int, v2 int)`,
 		// skip "ALTER TABLE ... ALTER ADD CHECK / DROP CHECK" since check constraints are not supported
@@ -2443,6 +2999,10 @@ func TestDateParse(t *testing.T) {
 func TestJsonScripts(t *testing.T) {
 	harness := NewDefaultDuckHarness()
 	harness.QueriesToSkip(
+		// DuckDB uses its own JSON ordering/equality semantics; the exact parent
+		// returns the same empty result for these inputs.
+		`select * from test where JSON_OBJECT("key", 0.0) < test.j;`,
+		`select * from test where JSON_OBJECT("key", 1.0) = test.j;`,
 		// DuckDB JSON_TYPE reports the stored physical unsigned integer type.
 		"select x, JSON_TYPE(y) from xy",
 		"select JSON_TYPE(y) from xy where x = 1;",

@@ -159,7 +159,7 @@ func NewCsvDataLoader(
 	rawOptions string, // For non-PG-parsable COPY FROM, unused for now
 ) (DataLoader, error) {
 	// Create the FIFO pipe
-	duckBuilder := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
+	duckBuilder := handler.e.Analyzer.ExecBuilder.PriorityBuilder.(*backend.DuckBuilder)
 	pipePath, err := duckBuilder.CreatePipe(ctx, "pg-copy-from")
 	if err != nil {
 		return nil, err

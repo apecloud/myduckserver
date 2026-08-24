@@ -37,10 +37,14 @@ import (
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/information_schema"
 )
 
 const TestNumPartitions = 5
 
+// IndexDriverInitializer is retained in NewDuckHarness's signature for source
+// compatibility with copied upstream tests. DuckHarness uses catalog.Table's
+// native DuckDB indexes and never installs the memory-only test index driver.
 type IndexDriverInitializer func([]sql.Database) sql.IndexDriver
 
 type DuckHarness struct {
@@ -50,8 +54,6 @@ type DuckHarness struct {
 	//	readonly                  bool
 	provider                  sql.DatabaseProvider
 	pool                      *catalog.ConnectionPool
-	indexDriverInitializer    IndexDriverInitializer
-	driver                    sql.IndexDriver
 	nativeIndexSupport        bool
 	skippedQueries            map[string]struct{}
 	skippedSetupScripts       [][]setup.SetupScript
@@ -65,7 +67,6 @@ type DuckHarness struct {
 
 var _ enginetest.Harness = (*DuckHarness)(nil)
 
-var _ enginetest.IndexDriverHarness = (*DuckHarness)(nil)
 var _ enginetest.IndexHarness = (*DuckHarness)(nil)
 var _ enginetest.ForeignKeyHarness = (*DuckHarness)(nil)
 var _ enginetest.KeylessTableHarness = (*DuckHarness)(nil)
@@ -74,7 +75,7 @@ var _ enginetest.ServerHarness = (*DuckHarness)(nil)
 var _ sql.ExternalStoredProcedureProvider = (*DuckHarness)(nil)
 var _ enginetest.SkippingHarness = (*DuckHarness)(nil)
 
-func NewDuckHarness(name string, parallelism int, numTablePartitions int, useNativeIndexes bool, driverInitializer IndexDriverInitializer) *DuckHarness {
+func NewDuckHarness(name string, parallelism int, numTablePartitions int, useNativeIndexes bool, _ IndexDriverInitializer) *DuckHarness {
 	externalProcedureRegistry := sql.NewExternalStoredProcedureRegistry()
 	for _, esp := range memory.ExternalStoredProcedures {
 		externalProcedureRegistry.Register(esp)
@@ -88,7 +89,6 @@ func NewDuckHarness(name string, parallelism int, numTablePartitions int, useNat
 	return &DuckHarness{
 		name:                      name,
 		numTablePartitions:        numTablePartitions,
-		indexDriverInitializer:    driverInitializer,
 		parallelism:               parallelism,
 		nativeIndexSupport:        useNativeIndexes,
 		skippedQueries:            make(map[string]struct{}),
@@ -134,12 +134,6 @@ func (m *DuckHarness) ExternalStoredProcedure(_ *sql.Context, name string, numOf
 // ExternalStoredProcedures implements the sql.ExternalStoredProcedureProvider interface
 func (m *DuckHarness) ExternalStoredProcedures(_ *sql.Context, name string) ([]sql.ExternalStoredProcedureDetails, error) {
 	return m.externalProcedureRegistry.LookupByName(name)
-}
-
-func (m *DuckHarness) InitializeIndexDriver(dbs []sql.Database) {
-	if m.indexDriverInitializer != nil {
-		m.driver = m.indexDriverInitializer(dbs)
-	}
 }
 
 func (m *DuckHarness) NewSession() *sql.Context {
@@ -299,11 +293,10 @@ func NewEngine(t *testing.T, harness enginetest.Harness, dbProvider sql.Database
 	provider := dbProvider.(*catalog.DatabaseProvider)
 	harness.(*DuckHarness).pool = provider.Pool()
 
-	e := enginetest.NewEngineWithProvider(t, harness, dbProvider)
+	e, _ := backend.NewEngine(provider)
+	e.Analyzer.Catalog.MySQLDb.AddRootAccount()
+	e.Analyzer.Catalog.InfoSchema = information_schema.NewInformationSchemaDatabase()
 	e.Analyzer.Catalog.StatsProvider = statsProvider
-
-	builder := backend.NewDuckBuilder(e.Analyzer.ExecBuilder, provider)
-	e.Analyzer.ExecBuilder = builder
 
 	ctx := enginetest.NewContext(harness)
 
@@ -361,9 +354,6 @@ func (m *DuckHarness) NewContext() *sql.Context {
 func (m *DuckHarness) newSession() sql.Session {
 	baseSession := enginetest.NewBaseSession()
 	session := memory.NewSession(baseSession, m.getProvider())
-	if m.driver != nil {
-		session.GetIndexRegistry().RegisterIndexDriver(m.driver)
-	}
 	return backend.NewSession(session, m.getProvider().(*catalog.DatabaseProvider))
 }
 
@@ -374,13 +364,6 @@ func (m *DuckHarness) NewContextWithClient(client sql.Client) *sql.Context {
 		context.Background(),
 		sql.WithSession(memory.NewSession(baseSession, m.getProvider())),
 	)
-}
-
-func (m *DuckHarness) IndexDriver(dbs []sql.Database) sql.IndexDriver {
-	if m.indexDriverInitializer != nil {
-		return m.indexDriverInitializer(dbs)
-	}
-	return nil
 }
 
 func (m *DuckHarness) WithProvider(provider sql.DatabaseProvider) *DuckHarness {

@@ -15,6 +15,7 @@
 package binlogreplication
 
 import (
+	"context"
 	stdsql "database/sql"
 	"encoding/binary"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,14 +37,10 @@ import (
 	"github.com/dolthub/go-mysql-server/sql/binlogreplication"
 	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/types"
-	doltvtmysql "github.com/dolthub/vitess/go/mysql"
+	"github.com/dolthub/vitess/go/mysql"
+	"github.com/dolthub/vitess/go/sqltypes"
+	vquery "github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/sirupsen/logrus"
-	"vitess.io/vitess/go/mysql"
-	vbinlog "vitess.io/vitess/go/mysql/binlog"
-	"vitess.io/vitess/go/mysql/replication"
-	"vitess.io/vitess/go/mysql/sqlerror"
-	"vitess.io/vitess/go/sqltypes"
-	vquery "vitess.io/vitess/go/vt/proto/query"
 )
 
 // positionStore is a singleton instance for loading/saving binlog position state to disk for durable storage.
@@ -57,6 +55,10 @@ type tableIdentifier struct {
 	dbName, tableName string
 }
 
+type queryFlushRequest struct {
+	response chan error
+}
+
 // binlogReplicaApplier represents the process that applies updates from a binlog connection.
 //
 // This type is NOT used concurrently – there is currently only one single applier process running to process binlog
@@ -66,16 +68,19 @@ type binlogReplicaApplier struct {
 	tableMapsById         map[uint64]*mysql.TableMap
 	tablesByName          map[tableIdentifier]sql.Table
 	stopReplicationChan   chan struct{}
-	currentGtid           replication.GTID
+	currentGtid           mysql.GTID
 	replicationSourceUuid string
-	currentPosition       replication.Position // successfully executed GTIDs
+	currentPosition       mysql.Position // successfully executed GTIDs
 	filters               *filterConfiguration
 	running               atomic.Bool
 	engine                *gms.Engine
+	lifecycleMutex        sync.Mutex
+	queryFlushRequests    chan queryFlushRequest
+	runDone               chan struct{}
 
 	tableWriterProvider TableWriterProvider
-	previousGtid        replication.GTID
-	pendingPosition     replication.Position
+	previousGtid        mysql.GTID
+	pendingPosition     mysql.Position
 	ongoingBatchTxn     atomic.Bool   // true if we're in a batched transaction, i.e., a series of binlog-format=ROW primary transactions
 	dirtyTxn            atomic.Bool   // true if we're in a transaction that is opened and/or has uncommited changes
 	dirtyStream         atomic.Bool   // true if the binlog stream does not end with a commit event
@@ -106,13 +111,36 @@ const rowFlag_rowsAreComplete = 0x0008
 
 // Go spawns a new goroutine to run the applier's binlog event handler.
 func (a *binlogReplicaApplier) Go(ctx *sql.Context) {
+	a.lifecycleMutex.Lock()
+	if a.running.Load() {
+		a.lifecycleMutex.Unlock()
+		return
+	}
+	queryFlushRequests := make(chan queryFlushRequest)
+	runDone := make(chan struct{})
+	a.queryFlushRequests = queryFlushRequests
+	a.runDone = runDone
+	a.running.Store(true)
+	a.lifecycleMutex.Unlock()
+
 	go func() {
-		a.running.Store(true)
-		err := a.replicaBinlogEventHandler(ctx)
-		a.running.Store(false)
+		err := a.replicaBinlogEventHandler(ctx, queryFlushRequests)
+		if cleanupErr := a.discardOngoingTxn(ctx); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+
+		a.lifecycleMutex.Lock()
+		if a.runDone == runDone {
+			a.running.Store(false)
+			a.queryFlushRequests = nil
+			a.runDone = nil
+			close(runDone)
+		}
+		a.lifecycleMutex.Unlock()
+
 		if err != nil {
 			ctx.GetLogger().Errorf("unexpected error of type %T: '%v'", err, err.Error())
-			MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, err.Error())
+			MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, err.Error())
 		}
 	}()
 }
@@ -120,6 +148,45 @@ func (a *binlogReplicaApplier) Go(ctx *sql.Context) {
 // IsRunning returns true if this binlog applier is running and has not been stopped, otherwise returns false.
 func (a *binlogReplicaApplier) IsRunning() bool {
 	return a.running.Load()
+}
+
+// RequestQueryFlush asks the active applier run to make completed replication
+// work visible. The applier owns both the delta buffer and replication position,
+// so a foreground query must never flush either one directly.
+func (a *binlogReplicaApplier) RequestQueryFlush(ctx context.Context) error {
+	a.lifecycleMutex.Lock()
+	if !a.running.Load() || a.queryFlushRequests == nil || a.runDone == nil {
+		a.lifecycleMutex.Unlock()
+		return nil
+	}
+	requests := a.queryFlushRequests
+	runDone := a.runDone
+	a.lifecycleMutex.Unlock()
+
+	request := queryFlushRequest{response: make(chan error, 1)}
+	select {
+	case requests <- request:
+	case <-runDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case err := <-request.response:
+		return err
+	case <-runDone:
+		// If the applier handled the request immediately before exiting, preserve
+		// its result instead of racing the run-done notification.
+		select {
+		case err := <-request.response:
+			return err
+		default:
+			return nil
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // This function will connect to the MySQL server and check the GTID_MODE.
@@ -156,11 +223,8 @@ func detectVersionAndGTIDMode(ctx *sql.Context, params mysql.ConnParams) (mariaD
 		return mariaDB, false, errors.New("no rows returned when checking GTID_MODE")
 	}
 
-	gtidMode, err = qr.Rows[0][0].ToBool()
-	if err != nil {
-		gtidMode = strings.EqualFold(string(qr.Rows[0][0].Raw()), "ON") ||
-			string(qr.Rows[0][0].Raw()) == "1"
-	}
+	gtidModeValue := qr.Rows[0][0].ToString()
+	gtidMode = strings.EqualFold(gtidModeValue, "ON") || gtidModeValue == "1"
 
 	return mariaDB, gtidMode, nil
 }
@@ -217,11 +281,11 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 		}
 
 		if !gtidMode {
-			flavorName = replication.FilePosFlavorID
+			flavorName = filePosFlavorID
 		} else if mariaDB {
-			flavorName = replication.MariadbFlavorID
+			flavorName = mariadbFlavorID
 		} else {
-			flavorName = replication.Mysql56FlavorID
+			flavorName = mysql56FlavorID
 		}
 		connParams.Flavor = flavorName
 
@@ -264,10 +328,10 @@ func (a *binlogReplicaApplier) connectAndStartReplicationEventStream(ctx *sql.Co
 	return conn, nil
 }
 
-func (a *binlogReplicaApplier) loadGtidPosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
+func (a *binlogReplicaApplier) loadGtidPosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (mysql.Position, error) {
 	position, err := positionStore.Load(flavorName, ctx, a.engine)
 	if err != nil {
-		return replication.Position{}, err
+		return mysql.Position{}, err
 	}
 
 	if position.IsZero() {
@@ -288,9 +352,9 @@ func (a *binlogReplicaApplier) loadGtidPosition(ctx *sql.Context, positionStore 
 				gtidPurged = gtidPurged[1:]
 			}
 
-			purged, err := replication.ParsePosition(flavorName, gtidPurged)
+			purged, err := mysql.ParsePosition(flavorName, gtidPurged)
 			if err != nil {
-				return replication.Position{}, err
+				return mysql.Position{}, err
 			}
 			position = purged
 		}
@@ -303,32 +367,27 @@ func (a *binlogReplicaApplier) loadGtidPosition(ctx *sql.Context, positionStore 
 		// Also... "starting position" is a bit of a misnomer – it's actually the processed GTIDs, which
 		// indicate the NEXT GTID where replication should start, but it's not as direct as specifying
 		// a starting position, like the Vitess function signature seems to suggest.
-		gtid := replication.Mysql56GTID{
+		gtid := mysql.Mysql56GTID{
 			Sequence: 1,
 		}
-		position = replication.Position{GTIDSet: gtid.GTIDSet()}
+		position = mysql.Position{GTIDSet: gtid.GTIDSet()}
 	}
 
 	return position, nil
 }
 
 // another method like "initializedGtidPosition" to get the current log file based position
-func (a *binlogReplicaApplier) loadLogFilePosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (replication.Position, error) {
+func (a *binlogReplicaApplier) loadLogFilePosition(ctx *sql.Context, positionStore *binlogPositionStore, flavorName string) (mysql.Position, error) {
 	position, err := positionStore.Load(flavorName, ctx, a.engine)
 	if err != nil {
-		return replication.Position{}, err
+		return mysql.Position{}, err
 	}
 
 	if position.IsZero() {
-		replicaSourceInfo, err := loadReplicationConfiguration(ctx, a.engine.Analyzer.Catalog.MySQLDb)
+		position, err = newFilePosition("", 0)
 		if err != nil {
-			return replication.Position{}, err
+			return mysql.Position{}, err
 		}
-		filePosGtid := replication.FilePosGTID{
-			File: replicaSourceInfo.SourceLogFile,
-			Pos:  uint32(replicaSourceInfo.SourceLogPos),
-		}
-		position = replication.Position{GTIDSet: filePosGtid}
 	}
 
 	return position, nil
@@ -337,12 +396,19 @@ func (a *binlogReplicaApplier) loadLogFilePosition(ctx *sql.Context, positionSto
 // startReplicationEventStream sends a request over |conn|, the connection to the MySQL source server, to begin
 // sending binlog events.
 func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, conn *mysql.Conn, gtidMode bool, flavorName string) error {
+	// A disconnected stream may have applied keyless changes directly into the
+	// applier transaction or buffered indexed changes in delta. Neither may
+	// survive reconnection without its matching commit event and position.
+	if err := a.discardOngoingTxn(ctx); err != nil {
+		return fmt.Errorf("unable to discard incomplete replication transaction: %w", err)
+	}
+
 	serverId, err := loadReplicaServerId()
 	if err != nil {
 		return err
 	}
 
-	var position replication.Position
+	var position mysql.Position
 	if gtidMode {
 		position, err = a.loadGtidPosition(ctx, positionStore, flavorName)
 		if err != nil {
@@ -365,16 +431,10 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 	// to interpret any event messages before we receive the new format description from the new stream.
 	a.format = nil
 
-	// Clear out the transactional states and the delta buffer
+	// Clear out the transactional states for the new stream.
 	a.previousGtid = nil
 	a.currentGtid = nil
-	a.ongoingBatchTxn.Store(false)
-	a.dirtyTxn.Store(false)
-	a.dirtyStream.Store(false)
-	a.inTxnStmtID.Store(0)
 	a.lastCommitTime = time.Now()
-	a.tableWriterProvider.DiscardDeltaBuffer(ctx)
-	a.deltaBufSize.Store(0)
 
 	// If the source server has binlog checksums enabled (@@global.binlog_checksum), then the replica MUST
 	// set @master_binlog_checksum to handshake with the server to acknowledge that it knows that checksums
@@ -387,8 +447,8 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 	}
 
 	binlogFile := ""
-	if filePos, ok := position.GTIDSet.(replication.FilePosGTID); ok {
-		binlogFile = filePos.File
+	if file, _, ok := parseFilePosition(position); ok {
+		binlogFile = file
 	}
 
 	ctx.GetLogger().WithFields(logrus.Fields{
@@ -397,12 +457,12 @@ func (a *binlogReplicaApplier) startReplicationEventStream(ctx *sql.Context, con
 		"position":   position.String(),
 	}).Trace("Sending binlog dump command to source")
 
-	return conn.SendBinlogDumpCommand(serverId, binlogFile, position)
+	return conn.SendBinlogDumpCommand(serverId, position)
 }
 
 // replicaBinlogEventHandler runs a loop, processing binlog events until the applier's stop replication channel
 // receives a signal to stop.
-func (a *binlogReplicaApplier) replicaBinlogEventHandler(ctx *sql.Context) error {
+func (a *binlogReplicaApplier) replicaBinlogEventHandler(ctx *sql.Context, queryFlushRequests <-chan queryFlushRequest) error {
 	engine := a.engine
 
 	var conn *mysql.Conn
@@ -434,11 +494,11 @@ func (a *binlogReplicaApplier) replicaBinlogEventHandler(ctx *sql.Context) error
 			err := a.processBinlogEvent(ctx, engine, event)
 			if err != nil {
 				ctx.GetLogger().Errorf("unexpected error of type %T: '%v'", err, err.Error())
-				MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, err.Error())
+				MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, err.Error())
 			}
 
 		case err := <-eventProducer.ErrorChan():
-			if sqlError, isSqlError := err.(*sqlerror.SQLError); isSqlError {
+			if sqlError, isSqlError := err.(*mysql.SQLError); isSqlError {
 				badConnection := sqlError.Message == io.EOF.Error() ||
 					strings.HasPrefix(sqlError.Message, io.ErrUnexpectedEOF.Error())
 				if badConnection {
@@ -467,6 +527,16 @@ func (a *binlogReplicaApplier) replicaBinlogEventHandler(ctx *sql.Context) error
 				}
 			}
 
+		case request := <-queryFlushRequests:
+			var err error
+			if a.ongoingBatchTxn.Load() && !a.dirtyStream.Load() {
+				err = a.commitOngoingTxn(ctx, engine, NormalCommit, delta.QueryFlushReason)
+				if err != nil {
+					recordReplicationError(ctx, err)
+				}
+			}
+			request.response <- err
+
 		case <-a.stopReplicationChan:
 			ctx.GetLogger().Trace("received stop replication signal")
 			eventProducer.Stop()
@@ -482,7 +552,38 @@ func (a *binlogReplicaApplier) replicaBinlogEventHandler(ctx *sql.Context) error
 
 func recordReplicationError(ctx *sql.Context, err error) {
 	ctx.GetLogger().Errorf("unexpected error of type %T: '%v'", err, err.Error())
-	MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, err.Error())
+	MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, err.Error())
+}
+
+func (a *binlogReplicaApplier) discardOngoingTxn(ctx *sql.Context) error {
+	var rollbackErr error
+	if txn := ctx.GetTransaction(); txn != nil {
+		if session, ok := ctx.Session.(sql.TransactionSession); ok {
+			rollbackErr = session.Rollback(ctx, txn)
+		} else {
+			rollbackErr = fmt.Errorf("replication session does not support transactions")
+		}
+		ctx.SetTransaction(nil)
+		ctx.SetIgnoreAutoCommit(false)
+	}
+
+	// Most replication transactions are owned by the GMS transaction above.
+	// Keep a fallback for direct writers that opened only the DuckDB transaction.
+	if txn := adapter.TryGetTxn(ctx); txn != nil {
+		if err := txn.Rollback(); err != nil && err != stdsql.ErrTxDone {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+		adapter.CloseTxn(ctx)
+	}
+
+	a.tableWriterProvider.DiscardDeltaBuffer(ctx)
+	a.pendingPosition = a.currentPosition
+	a.ongoingBatchTxn.Store(false)
+	a.dirtyTxn.Store(false)
+	a.dirtyStream.Store(false)
+	a.inTxnStmtID.Store(0)
+	a.deltaBufSize.Store(0)
+	return rollbackErr
 }
 
 // processBinlogEvent processes a single binlog event message and returns an error if there were any problems
@@ -490,8 +591,12 @@ func recordReplicationError(ctx *sql.Context, err error) {
 func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.Engine, event mysql.BinlogEvent) error {
 	var err error
 
-	// TODO(fan): detect server ID changes and reset the replication
-	MyBinlogReplicaController.setSourceServerID(event.ServerID())
+	// File-position replication emits synthetic GTID events whose Bytes method
+	// panics. Only real wire events expose the concrete ServerID method.
+	if serverID, ok := binlogEventServerID(event); ok {
+		// TODO(fan): detect server ID changes and reset the replication
+		MyBinlogReplicaController.setSourceServerID(serverID)
+	}
 
 	// We don't support checksum validation, so we MUST strip off any checksum bytes if present, otherwise it gets
 	// interpreted as part of the payload and corrupts the data. Future checksum sizes, are not guaranteed to be the
@@ -505,7 +610,7 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 		if err != nil {
 			msg := fmt.Sprintf("unable to strip checksum from binlog event: '%v'", err.Error())
 			ctx.GetLogger().Error(msg)
-			MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, msg)
+			MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, msg)
 		}
 	}
 
@@ -558,7 +663,7 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 		}
 
 		var msg string
-		if flags&doltvtmysql.QFlagOptionAutoIsNull > 0 {
+		if flags&mysql.QFlagOptionAutoIsNull > 0 {
 			msg = "Setting sql_auto_is_null ON"
 			ctx.SetSessionVariable(ctx, "sql_auto_is_null", 1)
 		} else {
@@ -569,7 +674,7 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 			logger.Trace(msg)
 		}
 
-		if flags&doltvtmysql.QFlagOptionNotAutocommit > 0 {
+		if flags&mysql.QFlagOptionNotAutocommit > 0 {
 			msg = "Setting autocommit=0"
 			ctx.SetSessionVariable(ctx, "autocommit", 0)
 		} else {
@@ -580,7 +685,7 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 			logger.Trace(msg)
 		}
 
-		if flags&doltvtmysql.QFlagOptionNoForeignKeyChecks > 0 {
+		if flags&mysql.QFlagOptionNoForeignKeyChecks > 0 {
 			msg = "Setting foreign_key_checks=0"
 			ctx.SetSessionVariable(ctx, "foreign_key_checks", 0)
 		} else {
@@ -592,7 +697,7 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 		}
 
 		// NOTE: unique_checks is not currently honored by Dolt
-		if flags&doltvtmysql.QFlagOptionRelaxedUniqueChecks > 0 {
+		if flags&mysql.QFlagOptionRelaxedUniqueChecks > 0 {
 			msg = "Setting unique_checks=0"
 			ctx.SetSessionVariable(ctx, "unique_checks", 0)
 		} else {
@@ -609,7 +714,7 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 				"query": query.SQL,
 			}).Error("Applying query failed")
 			msg := fmt.Sprintf("Applying query failed: %v", err.Error())
-			MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, msg)
+			MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, msg)
 		}
 		a.inTxnStmtID.Add(1)
 
@@ -732,7 +837,7 @@ func (a *binlogReplicaApplier) processBinlogEvent(ctx *sql.Context, engine *gms.
 			if flags != 0 {
 				msg := fmt.Sprintf("unsupported binlog protocol message: TableMap event with unsupported flags '%x'", flags)
 				ctx.GetLogger().Error(msg)
-				MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, msg)
+				MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, msg)
 			}
 			a.tableMapsById[tableId] = tableMap
 		}
@@ -796,7 +901,7 @@ func (a *binlogReplicaApplier) commitOngoingTxn(ctx *sql.Context, engine *gms.En
 	// If the commit is caused implicitly (by, e.g., a BEGIN statment or a DDL statement),
 	// then we don't want to update the saved position to include the current GTID.
 	if kind != ImplicitCommitBeforeStmt {
-		a.pendingPosition = replication.AppendGTID(a.pendingPosition, a.currentGtid)
+		a.pendingPosition = mysql.AppendGTID(a.pendingPosition, a.currentGtid)
 	}
 	if err := positionStore.Save(ctx, engine, a.pendingPosition); err != nil {
 		return fmt.Errorf("unable to store GTID executed metadata to disk: %s", err.Error())
@@ -861,7 +966,7 @@ func (a *binlogReplicaApplier) extendOrCommitBatchTxn(ctx *sql.Context, engine *
 	// If we're in a batched transaction, then we don't want to commit yet.
 	extend, reason := a.mayExtendBatchTxn()
 	if extend {
-		a.pendingPosition = replication.AppendGTID(a.pendingPosition, a.currentGtid)
+		a.pendingPosition = mysql.AppendGTID(a.pendingPosition, a.currentGtid)
 		a.dirtyStream.Store(false)
 		return nil
 	}
@@ -912,7 +1017,7 @@ func (a *binlogReplicaApplier) executeQueryWithEngine(ctx *sql.Context, engine *
 		if extendable {
 			// If we're in an extended batched transaction,
 			// then we don't want to start a new transaction yet.
-			a.pendingPosition = replication.AppendGTID(a.pendingPosition, a.previousGtid)
+			a.pendingPosition = mysql.AppendGTID(a.pendingPosition, a.previousGtid)
 			a.dirtyStream.Store(true)
 			return nil
 		}
@@ -1034,20 +1139,11 @@ func (a *binlogReplicaApplier) processRowEvent(ctx *sql.Context, event mysql.Bin
 		}).Tracef("Processing rows from %s event", eventName)
 	}
 
-	flags := rows.Flags
-	foreignKeyChecksDisabled := false
-	if flags&rowFlag_endOfStatement > 0 {
-		// nothing to be done for end of statement; just clear the flag and move on
-		flags = flags &^ rowFlag_endOfStatement
-	}
-	if flags&rowFlag_noForeignKeyChecks > 0 {
-		foreignKeyChecksDisabled = true
-		flags = flags &^ rowFlag_noForeignKeyChecks
-	}
+	foreignKeyChecksDisabled, flags := classifyRowEventFlags(rows.Flags)
 	if flags != 0 {
 		msg := fmt.Sprintf("unsupported binlog protocol message: row event with unsupported flags '%x'", flags)
 		ctx.GetLogger().Error(msg)
-		MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, msg)
+		MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, msg)
 	}
 	pkSchema, tableName, err := a.getTableSchema(ctx, engine, tableMap.Name, tableMap.Database)
 	if err != nil {
@@ -1085,6 +1181,12 @@ func (a *binlogReplicaApplier) processRowEvent(ctx *sql.Context, event mysql.Bin
 		a.ongoingBatchTxn.Store(false)
 		return a.writeChanges(ctx, engine, tableMap, tableName, pkSchema, eventType, &rows, foreignKeyChecksDisabled)
 	}
+}
+
+func classifyRowEventFlags(flags uint16) (foreignKeyChecksDisabled bool, unsupported uint16) {
+	foreignKeyChecksDisabled = flags&rowFlag_noForeignKeyChecks != 0
+	unsupported = flags &^ (rowFlag_endOfStatement | rowFlag_noForeignKeyChecks)
+	return foreignKeyChecksDisabled, unsupported
 }
 
 func (a *binlogReplicaApplier) writeChanges(
@@ -1189,20 +1291,22 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 	)
 
 	switch gtid := a.currentGtid.(type) {
-	case replication.Mysql56GTID:
+	case mysql.Mysql56GTID:
 		// TODO(fan): Add support for GTID tags in MySQL >=8.4
 		txnServer = gtid.Server[:]
 		txnSeq = uint64(gtid.Sequence)
-	case replication.FilePosGTID:
-		txnGroup = []byte(gtid.File)
-		txnSeq = uint64(gtid.Pos)
-	case replication.MariadbGTID:
+	case mysql.MariadbGTID:
 		var domain, server [4]byte
 		binary.BigEndian.PutUint32(domain[:], gtid.Domain)
 		binary.BigEndian.PutUint32(server[:], gtid.Server)
 		txnTag = domain[:]
 		txnServer = server[:]
 		txnSeq = gtid.Sequence
+	default:
+		if file, pos, ok := parseFileGTID(a.currentGtid); ok {
+			txnGroup = []byte(file)
+			txnSeq = pos
+		}
 	}
 
 	// The following code is a bit repetitive, but we want to avoid the overhead of function calls for each row.
@@ -1287,7 +1391,7 @@ func (a *binlogReplicaApplier) flushDeltaBuffer(ctx *sql.Context, reason delta.F
 
 	if err = a.tableWriterProvider.FlushDeltaBuffer(ctx, conn, tx, reason); err != nil {
 		ctx.GetLogger().Errorf("Failed to flush changelog: %v", err.Error())
-		MyBinlogReplicaController.setSqlError(sqlerror.ERUnknownError, err.Error())
+		MyBinlogReplicaController.setSqlError(mysql.ERUnknownError, err.Error())
 	}
 	return err
 }
@@ -1356,10 +1460,10 @@ func (a *binlogReplicaApplier) getTableSchema(ctx *sql.Context, engine *gms.Engi
 	}
 
 	if pkTable, ok := table.(sql.PrimaryKeyTable); ok {
-		return pkTable.PrimaryKeySchema(), table.Name(), nil
+		return pkTable.PrimaryKeySchema(ctx), table.Name(), nil
 	}
 
-	return sql.NewPrimaryKeySchema(table.Schema()), table.Name(), nil
+	return sql.NewPrimaryKeySchema(table.Schema(ctx)), table.Name(), nil
 }
 
 // parseRow parses the binary row data from a MySQL binlog event and converts it into a go-mysql-server Row using the
@@ -1386,11 +1490,7 @@ func parseRow(ctx *sql.Context, engine *gms.Engine, tableMap *mysql.TableMap, sc
 			}
 		} else {
 			var length int
-			value, length, err = vbinlog.CellValue(data, pos, typ, tableMap.Metadata[i], &vquery.Field{
-				Name:       column.Name,
-				Type:       vquery.Type(column.Type.Type()),
-				ColumnType: column.Type.String(),
-			})
+			value, length, err = mysql.CellValue(data, pos, typ, tableMap.Metadata[i], vquery.Type(column.Type.Type()))
 			if err != nil {
 				return nil, err
 			}
@@ -1425,7 +1525,7 @@ func convertSqlTypesValue(ctx *sql.Context, engine *gms.Engine, value sqltypes.V
 		if !ok || errors.Is(err, charset.ErrUnsupported) {
 			// Unsupported character set, return the raw bytes as a string (Go's string can hold arbitrary bytes).
 			// TODO(fan): When written to DuckDB, the string is interpreted as UTF-8, which may cause issues.
-			convertedValue, _, err = column.Type.Convert(value.ToString())
+			convertedValue, _, err = column.Type.Convert(ctx, value.ToString())
 		}
 
 	case types.IsEnum(column.Type), types.IsSet(column.Type):
@@ -1434,7 +1534,7 @@ func convertSqlTypesValue(ctx *sql.Context, engine *gms.Engine, value sqltypes.V
 		if err != nil {
 			return nil, err
 		}
-		convertedValue, _, err = column.Type.Convert(atoi)
+		convertedValue, _, err = column.Type.Convert(ctx, atoi)
 		if err != nil {
 			return nil, err
 		}
@@ -1451,15 +1551,15 @@ func convertSqlTypesValue(ctx *sql.Context, engine *gms.Engine, value sqltypes.V
 		// Decimal values need to have any leading/trailing whitespace trimmed off
 		// TODO: Consider moving this into DecimalType_.Convert; if DecimalType_.Convert handled trimming
 		//       leading/trailing whitespace, this special case for Decimal types wouldn't be needed.
-		convertedValue, _, err = column.Type.Convert(strings.TrimSpace(value.ToString()))
+		convertedValue, _, err = column.Type.Convert(ctx, strings.TrimSpace(value.ToString()))
 	case types.IsTimespan(column.Type):
-		convertedValue, _, err = column.Type.Convert(value.ToString())
+		convertedValue, _, err = column.Type.Convert(ctx, value.ToString())
 		if err != nil {
 			return nil, err
 		}
 		convertedValue = convertedValue.(types.Timespan).String()
 	default:
-		convertedValue, _, err = column.Type.Convert(value.ToString())
+		convertedValue, _, err = column.Type.Convert(ctx, value.ToString())
 
 		// logrus.WithField("column", column.Name).WithField("type", column.Type).Infof(
 		// 	"Converting value[%s %v %s] to %v %T",
@@ -1499,7 +1599,7 @@ func loadReplicaServerId() (uint32, error) {
 	serverId, ok := value.(uint32)
 	if !ok {
 		var err error
-		value, _, err = serverIdVar.GetType().Convert(value)
+		value, _, err = serverIdVar.GetType().Convert(context.Background(), value)
 		if err != nil {
 			return 0, err
 		}

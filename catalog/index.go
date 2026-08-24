@@ -1,6 +1,11 @@
 package catalog
 
-import "github.com/dolthub/go-mysql-server/sql"
+import (
+	"strings"
+
+	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/expression"
+)
 
 type Index struct {
 	DbName     string
@@ -93,12 +98,12 @@ func (idx *Index) IsGenerated() bool {
 // Each expression string should exactly match the string returned from
 // Index.Expressions().
 // ColumnExpressionTypes implements the interface sql.Index.
-func (idx *Index) ColumnExpressionTypes() []sql.ColumnExpressionType {
+func (idx *Index) ColumnExpressionTypes(ctx *sql.Context) []sql.ColumnExpressionType {
 	cets := make([]sql.ColumnExpressionType, len(idx.Exprs))
 	for i, expr := range idx.Exprs {
 		cets[i] = sql.ColumnExpressionType{
 			Expression: expr.String(),
-			Type:       expr.Type(),
+			Type:       expr.Type(ctx),
 		}
 	}
 	return cets
@@ -106,8 +111,26 @@ func (idx *Index) ColumnExpressionTypes() []sql.ColumnExpressionType {
 
 // CanSupport returns whether this index supports lookups on the given
 // range filters.
-func (idx *Index) CanSupport(ranges ...sql.Range) bool {
+func (idx *Index) CanSupport(_ *sql.Context, ranges ...sql.Range) bool {
 	// Assuming true as default
+	return true
+}
+
+// CoversColumns reports whether every requested column is present in this index.
+func (idx *Index) CoversColumns(cols []string) bool {
+	for _, col := range cols {
+		found := false
+		for _, expr := range idx.Exprs {
+			field, ok := expr.(*expression.GetField)
+			if ok && strings.EqualFold(col, field.Name()) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
 	return true
 }
 

@@ -16,6 +16,8 @@ package binlogreplication
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -27,11 +29,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	toxiproxyclient "github.com/Shopify/toxiproxy/v2/client"
 	"github.com/apecloud/myduckserver/testutil"
-	_ "github.com/go-sql-driver/mysql"
+	drivermysql "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
 
@@ -156,6 +160,354 @@ func TestBinlogReplicationSanityCheck(t *testing.T) {
 	primaryDatabase.MustExec("update tableT set pk = 300")
 	waitForReplicaToCatchUp(t)
 	requireReplicaResults(t, "select * from db01.tableT", [][]any{{"300"}})
+
+	// Newer GMS resolves a fully qualified database before the session needs its
+	// first DuckDB connection. Verify this fresh session uses this provider's
+	// catalog, while an actually unknown database still fails.
+	freshReplica := sqlx.MustOpen("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%d)/", duckPort))
+	t.Cleanup(func() {
+		require.NoError(t, freshReplica.Close())
+	})
+	requireResults(t, freshReplica, "select * from db01.tableT", [][]any{{"300"}})
+	_, err := freshReplica.Exec("select * from task52_missing.tableT")
+	require.Error(t, err)
+	var mysqlErr *drivermysql.MySQLError
+	require.ErrorAs(t, err, &mysqlErr)
+	require.Equal(t, uint16(1049), mysqlErr.Number)
+}
+
+func TestQueryFlushRequestLifecycle(t *testing.T) {
+	startRun := func(a *binlogReplicaApplier, requests chan queryFlushRequest, done chan struct{}) {
+		a.lifecycleMutex.Lock()
+		defer a.lifecycleMutex.Unlock()
+		a.queryFlushRequests = requests
+		a.runDone = done
+		a.running.Store(true)
+	}
+	finishRun := func(a *binlogReplicaApplier, done chan struct{}) {
+		a.lifecycleMutex.Lock()
+		defer a.lifecycleMutex.Unlock()
+		if a.runDone == done {
+			a.running.Store(false)
+			a.queryFlushRequests = nil
+			a.runDone = nil
+			close(done)
+		}
+	}
+
+	t.Run("no active run", func(t *testing.T) {
+		a := newBinlogReplicaApplier(newFilterConfiguration())
+		require.NoError(t, a.RequestQueryFlush(context.Background()))
+	})
+
+	t.Run("request context ends blocked send", func(t *testing.T) {
+		a := newBinlogReplicaApplier(newFilterConfiguration())
+		requests := make(chan queryFlushRequest)
+		done := make(chan struct{})
+		startRun(a, requests, done)
+		defer finishRun(a, done)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		require.ErrorIs(t, a.RequestQueryFlush(ctx), context.DeadlineExceeded)
+	})
+
+	t.Run("acknowledgement is bound to one run", func(t *testing.T) {
+		a := newBinlogReplicaApplier(newFilterConfiguration())
+		oldRequests := make(chan queryFlushRequest)
+		oldDone := make(chan struct{})
+		startRun(a, oldRequests, oldDone)
+
+		oldResult := make(chan error, 1)
+		go func() {
+			oldResult <- a.RequestQueryFlush(context.Background())
+		}()
+		oldRequest := <-oldRequests
+		finishRun(a, oldDone)
+		require.NoError(t, <-oldResult)
+
+		newRequests := make(chan queryFlushRequest)
+		newDone := make(chan struct{})
+		startRun(a, newRequests, newDone)
+		defer finishRun(a, newDone)
+
+		newRunErr := errors.New("new run response")
+		go func() {
+			request := <-newRequests
+			request.response <- newRunErr
+		}()
+		require.ErrorIs(t, a.RequestQueryFlush(context.Background()), newRunErr)
+
+		// A late response from the old run has its own response channel and cannot
+		// satisfy a request from the new run.
+		oldRequest.response <- errors.New("stale response")
+	})
+
+	t.Run("concurrent requests are all acknowledged", func(t *testing.T) {
+		a := newBinlogReplicaApplier(newFilterConfiguration())
+		requests := make(chan queryFlushRequest)
+		done := make(chan struct{})
+		startRun(a, requests, done)
+		defer finishRun(a, done)
+
+		const requestCount = 32
+		go func() {
+			for i := 0; i < requestCount; i++ {
+				request := <-requests
+				request.response <- nil
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		errs := make(chan error, requestCount)
+		for i := 0; i < requestCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- a.RequestQueryFlush(ctx)
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			require.NoError(t, err)
+		}
+	})
+}
+
+type queryFlushSnapshot struct {
+	Position     string `db:"position"`
+	PKCount      int    `db:"pk_count"`
+	KeylessCount int    `db:"keyless_count"`
+}
+
+func readQueryFlushSnapshot(t *testing.T) queryFlushSnapshot {
+	t.Helper()
+	var snapshot queryFlushSnapshot
+	require.NoError(t, replicaDatabase.Get(&snapshot, `
+		SELECT
+			(SELECT position FROM __sys__.binlog_position WHERE channel = '') AS position,
+			(SELECT COUNT(*) FROM db01.query_flush_pk) AS pk_count,
+			(SELECT COUNT(*) FROM db01.query_flush_keyless) AS keyless_count`))
+	return snapshot
+}
+
+func requireQueryFlushVisibility(
+	t *testing.T,
+	previousPosition string,
+	previousPKCount, previousKeylessCount int,
+	expectedPKCount, expectedKeylessCount int,
+) queryFlushSnapshot {
+	t.Helper()
+	var visible queryFlushSnapshot
+	require.Eventually(t, func() bool {
+		snapshot := readQueryFlushSnapshot(t)
+		if snapshot.Position == previousPosition {
+			require.Equal(t, previousPKCount, snapshot.PKCount)
+			require.Equal(t, previousKeylessCount, snapshot.KeylessCount)
+			return false
+		}
+		visible = snapshot
+		require.Equal(t, expectedPKCount, snapshot.PKCount)
+		require.Equal(t, expectedKeylessCount, snapshot.KeylessCount)
+		return true
+	}, 3*time.Second, 10*time.Millisecond)
+	return visible
+}
+
+func TestBinlogReplicationQueryFlushCommitVisibility(t *testing.T) {
+	defer teardown(t)
+	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
+	startReplicationAndCreateTestDb(t, mySqlPort)
+
+	primaryDatabase.MustExec("CREATE TABLE query_flush_pk (pk INT PRIMARY KEY, value INT)")
+	primaryDatabase.MustExec("CREATE TABLE query_flush_keyless (pk INT, value INT)")
+	waitForReplicaToCatchUp(t)
+
+	initial := readQueryFlushSnapshot(t)
+	tx := primaryDatabase.MustBegin()
+	tx.MustExec("INSERT INTO query_flush_pk VALUES (1, 10)")
+	require.NoError(t, tx.Commit())
+	single := requireQueryFlushVisibility(t, initial.Position, 0, 0, 1, 0)
+	require.Equal(t, 1, single.PKCount)
+	require.Equal(t, 0, single.KeylessCount)
+
+	tx = primaryDatabase.MustBegin()
+	tx.MustExec("INSERT INTO query_flush_pk VALUES (2, 20), (3, 30)")
+	tx.MustExec("INSERT INTO query_flush_keyless VALUES (1, 10), (2, 20), (3, 30)")
+	require.NoError(t, tx.Commit())
+	multi := requireQueryFlushVisibility(t, single.Position, 1, 0, 3, 3)
+	require.Equal(t, 3, multi.PKCount)
+	require.Equal(t, 3, multi.KeylessCount)
+}
+
+func TestBinlogReplicationTimeWireCompatibility(t *testing.T) {
+	defer teardown(t)
+	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
+	startReplicationAndCreateTestDb(t, mySqlPort)
+
+	primaryDatabase.MustExec(`CREATE TABLE time_wire (
+		pk INT PRIMARY KEY,
+		time_default TIME,
+		time_0 TIME(0),
+		time_3 TIME(3),
+		time_6 TIME(6))`)
+	primaryDatabase.MustExec(`INSERT INTO time_wire VALUES
+		(1, '01:02:03.000000', '01:02:03.000000', '01:02:03.000000', '01:02:03.000000'),
+		(2, '01:02:03.123456', '01:02:03.123456', '01:02:03.123456', '01:02:03.123456')`)
+	waitForReplicaToCatchUp(t)
+
+	readCreateTable := func(database *sqlx.DB) string {
+		rows, err := database.Queryx("SHOW CREATE TABLE db01.time_wire")
+		require.NoError(t, err)
+		defer rows.Close()
+		require.True(t, rows.Next())
+		var tableName, definition string
+		require.NoError(t, rows.Scan(&tableName, &definition))
+		require.Equal(t, "time_wire", tableName)
+		return definition
+	}
+	type timeWireResult struct {
+		rows       []map[string]interface{}
+		precisions []int64
+	}
+	readTimeRows := func(rows *sqlx.Rows) timeWireResult {
+		t.Helper()
+		defer rows.Close()
+		columnTypes, err := rows.ColumnTypes()
+		require.NoError(t, err)
+		require.Len(t, columnTypes, 4)
+		precisions := make([]int64, len(columnTypes))
+		for i, columnType := range columnTypes {
+			require.Equal(t, "TIME", strings.ToUpper(columnType.DatabaseTypeName()))
+			precision, scale, ok := columnType.DecimalSize()
+			require.True(t, ok)
+			require.Equal(t, precision, scale)
+			precisions[i] = precision
+		}
+
+		var values []map[string]interface{}
+		for rows.Next() {
+			row := make(map[string]interface{})
+			require.NoError(t, rows.MapScan(row))
+			values = append(values, convertMapScanResultToStrings(row))
+		}
+		require.NoError(t, rows.Err())
+		return timeWireResult{rows: values, precisions: precisions}
+	}
+	expectedRows := []map[string]interface{}{
+		{"time_default": "01:02:03", "time_0": "01:02:03", "time_3": "01:02:03.000", "time_6": "01:02:03.000000"},
+		{"time_default": "01:02:03", "time_0": "01:02:03", "time_3": "01:02:03.123", "time_6": "01:02:03.123456"},
+	}
+	expectedPrecisions := []int64{0, 0, 3, 6}
+	query := "SELECT time_default, time_0, time_3, time_6 FROM db01.time_wire ORDER BY pk"
+
+	sourceDefinition := readCreateTable(primaryDatabase)
+	sourceDefinitionNormalized := strings.ToLower(sourceDefinition)
+	require.Contains(t, sourceDefinitionNormalized, "`time_default` time")
+	require.Contains(t, sourceDefinitionNormalized, "`time_0` time")
+	require.Contains(t, sourceDefinitionNormalized, "`time_3` time(3)")
+	require.Contains(t, sourceDefinitionNormalized, "`time_6` time(6)")
+	sourceRows, err := primaryDatabase.Queryx(query)
+	require.NoError(t, err)
+	sourceWire := readTimeRows(sourceRows)
+	require.Equal(t, expectedRows, sourceWire.rows)
+	require.Equal(t, expectedPrecisions, sourceWire.precisions)
+
+	targetDefinition := readCreateTable(replicaDatabase)
+	targetDefinitionNormalized := strings.ToLower(sanitizeCreateTableString(targetDefinition))
+	require.Contains(t, targetDefinitionNormalized, "time_default time")
+	require.Contains(t, targetDefinitionNormalized, "time_0 time")
+	require.Contains(t, targetDefinitionNormalized, "time_3 time(3)")
+	require.Contains(t, targetDefinitionNormalized, "time_6 time(6)")
+	targetRows, err := replicaDatabase.Queryx(query)
+	require.NoError(t, err)
+	targetWire := readTimeRows(targetRows)
+	require.Equal(t, expectedRows, targetWire.rows)
+	require.Equal(t, expectedPrecisions, targetWire.precisions)
+
+	stmt, err := replicaDatabase.Preparex(query)
+	require.NoError(t, err)
+	defer stmt.Close()
+	preparedRows, err := stmt.Queryx()
+	require.NoError(t, err)
+	preparedWire := readTimeRows(preparedRows)
+	require.Equal(t, targetWire, preparedWire)
+
+	t.Logf("TIME source definition: %s", sourceDefinition)
+	t.Logf("TIME source metadata: %v", sourceWire.precisions)
+	t.Logf("TIME source wire: %v", sourceWire.rows)
+	t.Logf("TIME target definition: %s", targetDefinition)
+	t.Logf("TIME target ordinary metadata: %v", targetWire.precisions)
+	t.Logf("TIME target ordinary wire: %v", targetWire.rows)
+	t.Logf("TIME target prepared metadata: %v", preparedWire.precisions)
+	t.Logf("TIME target prepared wire: %v", preparedWire.rows)
+}
+
+func TestBinlogReplicationQueryFlushReconnectBarrier(t *testing.T) {
+	defer teardown(t)
+	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
+	statusBeforeConfiguration := showReplicaStatus(t)
+	require.Equal(t, "Ignored", statusBeforeConfiguration["Source_SSL_Allowed"])
+
+	configureToxiProxy(t)
+	configureFastConnectionRetry(t)
+	startReplication(t, proxyPort)
+	statusAfterConfiguration := showReplicaStatus(t)
+	require.Equal(t, "Ignored", statusAfterConfiguration["Source_SSL_Allowed"])
+
+	primaryDatabase.MustExec("CREATE DATABASE db01")
+	waitForReplicaToCatchUp(t)
+	primaryDatabase.MustExec("USE db01")
+	replicaDatabase.MustExec("USE db01")
+
+	primaryDatabase.MustExec("CREATE TABLE query_flush_pk (pk INT PRIMARY KEY, value VARCHAR(255))")
+	primaryDatabase.MustExec("CREATE TABLE query_flush_keyless (pk INT, value VARCHAR(255))")
+	waitForReplicaToCatchUp(t)
+	before := readQueryFlushSnapshot(t)
+
+	_, err := mysqlProxy.AddToxic("query_flush_limit", "limit_data", "downstream", 1.0, toxiproxyclient.Attributes{
+		"bytes": 5_000,
+	})
+	require.NoError(t, err)
+
+	tx := primaryDatabase.MustBegin()
+	for i := 0; i < 1000; i++ {
+		value := "foobarbazbashfoobarbazbashfoobarbazbashfoobarbazbashfoobarbazbash"
+		tx.MustExec("INSERT INTO query_flush_pk VALUES (?, ?)", i, value)
+		tx.MustExec("INSERT INTO query_flush_keyless VALUES (?, ?)", i, value)
+	}
+	require.NoError(t, tx.Commit())
+
+	require.Eventually(t, func() bool {
+		return showReplicaStatus(t)["Last_IO_Errno"] == "1158"
+	}, 30*time.Second, 100*time.Millisecond)
+	for i := 0; i < 20; i++ {
+		showReplicaStatus(t)
+		snapshot := readQueryFlushSnapshot(t)
+		require.Equal(t, before, snapshot)
+	}
+
+	require.NoError(t, mysqlProxy.RemoveToxic("query_flush_limit"))
+	waitForReplicaToCatchUp(t)
+	statusAfterReconnect := showReplicaStatus(t)
+	require.Equal(t, "Ignored", statusAfterReconnect["Source_SSL_Allowed"])
+	after := readQueryFlushSnapshot(t)
+	require.NotEqual(t, before.Position, after.Position)
+	require.Equal(t, 1000, after.PKCount)
+	require.Equal(t, 1000, after.KeylessCount)
+
+	var distinctPK, distinctKeyless int
+	require.NoError(t, replicaDatabase.Get(&distinctPK, "SELECT COUNT(DISTINCT pk) FROM db01.query_flush_pk"))
+	require.NoError(t, replicaDatabase.Get(&distinctKeyless, "SELECT COUNT(DISTINCT pk) FROM db01.query_flush_keyless"))
+	require.Equal(t, 1000, distinctPK)
+	require.Equal(t, 1000, distinctKeyless)
+	t.Logf("Source_SSL_Allowed: before configuration=%q after configuration=%q after reconnect=%q",
+		statusBeforeConfiguration["Source_SSL_Allowed"],
+		statusAfterConfiguration["Source_SSL_Allowed"],
+		statusAfterReconnect["Source_SSL_Allowed"])
 }
 
 // TestAutoRestartReplica tests that a Dolt replica automatically starts up replication if
@@ -314,6 +666,16 @@ func TestResetReplica(t *testing.T) {
 	rows, err = replicaDatabase.Queryx("RESET REPLICA ALL;")
 	require.NoError(t, err)
 	require.NoError(t, rows.Close())
+	var positionCount int
+	require.NoError(t, replicaDatabase.Get(
+		&positionCount,
+		"SELECT COUNT(*) FROM __sys__.binlog_position WHERE channel = ''",
+	))
+	if getGtidEnabled() {
+		require.Equal(t, 1, positionCount)
+	} else {
+		require.Zero(t, positionCount)
+	}
 	status = queryReplicaStatus(t)
 	require.Equal(t, "", status["Source_Host"])
 	require.Equal(t, "", status["Source_User"])
@@ -385,6 +747,33 @@ func TestShowReplicaStatus(t *testing.T) {
 	require.Equal(t, longHostname, status["Source_Host"])
 }
 
+func TestFilePositionConfigurationStatus(t *testing.T) {
+	if getGtidEnabled() {
+		t.Skip("file-position status requires GTID_ENABLED=false")
+	}
+
+	defer teardown(t)
+	startSqlServersWithSystemVars(t, duckReplicaSystemVars)
+	sourceLogFile, sourceLogPos := getPrimaryLogPosition(t, false)
+	replicaDatabase.MustExec(fmt.Sprintf(
+		"CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='%s', SOURCE_LOG_POS=%s",
+		sourceLogFile,
+		sourceLogPos,
+	))
+
+	status := showReplicaStatus(t)
+	require.Equal(t, sourceLogFile, status["Source_Log_File"])
+	require.Equal(t, sourceLogPos, status["Read_Source_Log_Pos"])
+	require.Equal(t, sourceLogFile+":"+sourceLogPos, status["Executed_Gtid_Set"])
+
+	var storedPosition string
+	require.NoError(t, replicaDatabase.Get(
+		&storedPosition,
+		"SELECT position FROM __sys__.binlog_position WHERE channel = ''",
+	))
+	require.Equal(t, filePosFlavorID+"/"+sourceLogFile+":"+sourceLogPos, storedPosition)
+}
+
 // TestStopReplica tests that STOP REPLICA correctly stops the replication process, and that
 // warnings are logged when STOP REPLICA is invoked when replication is not running.
 func TestStopReplica(t *testing.T) {
@@ -408,19 +797,25 @@ func TestStopReplica(t *testing.T) {
 	status = showReplicaStatus(t)
 	require.Equal(t, "No", status["Replica_IO_Running"])
 	require.Equal(t, "No", status["Replica_SQL_Running"])
+	replicaDatabase.MustExec("RESET REPLICA;")
+	status = showReplicaStatus(t)
+	require.Equal(t, "0", status["Last_IO_Errno"])
+	require.Equal(t, "", status["Last_IO_Error"])
 
-	// START REPLICA and verify status
+	// CHANGE back to a healthy source, START REPLICA, and verify status.
 	startReplicationAndCreateTestDb(t, mySqlPort)
 	time.Sleep(100 * time.Millisecond)
 	status = showReplicaStatus(t)
 	require.True(t, status["Replica_IO_Running"] == "Connecting" || status["Replica_IO_Running"] == "Yes")
 	require.Equal(t, "Yes", status["Replica_SQL_Running"])
+	requireReplicaFilePosition(t, status)
 
 	// STOP REPLICA stops replication when it is running and connected to the source
 	replicaDatabase.MustExec("STOP REPLICA;")
 	status = showReplicaStatus(t)
 	require.Equal(t, "No", status["Replica_IO_Running"])
 	require.Equal(t, "No", status["Replica_SQL_Running"])
+	requireReplicaFilePosition(t, status)
 
 	// STOP REPLICA logs a warning if replication is not running
 	replicaDatabase.MustExec("STOP REPLICA;")
@@ -744,6 +1139,22 @@ func getReplicaLogPosition(t *testing.T) (string, string) {
 	sourceLogFile := parts[0]
 	sourceLogPos := parts[1]
 	return sourceLogFile, sourceLogPos
+}
+
+func requireReplicaFilePosition(t *testing.T, status map[string]interface{}) {
+	t.Helper()
+	if getGtidEnabled() {
+		return
+	}
+	require.NotEmpty(t, status["Source_Log_File"])
+	require.NotEqual(t, "INVALID", status["Source_Log_File"])
+	require.NotEqual(t, "0", status["Read_Source_Log_Pos"])
+	executedPosition, ok := status["Executed_Gtid_Set"].(string)
+	require.True(t, ok)
+	file, position, ok := parseFilePositionString(executedPosition)
+	require.True(t, ok)
+	require.Equal(t, file, status["Source_Log_File"])
+	require.Equal(t, strconv.FormatUint(position, 10), status["Read_Source_Log_Pos"])
 }
 
 // startReplication configures the replication source on the replica and runs the START REPLICA statement.

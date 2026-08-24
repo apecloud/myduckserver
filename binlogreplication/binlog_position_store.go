@@ -28,7 +28,7 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	gms "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/sql"
-	"vitess.io/vitess/go/mysql/replication"
+	replication "github.com/dolthub/vitess/go/mysql"
 )
 
 const binlogPositionDirectory = ".replica"
@@ -50,18 +50,60 @@ func (store *binlogPositionStore) Load(flavor string, ctx *sql.Context, engine *
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	var positionString string
-	err = adapter.QueryRowCatalog(ctx, catalog.InternalTables.BinlogPosition.SelectStmt(), defaultChannelName).Scan(&positionString)
-	if err == stdsql.ErrNoRows {
+	positionString, found, err := loadPositionString(ctx)
+	if err != nil {
+		return replication.Position{}, err
+	}
+	if !found {
 		return replication.Position{}, nil
-	} else if err != nil {
-		return replication.Position{}, fmt.Errorf("unable to load binlog position: %w", err)
 	}
 
-	// Strip off the "MySQL56/" prefix
-	positionString = strings.TrimPrefix(positionString, "MySQL56/")
+	if hasEncodedPositionFlavor(positionString) {
+		position, err := replication.DecodePosition(positionString)
+		if err != nil {
+			return replication.Position{}, err
+		}
+		if position.GTIDSet.Flavor() != flavor {
+			return replication.Position{}, fmt.Errorf(
+				"unable to load binlog position: stored flavor %q does not match requested flavor %q",
+				position.GTIDSet.Flavor(), flavor)
+		}
+		return position, nil
+	}
 
+	// Positions written before flavor-aware persistence did not include a prefix.
 	return replication.ParsePosition(flavor, positionString)
+}
+
+// LoadEncoded loads a flavor-aware position. Legacy unprefixed positions cannot
+// be identified without the source's GTID mode, so they are reported as absent.
+func (store *binlogPositionStore) LoadEncoded(ctx *sql.Context) (replication.Position, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	positionString, found, err := loadPositionString(ctx)
+	if err != nil || !found || !hasEncodedPositionFlavor(positionString) {
+		return replication.Position{}, err
+	}
+	return replication.DecodePosition(positionString)
+}
+
+func hasEncodedPositionFlavor(positionString string) bool {
+	return strings.HasPrefix(positionString, filePosFlavorID+"/") ||
+		strings.HasPrefix(positionString, mysql56FlavorID+"/") ||
+		strings.HasPrefix(positionString, mariadbFlavorID+"/")
+}
+
+func loadPositionString(ctx *sql.Context) (string, bool, error) {
+	var positionString string
+	err := adapter.QueryRowCatalog(ctx, catalog.InternalTables.BinlogPosition.SelectStmt(), defaultChannelName).Scan(&positionString)
+	if err == stdsql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("unable to load binlog position: %w", err)
+	}
+	return positionString, true, nil
 }
 
 // Save persists the specified |position| to disk.
@@ -79,21 +121,49 @@ func (store *binlogPositionStore) Save(ctx *sql.Context, engine *gms.Engine, pos
 	if _, err := adapter.ExecCatalogInTxn(
 		ctx,
 		catalog.InternalTables.BinlogPosition.UpsertStmt(),
-		defaultChannelName, position.String(),
+		defaultChannelName, replication.EncodePosition(position),
 	); err != nil {
 		return fmt.Errorf("unable to save binlog position: %w", err)
 	}
 	return nil
 }
 
-// Delete deletes the stored mysql.Position information stored in .replica/binlog-position in the root of the provider's
-// filesystem. This is useful for the "RESET REPLICA" command, since it clears out the current replication state. If
-// any errors are encountered removing the position file, an error is returned.
-func (store *binlogPositionStore) Delete(ctx *sql.Context, engine *gms.Engine) error {
+// SaveConfiguration persists an initial file position configured by CHANGE
+// REPLICATION SOURCE. Unlike applied event positions, this write does not
+// belong to a data transaction and must be visible to the applier immediately.
+func (store *binlogPositionStore) SaveConfiguration(ctx *sql.Context, position replication.Position) error {
+	if position.IsZero() {
+		return fmt.Errorf("unable to save binlog position: empty position passed")
+	}
+
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.BinlogPosition.DeleteStmt(), defaultChannelName)
+	if _, err := adapter.ExecCatalog(
+		ctx,
+		catalog.InternalTables.BinlogPosition.UpsertStmt(),
+		defaultChannelName, replication.EncodePosition(position),
+	); err != nil {
+		return fmt.Errorf("unable to save binlog position: %w", err)
+	}
+	return nil
+}
+
+// DeleteFilePosition removes file-position configuration for RESET REPLICA
+// ALL. GTID execution history must survive reset so already-applied
+// transactions are not replayed when replication is configured again.
+func (store *binlogPositionStore) DeleteFilePosition(ctx *sql.Context, engine *gms.Engine) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	positionString, found, err := loadPositionString(ctx)
+	if err != nil || !found || !strings.HasPrefix(positionString, filePosFlavorID+"/") {
+		return err
+	}
+
+	// RESET REPLICA ALL is a configuration operation, so the deletion must not
+	// leave an internal apply transaction open on the client session.
+	_, err = adapter.ExecCatalog(ctx, catalog.InternalTables.BinlogPosition.DeleteStmt(), defaultChannelName)
 	return err
 }
 

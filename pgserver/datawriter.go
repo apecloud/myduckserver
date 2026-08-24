@@ -38,7 +38,7 @@ func NewDuckDataWriter(
 	options *tree.CopyOptions, rawOptions string,
 ) (*DuckDataWriter, error) {
 	// Create the FIFO pipe
-	db := handler.e.Analyzer.ExecBuilder.(*backend.DuckBuilder)
+	db := handler.e.Analyzer.ExecBuilder.PriorityBuilder.(*backend.DuckBuilder)
 	pipePath, err := db.CreatePipe(ctx, "pg-copy-to")
 	if err != nil {
 		return nil, err

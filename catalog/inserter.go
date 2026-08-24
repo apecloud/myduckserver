@@ -102,6 +102,7 @@ func (ri *rowInserter) StatementComplete(ctx *sql.Context) error {
 }
 
 func (ri *rowInserter) Close(ctx *sql.Context) error {
+	ri.StatementBegin(ctx)
 	defer ri.clear(ctx)
 	if ri.err == nil {
 		_, ri.err = ri.conn.ExecContext(ctx, ri.flushSQL)
@@ -110,6 +111,9 @@ func (ri *rowInserter) Close(ctx *sql.Context) error {
 }
 
 func (ri *rowInserter) Insert(ctx *sql.Context, row sql.Row) error {
+	// Insert ... RETURNING is driven directly by the GMS insert iterator, which
+	// may call Insert without wrapping it in statement-boundary callbacks.
+	ri.StatementBegin(ctx)
 	if ri.err != nil {
 		return ri.err
 	}

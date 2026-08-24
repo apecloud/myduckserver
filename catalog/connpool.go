@@ -30,16 +30,19 @@ import (
 type ConnectionPool struct {
 	*stdsql.DB
 	connector             *duckdb.Connector
+	defaultCatalog        string
 	conns                 sync.Map // concurrent-safe map[uint32]*stdsql.Conn
 	txns                  sync.Map // concurrent-safe map[uint32]*stdsql.Tx
+	closedConns           sync.Map // connection IDs that completed their lifecycle
 	registerMySQLUDFsOnce sync.Once
 	registerMySQLUDFsErr  error
 }
 
-func NewConnectionPool(connector *duckdb.Connector, db *stdsql.DB) *ConnectionPool {
+func NewConnectionPool(connector *duckdb.Connector, db *stdsql.DB, defaultCatalog string) *ConnectionPool {
 	return &ConnectionPool{
-		DB:        db,
-		connector: connector,
+		DB:             db,
+		connector:      connector,
+		defaultCatalog: defaultCatalog,
 	}
 }
 
@@ -64,13 +67,16 @@ func (p *ConnectionPool) CurrentSchema(id uint32) string {
 	return schema
 }
 
-// CurrentCatalog retrieves the current catalog of the connection.
-// Returns an empty string if the connection is not established
-// or the catalog cannot be retrieved.
+// CurrentCatalog retrieves the current catalog of the connection. Before the
+// first connection, it returns the owning provider's catalog so GMS can resolve
+// fully qualified names. Closed or broken connections still return empty.
 func (p *ConnectionPool) CurrentCatalog(id uint32) string {
 	entry, ok := p.conns.Load(id)
 	if !ok {
-		return ""
+		if _, closed := p.closedConns.Load(id); closed {
+			return ""
+		}
+		return p.defaultCatalog
 	}
 	conn := entry.(*stdsql.Conn)
 	var catalog string
@@ -93,6 +99,7 @@ func (p *ConnectionPool) GetConn(ctx context.Context, id uint32) (*stdsql.Conn, 
 			_ = c.Close()
 			return nil, err
 		}
+		p.closedConns.Delete(id)
 		p.conns.Store(id, c)
 		conn = c
 	} else {
@@ -110,6 +117,10 @@ func (p *ConnectionPool) registerMySQLUDFs(conn *stdsql.Conn) error {
 		}
 		if err := registerMySQLRandomBytes(conn); err != nil {
 			p.registerMySQLUDFsErr = fmt.Errorf("register mysql_random_bytes: %w", err)
+			return
+		}
+		if err := registerMySQLStringToVector(conn); err != nil {
+			p.registerMySQLUDFsErr = fmt.Errorf("register string_to_vector: %w", err)
 		}
 	})
 	return p.registerMySQLUDFsErr
@@ -142,6 +153,16 @@ func (p *ConnectionPool) GetConnForSchema(ctx context.Context, id uint32, schema
 
 func (p *ConnectionPool) CloseConn(id uint32) error {
 	defer p.conns.Delete(id)
+	defer p.closedConns.Store(id, struct{}{})
+	var lastErr error
+	if entry, ok := p.txns.LoadAndDelete(id); ok {
+		if err := entry.(*stdsql.Tx).Rollback(); err != nil &&
+			!errors.Is(err, stdsql.ErrTxDone) &&
+			!strings.Contains(err.Error(), "no transaction is active") {
+			logrus.WithError(err).Warn("Failed to rollback transaction")
+			lastErr = err
+		}
+	}
 	entry, ok := p.conns.Load(id)
 	if ok {
 		conn := entry.(*stdsql.Conn)
@@ -152,14 +173,14 @@ func (p *ConnectionPool) CloseConn(id uint32) error {
 			return driver.ErrBadConn
 		}); err != nil && !errors.Is(err, driver.ErrBadConn) {
 			logrus.WithError(err).Warn("Failed to close connection during Raw function call")
-			return err
+			return errors.Join(lastErr, err)
 		}
 		if err := conn.Close(); err != nil && !errors.Is(err, stdsql.ErrConnDone) {
 			logrus.WithError(err).Warn("Failed to close connection")
-			return err
+			return errors.Join(lastErr, err)
 		}
 	}
-	return nil
+	return lastErr
 }
 
 func (p *ConnectionPool) GetTxn(ctx context.Context, id uint32, schemaName string, options *stdsql.TxOptions) (*stdsql.Tx, error) {
@@ -170,7 +191,9 @@ func (p *ConnectionPool) GetTxn(ctx context.Context, id uint32, schemaName strin
 		if err != nil {
 			return nil, err
 		}
-		t, err := conn.BeginTx(ctx, options)
+		// A session transaction can span multiple protocol requests (for example,
+		// after SET autocommit=0), so a request-scoped cancellation must not end it.
+		t, err := conn.BeginTx(context.WithoutCancel(ctx), options)
 		if err != nil {
 			return nil, err
 		}
@@ -230,6 +253,7 @@ func (p *ConnectionPool) Reset(connector *duckdb.Connector, db *stdsql.DB) error
 
 	p.conns.Clear()
 	p.txns.Clear()
+	p.closedConns.Clear()
 	p.DB = db
 	p.connector = connector
 	p.registerMySQLUDFsOnce = sync.Once{}

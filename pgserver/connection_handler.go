@@ -304,7 +304,7 @@ func (h *ConnectionHandler) sendClientStartupMessages() error {
 	}
 	return h.send(&pgproto3.BackendKeyData{
 		ProcessID: processID,
-		SecretKey: 0, // TODO: this should represent an ID that can uniquely identify this connection, so that CancelRequest will work
+		SecretKey: make([]byte, 4), // TODO: this should represent an ID that can uniquely identify this connection, so that CancelRequest will work
 	})
 }
 
@@ -646,6 +646,7 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 	var fields []pgproto3.FieldDescription
 	var bindvarTypes []uint32
 	var tag string
+	var returnsRows bool
 
 	h.waitForSync = true
 	if message.ObjectType == 'S' {
@@ -665,6 +666,7 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 
 			bindvarTypes = preparedStatementData.BindVarTypes
 			tag = preparedStatementData.Statement.Tag
+			returnsRows = statementReturnsRows(preparedStatementData.Statement)
 		}
 
 		if bindvarTypes == nil {
@@ -679,6 +681,7 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 		if portalData.Stmt != nil {
 			fields = portalData.Fields
 			tag = portalData.Statement.Tag
+			returnsRows = statementReturnsRows(portalData.Statement)
 		} else {
 			// The RowDescription message will be sent by the inplace handler if this statement
 			// is intercepted internally.
@@ -686,7 +689,10 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 		}
 	}
 
-	return h.sendDescribeResponse(fields, bindvarTypes, tag)
+	if !returnsRows {
+		returnsRows = returnsRow(tag)
+	}
+	return h.sendDescribeResponse(fields, bindvarTypes, returnsRows)
 }
 
 // handleBind handles a bind message, returning any error that occurs
@@ -1077,9 +1083,10 @@ func (h *ConnectionHandler) spoolRowsCallback(statement ConvertedStatement, rows
 	// IsIUD returns whether the query is either an INSERT, UPDATE, or DELETE query.
 	tag := statement.Tag
 	isIUD := tag == "INSERT" || tag == "UPDATE" || tag == "DELETE"
+	returnsRows := statementReturnsRows(statement)
 	return func(res *Result) error {
 		logrus.Tracef("spooling %d rows for tag %s (execute = %v)", res.RowsAffected, tag, isExecute)
-		if returnsRow(tag) {
+		if returnsRows {
 			// EXECUTE does not send RowDescription; instead it should be sent from DESCRIBE prior to it
 			// We only send RowDescription once per statement execution.
 			if !isExecute && !statement.HasSentRowDesc {
@@ -1113,7 +1120,7 @@ func (h *ConnectionHandler) spoolRowsCallback(statement ConvertedStatement, rows
 }
 
 // sendDescribeResponse sends a response message for a Describe message
-func (h *ConnectionHandler) sendDescribeResponse(fields []pgproto3.FieldDescription, types []uint32, tag string) error {
+func (h *ConnectionHandler) sendDescribeResponse(fields []pgproto3.FieldDescription, types []uint32, returnsRows bool) error {
 	// The prepared statement variant of the describe command returns the OIDs of the parameters.
 	if types != nil {
 		if err := h.send(&pgproto3.ParameterDescription{
@@ -1123,7 +1130,7 @@ func (h *ConnectionHandler) sendDescribeResponse(fields []pgproto3.FieldDescript
 		}
 	}
 
-	if returnsRow(tag) {
+	if returnsRows {
 		// Both variants finish with a row description.
 		return h.send(&pgproto3.RowDescription{
 			Fields: fields,
@@ -1131,6 +1138,14 @@ func (h *ConnectionHandler) sendDescribeResponse(fields []pgproto3.FieldDescript
 	} else {
 		return h.send(&pgproto3.NoData{})
 	}
+}
+
+func statementReturnsRows(statement ConvertedStatement) bool {
+	if returnsRow(statement.Tag) {
+		return true
+	}
+	_, ok := postgresInsertReturningRows(statement.AST)
+	return ok
 }
 
 // handledPSQLCommands handles the special PSQL commands, such as \l and \dt.

@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/apecloud/myduckserver/catalog"
@@ -32,9 +33,10 @@ import (
 
 type MyHandler struct {
 	*server.Handler
-	provider *catalog.DatabaseProvider
-	engine   *sqle.Engine
-	readOnly bool
+	provider   *catalog.DatabaseProvider
+	engine     *sqle.Engine
+	newContext func(context.Context, *mysql.Conn, string) (*sql.Context, error)
+	readOnly   bool
 }
 
 func (h *MyHandler) ConnectionClosed(c *mysql.Conn) {
@@ -85,6 +87,15 @@ func (h *MyHandler) ComMultiQuery(
 	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
 		return query, returnErr
 	}
+	finishDDL, err := h.beginMySQLDDL(ctx, c, query, nil, true)
+	if err != nil {
+		return query, err
+	}
+	if finishDDL != nil {
+		defer func() {
+			returnErr = finishDDL(returnErr)
+		}()
+	}
 
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
@@ -118,6 +129,15 @@ func (h *MyHandler) ComQuery(
 	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
 		return returnErr
 	}
+	finishDDL, err := h.beginMySQLDDL(ctx, c, query, nil, false)
+	if err != nil {
+		return err
+	}
+	if finishDDL != nil {
+		defer func() {
+			returnErr = finishDDL(returnErr)
+		}()
+	}
 
 	var modifiers []ResultModifier
 	query, modifiers = applyRequestModifiers(query, defaultRequestModifiers)
@@ -144,6 +164,15 @@ func (h *MyHandler) ComStmtExecute(ctx context.Context, c *mysql.Conn, prepare *
 	defer func() {
 		audit.Complete(returnErr)
 	}()
+	finishDDL, err := h.beginMySQLDDL(ctx, c, query, nil, false)
+	if err != nil {
+		return err
+	}
+	if finishDDL != nil {
+		defer func() {
+			returnErr = finishDDL(returnErr)
+		}()
+	}
 
 	returnErr = h.Handler.ComStmtExecute(ctx, c, prepare, func(res *sqltypes.Result) error {
 		if err := callback(res); err != nil {
@@ -184,6 +213,15 @@ func (h *MyHandler) ComExecuteBound(ctx context.Context, c *mysql.Conn, query st
 	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
 		return returnErr
 	}
+	finishDDL, err := h.beginMySQLDDL(ctx, c, query, nil, false)
+	if err != nil {
+		return err
+	}
+	if finishDDL != nil {
+		defer func() {
+			returnErr = finishDDL(returnErr)
+		}()
+	}
 	returnErr = h.Handler.ComExecuteBound(ctx, c, query, boundQuery, auditResultCallback(audit, callback))
 	return returnErr
 }
@@ -196,8 +234,85 @@ func (h *MyHandler) ComParsedQuery(ctx context.Context, c *mysql.Conn, query str
 	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
 		return returnErr
 	}
+	finishDDL, err := h.beginMySQLDDL(ctx, c, query, parsed, false)
+	if err != nil {
+		return err
+	}
+	if finishDDL != nil {
+		defer func() {
+			returnErr = finishDDL(returnErr)
+		}()
+	}
 	returnErr = h.Handler.ComParsedQuery(ctx, c, query, parsed, auditResultCallback(audit, callback))
 	return returnErr
+}
+
+func (h *MyHandler) beginMySQLDDL(
+	ctx context.Context,
+	c *mysql.Conn,
+	query string,
+	parsed sqlparser.Statement,
+	multi bool,
+) (func(error) error, error) {
+	if h.newContext == nil || h.engine == nil {
+		return nil, nil
+	}
+
+	sqlCtx, err := h.newContext(ctx, c, query)
+	if err != nil {
+		return nil, err
+	}
+	if parsed == nil {
+		parsed, _, _, err = h.engine.Parser.Parse(sqlCtx, query, multi)
+		if err != nil {
+			// The normal query path owns parse errors. Without a parsed DDL node,
+			// there is no safe statement classification for an implicit commit.
+			return nil, nil
+		}
+	}
+
+	switch parsed.(type) {
+	case *sqlparser.DDL, *sqlparser.DBDDL:
+	default:
+		return nil, nil
+	}
+
+	tx := sqlCtx.GetTransaction()
+	sess, ok := sqlCtx.Session.(sql.TransactionSession)
+	if !ok {
+		return nil, nil
+	}
+	if tx != nil {
+		if err := sess.CommitTransaction(sqlCtx, tx); err != nil {
+			return nil, err
+		}
+		sqlCtx.SetTransaction(nil)
+		sqlCtx.SetIgnoreAutoCommit(false)
+	}
+
+	backendSession, _ := sqlCtx.Session.(*Session)
+	if backendSession != nil {
+		backendSession.mysqlImplicitDDL.Store(true)
+	}
+	return func(queryErr error) error {
+		if backendSession != nil {
+			backendSession.mysqlImplicitDDL.Store(false)
+		}
+
+		ddlTx := sqlCtx.GetTransaction()
+		if ddlTx == nil {
+			return queryErr
+		}
+		var txErr error
+		if queryErr == nil {
+			txErr = sess.CommitTransaction(sqlCtx, ddlTx)
+		} else {
+			txErr = sess.Rollback(sqlCtx, ddlTx)
+		}
+		sqlCtx.SetTransaction(nil)
+		sqlCtx.SetIgnoreAutoCommit(false)
+		return errors.Join(queryErr, txErr)
+	}, nil
 }
 
 func (h *MyHandler) rejectReadOnly(ctx context.Context, c *mysql.Conn, query string) error {
@@ -205,7 +320,11 @@ func (h *MyHandler) rejectReadOnly(ctx context.Context, c *mysql.Conn, query str
 		return nil
 	}
 
-	sqlCtx, err := h.Handler.NewContext(ctx, c, query)
+	var sqlCtx *sql.Context
+	var err error
+	if h.newContext != nil {
+		sqlCtx, err = h.newContext(ctx, c, query)
+	}
 	if err == nil && h.engine != nil {
 		node, analyzeErr := h.engine.AnalyzeQuery(sqlCtx, query)
 		if analyzeErr == nil {
@@ -236,7 +355,12 @@ func isReplicaLoadingSnapshot() bool {
 	}
 }
 
-func WrapHandler(provider *catalog.DatabaseProvider, engine *sqle.Engine, readOnly bool) server.HandlerWrapper {
+func WrapHandler(
+	provider *catalog.DatabaseProvider,
+	engine *sqle.Engine,
+	newContext func(context.Context, *mysql.Conn, string) (*sql.Context, error),
+	readOnly bool,
+) server.HandlerWrapper {
 	return func(h mysql.Handler) (mysql.Handler, error) {
 		handler, ok := h.(*server.Handler)
 		if !ok {
@@ -244,10 +368,11 @@ func WrapHandler(provider *catalog.DatabaseProvider, engine *sqle.Engine, readOn
 		}
 
 		return &MyHandler{
-			Handler:  handler,
-			provider: provider,
-			engine:   engine,
-			readOnly: readOnly,
+			Handler:    handler,
+			provider:   provider,
+			engine:     engine,
+			newContext: newContext,
+			readOnly:   readOnly,
 		}, nil
 	}
 }

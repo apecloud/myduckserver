@@ -22,6 +22,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
@@ -35,7 +36,6 @@ import (
 	"github.com/apecloud/myduckserver/plugin"
 	"github.com/apecloud/myduckserver/replica"
 	"github.com/apecloud/myduckserver/transpiler"
-	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -147,10 +147,7 @@ func main() {
 	// Clear the pipes directory on startup.
 	backend.RemoveAllPipes(dataDirectory)
 
-	engine := sqle.NewDefault(provider)
-
-	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, provider)
-	engine.Analyzer.ExecBuilder = builder
+	engine, builder := backend.NewEngine(provider)
 	engine.Analyzer.Catalog.RegisterFunction(sql.NewContext(context.Background()), myfunc.ExtraBuiltIns...)
 	engine.Analyzer.Catalog.MySQLDb.SetPlugins(plugin.AuthPlugins)
 
@@ -166,12 +163,24 @@ func main() {
 		Address:  fmt.Sprintf("%s:%d", address, port),
 		Socket:   socket,
 	}
-	myServer, err := server.NewServerWithHandler(serverConfig, engine, backend.NewSessionBuilder(provider, backend.WithQueryRowLimit(queryRowLimit)), nil, backend.WrapHandler(provider, engine, readOnly))
+	var myServer *server.Server
+	myServer, err = server.NewServerWithHandler(
+		serverConfig,
+		engine,
+		sql.NewContext,
+		backend.NewSessionBuilder(provider, backend.WithQueryRowLimit(queryRowLimit)),
+		nil,
+		backend.WrapHandler(provider, engine, func(ctx context.Context, conn *mysql.Conn, query string) (*sql.Context, error) {
+			return myServer.SessionManager().NewContextWithQuery(ctx, conn, query)
+		}, readOnly),
+	)
 	if err != nil {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
 
 	if postgresPort > 0 {
+		var postgresConnID atomic.Uint32
+		postgresConnID.Store(1 << 31)
 		pgServer, err := pgserver.NewServer(
 			provider,
 			address, postgresPort,
@@ -182,7 +191,7 @@ func main() {
 			},
 			pgserver.WithEngine(myServer.Engine),
 			pgserver.WithSessionManager(myServer.SessionManager()),
-			pgserver.WithConnID(&myServer.Listener.(*mysql.Listener).ConnectionID), // Shared connection ID counter
+			pgserver.WithConnID(&postgresConnID),
 			pgserver.WithReadOnly(readOnly),
 		)
 		if err != nil {

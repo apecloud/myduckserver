@@ -18,6 +18,8 @@ import (
 	stdsql "database/sql"
 	"fmt"
 	"strconv"
+	"strings"
+	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 
@@ -31,8 +33,9 @@ import (
 
 type Session struct {
 	*memory.Session
-	db            *catalog.DatabaseProvider
-	queryRowLimit uint64
+	db               *catalog.DatabaseProvider
+	queryRowLimit    uint64
+	mysqlImplicitDDL atomic.Bool
 }
 
 type SessionOption func(*Session)
@@ -62,6 +65,33 @@ func (sess *Session) Provider() *catalog.DatabaseProvider {
 // means unlimited.
 func (sess *Session) QueryRowLimit() uint64 {
 	return sess.queryRowLimit
+}
+
+func (sess *Session) SetSessionVariable(ctx *sql.Context, name string, value interface{}) error {
+	if err := sess.Session.SetSessionVariable(ctx, name, value); err != nil {
+		return err
+	}
+	if !strings.EqualFold(name, sql.AutoCommitSessionVar) || ctx.GetIgnoreAutoCommit() {
+		return nil
+	}
+	autocommit, err := plan.IsSessionAutocommit(ctx)
+	if err != nil || autocommit {
+		return err
+	}
+
+	// SET autocommit=0 begins while the old value is still 1. GMS therefore
+	// creates an autocommit transaction without a DuckDB transaction for the
+	// SET statement. Clear only that empty wrapper so the next statement starts
+	// the real session transaction required by the new value.
+	transaction, ok := ctx.GetTransaction().(*Transaction)
+	if !ok || transaction.tx != nil {
+		return nil
+	}
+	if err := sess.Session.Rollback(ctx, &transaction.Transaction); err != nil {
+		return err
+	}
+	ctx.SetTransaction(nil)
+	return nil
 }
 
 func (sess *Session) CurrentSchemaOfUnderlyingConn() string {
@@ -112,8 +142,8 @@ func (sess *Session) StartTransaction(ctx *sql.Context, tCharacteristic sql.Tran
 		return nil, err
 	}
 
-	startUnderlyingTx := true
-	if !ctx.GetIgnoreAutoCommit() {
+	startUnderlyingTx := !sess.mysqlImplicitDDL.Load()
+	if startUnderlyingTx && !ctx.GetIgnoreAutoCommit() {
 		autocommit, err := plan.IsSessionAutocommit(ctx)
 		if err != nil {
 			return nil, err
@@ -164,13 +194,13 @@ func (sess *Session) Rollback(ctx *sql.Context, tx sql.Transaction) error {
 }
 
 // PersistGlobal implements sql.PersistableSession.
-func (sess *Session) PersistGlobal(sysVarName string, value interface{}) error {
+func (sess *Session) PersistGlobal(ctx *sql.Context, sysVarName string, value interface{}) error {
 	if _, _, ok := sql.SystemVariables.GetGlobal(sysVarName); !ok {
 		return sql.ErrUnknownSystemVariable.New(sysVarName)
 	}
 	sess.GetLogger().Tracef("Persisting global variable %s = %v", sysVarName, value)
 	_, err := sess.ExecContext(
-		context.Background(),
+		ctx,
 		catalog.InternalTables.PersistentVariable.UpsertStmt(),
 		sysVarName, value, fmt.Sprintf("%T", value),
 	)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/apecloud/myduckserver/pgtypes"
+	"github.com/cockroachdb/apd/v3"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
@@ -185,5 +186,80 @@ func TestSQLRowIterPreservesPostgresJSONNull(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, sql.Row{types.JSONDocument{Val: nil}, nil, int32(42)}, row)
 		require.NoError(t, iter.Close(sql.NewEmptyContext()))
+	}
+}
+
+func TestSQLRowIterConvertsDuckDBDecimalsToSelectedSchema(t *testing.T) {
+	connector, err := duckdb.NewConnector("", nil)
+	require.NoError(t, err)
+	db := stdsql.OpenDB(connector)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+		require.NoError(t, connector.Close())
+	})
+
+	schema := sql.Schema{
+		&sql.Column{Name: "precise", Type: types.MustCreateDecimalType(10, 4)},
+		&sql.Column{Name: "nullable", Type: types.MustCreateDecimalType(10, 4), Nullable: true},
+		&sql.Column{Name: "ceiling", Type: types.Int64},
+		&sql.Column{Name: "floor", Type: types.Int64},
+		&sql.Column{Name: "minimum", Type: types.Int64},
+		&sql.Column{Name: "maximum", Type: types.Int64},
+	}
+	rows, err := db.Query(`
+		SELECT
+			123.4500::DECIMAL(10, 4),
+			NULL::DECIMAL(10, 4),
+			CEIL(1.5::DECIMAL(10, 1)),
+			FLOOR(-1.5::DECIMAL(10, 1)),
+			-9223372036854775808::DECIMAL(19, 0),
+			9223372036854775807::DECIMAL(19, 0)`)
+	require.NoError(t, err)
+	iter, err := NewSQLRowIter(rows, schema)
+	require.NoError(t, err)
+
+	row, err := iter.Next(sql.NewEmptyContext())
+	require.NoError(t, err)
+	require.Equal(t, sql.Row{
+		apd.New(1234500, -4),
+		nil,
+		int64(2),
+		int64(-2),
+		int64(-9223372036854775808),
+		int64(9223372036854775807),
+	}, row)
+	require.NoError(t, iter.Close(sql.NewEmptyContext()))
+}
+
+func TestSQLRowIterRejectsInvalidDecimalIntegerConversions(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		wantError string
+	}{
+		{name: "fractional", value: "1.5::DECIMAL(2, 1)", wantError: "is not an integer"},
+		{name: "overflow", value: "9223372036854775808::DECIMAL(19, 0)", wantError: "is out of range"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connector, err := duckdb.NewConnector("", nil)
+			require.NoError(t, err)
+			db := stdsql.OpenDB(connector)
+			t.Cleanup(func() {
+				require.NoError(t, db.Close())
+				require.NoError(t, connector.Close())
+			})
+
+			rows, err := db.Query("SELECT " + tt.value)
+			require.NoError(t, err)
+			iter, err := NewSQLRowIter(rows, sql.Schema{
+				&sql.Column{Name: "value", Type: types.Int64},
+			})
+			require.NoError(t, err)
+			_, err = iter.Next(sql.NewEmptyContext())
+			require.ErrorContains(t, err, tt.wantError)
+			require.NoError(t, iter.Close(sql.NewEmptyContext()))
+		})
 	}
 }

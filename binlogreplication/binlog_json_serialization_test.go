@@ -15,6 +15,7 @@
 package binlogreplication
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -124,7 +125,7 @@ func TestJsonSerialization_EncodedBytes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var jsonDoc any
 			require.NoError(t, json.Unmarshal([]byte(test.json), &jsonDoc))
-			encoded, err := encodeJsonDoc(gmstypes.JSONDocument{Val: jsonDoc})
+			encoded, err := encodeJsonDoc(context.Background(), gmstypes.JSONDocument{Val: jsonDoc})
 			require.NoError(t, err)
 			require.Equal(t, test.expected, encoded)
 		})
@@ -273,7 +274,7 @@ func TestJsonSerialization_VitessRoundTrip(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var jsonDoc any
 			require.NoError(t, json.Unmarshal([]byte(test.json), &jsonDoc))
-			encoded, err := encodeJsonDoc(gmstypes.JSONDocument{Val: jsonDoc})
+			encoded, err := encodeJsonDoc(context.Background(), gmstypes.JSONDocument{Val: jsonDoc})
 
 			if test.expectedErr != "" {
 				require.Equal(t, test.expectedErr, err.Error())

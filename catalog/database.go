@@ -10,6 +10,9 @@ import (
 	"github.com/apecloud/myduckserver/configuration"
 	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/expression"
+	vectorfn "github.com/dolthub/go-mysql-server/sql/expression/function/vector"
+	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -35,6 +38,18 @@ var _ sql.TriggerDatabase = (*Database)(nil)
 var _ sql.CollatedDatabase = (*Database)(nil)
 var _ sql.TemporaryTableCreator = (*Database)(nil)
 var _ sql.StoredProcedureDatabase = (*Database)(nil)
+
+func vectorGeneratedExpression(col *sql.Column, typ types.VectorType) (string, error) {
+	fn, ok := col.Generated.Expr.(*vectorfn.StringToVector)
+	if !ok {
+		return "", fmt.Errorf("unsupported generated VECTOR expression: %s", col.Generated.Expr.String())
+	}
+	field, ok := fn.Child.(*expression.GetField)
+	if !ok {
+		return "", fmt.Errorf("unsupported STRING_TO_VECTOR generated argument: %s", fn.Child.String())
+	}
+	return fmt.Sprintf("STRING_TO_VECTOR(%s, %d)", QuoteIdentifierANSI(field.Name()), typ.Dimensions), nil
+}
 
 func NewDatabase(name string, catalogName string) *Database {
 	return &Database{
@@ -150,10 +165,27 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 			return err
 		}
 		colDef := fmt.Sprintf(`"%s" %s`, col.Name, typ.name)
-		if col.Nullable {
-			colDef += " NULL"
+		vectorType, isVector := col.Type.(types.VectorType)
+		generatedVector := isVector && col.Generated != nil
+		if generatedVector {
+			generatedExpr, err := vectorGeneratedExpression(col, vectorType)
+			if err != nil {
+				return err
+			}
+			typ.mysql.Generated = col.Generated.Expr.String()
+			typ.mysql.Virtual = col.Virtual
+			typ.mysql.Nullable = new(bool)
+			*typ.mysql.Nullable = col.Nullable
+			colDef += " GENERATED ALWAYS AS (" + generatedExpr + ")"
 		} else {
-			colDef += " NOT NULL"
+			if col.Nullable {
+				colDef += " NULL"
+			} else {
+				colDef += " NOT NULL"
+			}
+			if isVector {
+				colDef += fmt.Sprintf(` CHECK (octet_length("%s") = %d)`, col.Name, vectorType.Dimensions*4)
+			}
 		}
 
 		if col.Default != nil {

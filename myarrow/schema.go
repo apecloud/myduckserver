@@ -109,6 +109,8 @@ func toArrowType(t sql.Type) arrow.DataType {
 		return arrow.BinaryTypes.String
 	case query.Type_BLOB:
 		return arrow.BinaryTypes.Binary
+	case query.Type_VECTOR:
+		return arrow.BinaryTypes.Binary
 	case query.Type_VARCHAR:
 		return arrow.BinaryTypes.String
 	case query.Type_VARBINARY:

@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/expression"
+	vectorfn "github.com/dolthub/go-mysql-server/sql/expression/function/vector"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/stretchr/testify/require"
 )
@@ -54,4 +56,63 @@ func TestMySQLDataTypeBignum(t *testing.T) {
 			require.Equal(t, uint8(0), decimalType.Scale())
 		})
 	}
+}
+
+func TestVectorTypeRoundTrip(t *testing.T) {
+	want, err := types.CreateVectorType(3)
+	require.NoError(t, err)
+
+	duckType, err := DuckdbDataType(want)
+	require.NoError(t, err)
+	require.Equal(t, "BLOB", duckType.Name())
+	require.Equal(t, MySQLType{Name: "VECTOR", Length: 3}, duckType.MySQL())
+
+	got, err := mysqlDataType(duckType, 0, 0)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func TestTimeTypeRoundTrip(t *testing.T) {
+	for precision := 0; precision <= types.MaxTimePrecision; precision++ {
+		t.Run(types.MustCreateTimeType(precision).String(), func(t *testing.T) {
+			want := types.MustCreateTimeType(precision)
+			duckType, err := DuckdbDataType(want)
+			require.NoError(t, err)
+			require.Equal(t, "INTERVAL", duckType.Name())
+			require.Equal(t, uint8(precision), duckType.MySQL().Precision)
+
+			got, err := mysqlDataType(duckType, 0, 0)
+			require.NoError(t, err)
+			require.True(t, want.Equals(got))
+		})
+	}
+}
+
+func TestVectorGeneratedExpressionRejectsOnlyUnsupportedShapes(t *testing.T) {
+	vectorType, err := types.CreateVectorType(2)
+	require.NoError(t, err)
+
+	col := &sql.Column{
+		Name: "generated_v",
+		Generated: &sql.ColumnDefaultValue{
+			Expr: expression.NewLiteral(int64(1), types.Int64),
+		},
+	}
+	_, err = vectorGeneratedExpression(col, vectorType)
+	require.EqualError(t, err, "unsupported generated VECTOR expression: 1")
+
+	col.Generated.Expr = vectorfn.NewStringToVector(
+		sql.NewEmptyContext(),
+		expression.NewLiteral("[]", types.Text),
+	)
+	_, err = vectorGeneratedExpression(col, vectorType)
+	require.EqualError(t, err, "unsupported STRING_TO_VECTOR generated argument: '[]'")
+
+	col.Generated.Expr = vectorfn.NewStringToVector(
+		sql.NewEmptyContext(),
+		expression.NewGetField(0, types.JSON, "source", true),
+	)
+	got, err := vectorGeneratedExpression(col, vectorType)
+	require.NoError(t, err)
+	require.Equal(t, `STRING_TO_VECTOR("source", 2)`, got)
 }

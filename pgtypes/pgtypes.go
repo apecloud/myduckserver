@@ -1,6 +1,7 @@
 package pgtypes
 
 import (
+	"context"
 	stdsql "database/sql"
 	"database/sql/driver"
 	"fmt"
@@ -420,11 +421,11 @@ func (p PostgresType) CollationCoercibility(ctx *sql.Context) (collation sql.Col
 	panic("not implemented")
 }
 
-func (p PostgresType) Compare(v1 interface{}, v2 interface{}) (int, error) {
+func (p PostgresType) Compare(_ context.Context, v1 interface{}, v2 interface{}) (int, error) {
 	panic("not implemented")
 }
 
-func (p PostgresType) Convert(v interface{}) (interface{}, sql.ConvertInRange, error) {
+func (p PostgresType) Convert(_ context.Context, v interface{}) (interface{}, sql.ConvertInRange, error) {
 	panic("not implemented")
 }
 

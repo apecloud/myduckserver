@@ -11,7 +11,6 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/pgserver"
 	pgConfig "github.com/apecloud/myduckserver/pgserver/pgconfig"
-	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -28,10 +27,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 		return nil, nil, nil, nil, err
 	}
 
-	engine := sqle.NewDefault(provider)
-
-	builder := backend.NewDuckBuilder(engine.Analyzer.ExecBuilder, provider)
-	engine.Analyzer.ExecBuilder = builder
+	engine, _ := backend.NewEngine(provider)
 
 	config := server.Config{
 		Address: fmt.Sprintf("127.0.0.1:%d", port-1), // Unused
@@ -41,6 +37,7 @@ func CreateTestServer(t *testing.T, port int) (ctx context.Context, pgServer *pg
 	tracer := sql.NoopTracer
 
 	sm := server.NewSessionManager(
+		sql.NewContext,
 		sb, tracer,
 		engine.Analyzer.Catalog.Database,
 		engine.MemoryManager,

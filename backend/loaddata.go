@@ -117,7 +117,7 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 	var b strings.Builder
 	b.Grow(256)
 
-	keyless := sql.IsKeyless(dst.Schema())
+	keyless := sql.IsKeyless(dst.Schema(ctx))
 	// TODO(fan): This is an ugly hack for MySQL Shell's utilities to work properly.
 	if !keyless {
 		if t, ok := dst.(*catalog.Table); ok {
@@ -195,7 +195,7 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 	}
 
 	b.WriteString(", columns = ")
-	if err := columnTypeHints(&b, dst, dst.Schema(), load.ColNames); err != nil {
+	if err := columnTypeHints(&b, dst, dst.Schema(ctx), load.ColNames); err != nil {
 		return nil, err
 	}
 

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/shopspring/decimal"
 )
 
 var defaultMap = pgtype.NewMap()
@@ -228,7 +228,7 @@ func NormalizeValToString(typ *pgtype.Type, v any) any {
 		} else if !val.Valid {
 			return nil
 		} else {
-			decStr := decimal.NewFromBigInt(val.Int, val.Exp).String()
+			decStr := decimalFromNumeric(val).String()
 			return Numeric(decStr)
 		}
 	case []any:
@@ -286,9 +286,7 @@ func NormalizeVal(typ *pgtype.Type, v any) any {
 		} else if !val.Valid {
 			return nil
 		} else {
-			d := decimal.NewFromBigInt(val.Int, val.Exp)
-			s := d.String() // trim trailing zeros
-			d, _ = decimal.NewFromString(s)
+			d := decimalFromNumeric(val)
 			return d
 		}
 	case pgtype.Time:
@@ -316,6 +314,13 @@ func NormalizeVal(typ *pgtype.Type, v any) any {
 		return newVal
 	}
 	return v
+}
+
+func decimalFromNumeric(v pgtype.Numeric) *apd.Decimal {
+	coeff := new(apd.BigInt).SetMathBigInt(v.Int)
+	d := apd.NewWithBigInt(coeff, v.Exp)
+	d.Reduce(d)
+	return d
 }
 
 // NormalizeIntsAndFloats normalizes all int and float types

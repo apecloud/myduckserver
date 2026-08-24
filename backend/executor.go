@@ -23,7 +23,9 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/dolthub/go-mysql-server/sql/expression/function"
+	vectorfn "github.com/dolthub/go-mysql-server/sql/expression/function/vector"
 	"github.com/dolthub/go-mysql-server/sql/plan"
+	"github.com/dolthub/go-mysql-server/sql/rowexec"
 	"github.com/dolthub/go-mysql-server/sql/transform"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/vitess/go/vt/sqlparser"
@@ -40,9 +42,29 @@ type DuckBuilder struct {
 
 var _ sql.NodeExecBuilder = (*DuckBuilder)(nil)
 
-func NewDuckBuilder(base sql.NodeExecBuilder, provider *catalog.DatabaseProvider) *DuckBuilder {
+// mysqlOkResultNode preserves the OK-result schema expected by MyDuck's DML
+// iterator. Newer GMS exposes UPDATE and DELETE child schemas through the DML
+// node instead.
+type mysqlOkResultNode struct {
+	sql.Node
+}
+
+func (*mysqlOkResultNode) Schema(*sql.Context) sql.Schema {
+	return types.OkResultSchema
+}
+
+func withMySQLOkResultSchema(node sql.Node) sql.Node {
+	if _, ok := node.(*mysqlOkResultNode); ok {
+		return node
+	}
+	return &mysqlOkResultNode{Node: node}
+}
+
+func NewDuckBuilder(base *rowexec.BaseBuilder, provider *catalog.DatabaseProvider) *DuckBuilder {
+	fallback := *base
+	fallback.PriorityBuilder = nil
 	return &DuckBuilder{
-		base:     base,
+		base:     &fallback,
 		provider: provider,
 	}
 }
@@ -56,18 +78,18 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 	// Subquery iterators must not count intermediate rows against the limit.
 	if r == nil {
 		defer func() {
-			if err == nil {
-				iter = ApplyQueryRowLimit(ctx, root.Schema(), iter)
+			if err == nil && iter != nil {
+				iter = ApplyQueryRowLimit(ctx, root.Schema(ctx), iter)
 			}
 		}()
 	}
 
-	// Flush the delta buffer before executing the query.
+	// Flush the delta buffer before executing the query. Replication controller
+	// commands must remain able to stop an applier while it is connecting and
+	// therefore cannot wait on the applier-owned query barrier.
 	// TODO(fan): Be fine-grained and flush only when the replicated tables are touched.
-	if b.FlushDeltaBuffer != nil {
-		if err := b.FlushDeltaBuffer(ctx); err != nil {
-			return nil, err
-		}
+	if err := b.flushDeltaBuffer(ctx, root); err != nil {
+		return nil, err
 	}
 
 	n := root
@@ -114,7 +136,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 		if dst, err := plan.GetInsertable(insert.Destination); err == nil {
 			// For AUTO_INCREMENT column, we fallback to the framework if the column is specified.
 			// if dst.Schema().HasAutoIncrement() && (0 == len(insert.ColumnNames) || len(insert.ColumnNames) == len(dst.Schema())) {
-			if dst.Schema().HasAutoIncrement() {
+			if dst.Schema(ctx).HasAutoIncrement() {
 				return b.base.Build(ctx, root, r)
 			}
 			// For table with check constraints, we fallback to the framework.
@@ -132,7 +154,7 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 	case *plan.TableCopier:
 		tree = n.Source
 	}
-	if containsVariable(tree) || !IsPureDataQuery(tree) {
+	if containsVariable(ctx, tree) || (!IsPureDataQuery(ctx, tree) && !isStandaloneVectorConversion(ctx, tree)) {
 		ctx.GetLogger().Traceln("Falling back to the base builder")
 		return b.base.Build(ctx, root, r)
 	}
@@ -167,10 +189,14 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 			return b.base.Build(ctx, root, r)
 		}
 		return b.executeDML(ctx, node, conn)
+	case *plan.DeleteFrom:
+		if node.Returning != nil {
+			return b.executeQuery(ctx, node, conn)
+		}
+		node.Child = withMySQLOkResultSchema(node.Child)
+		return b.executeDML(ctx, node, conn)
 	case sql.Expressioner:
 		return b.executeExpressioner(ctx, node, conn)
-	case *plan.DeleteFrom:
-		return b.executeDML(ctx, node, conn)
 	case *plan.Truncate:
 		return b.executeDML(ctx, node, conn)
 	default:
@@ -178,12 +204,53 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 	}
 }
 
+func (b *DuckBuilder) flushDeltaBuffer(ctx *sql.Context, root sql.Node) error {
+	if b.FlushDeltaBuffer == nil || !shouldFlushDeltaBuffer(root) {
+		return nil
+	}
+	return b.FlushDeltaBuffer(ctx)
+}
+
+func shouldFlushDeltaBuffer(root sql.Node) bool {
+	_, replicationCommand := root.(plan.BinlogReplicaControllerCommand)
+	return !replicationCommand
+}
+
+// isStandaloneVectorConversion routes SELECT STRING_TO_VECTOR(...) without a
+// data table through DuckDB's guarded UDF. The selected GMS version panics when
+// its own scalar evaluator encodes an empty vector.
+func isStandaloneVectorConversion(ctx *sql.Context, n sql.Node) bool {
+	c := &tableAndFuncCollector{ctx: ctx}
+	transform.Walk(c, n)
+
+	for _, table := range c.tables {
+		if !plan.IsDualTable(table.UnderlyingTable()) {
+			return false
+		}
+	}
+
+	found := false
+	for _, fn := range c.functions {
+		if _, ok := fn.(*vectorfn.StringToVector); !ok {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
 func (b *DuckBuilder) executeExpressioner(ctx *sql.Context, n sql.Expressioner, conn *stdsql.Conn) (sql.RowIter, error) {
 	node := n.(sql.Node)
-	switch n.(type) {
+	switch n := n.(type) {
 	case *plan.InsertInto:
+		if n.Returning != nil {
+			return b.executeQuery(ctx, node, conn)
+		}
 		return b.executeDML(ctx, node, conn)
 	case *plan.Update:
+		if n.Returning == nil {
+			n.Child = withMySQLOkResultSchema(n.Child)
+		}
 		return b.executeDML(ctx, node, conn)
 	default:
 		return b.executeQuery(ctx, node, conn)
@@ -211,7 +278,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	if err != nil {
 		return nil, catalog.ErrTranspiler.New(err)
 	}
-	duckSQL = QueryForJSONScan(duckSQL, n.Schema())
+	duckSQL = QueryForJSONScan(duckSQL, n.Schema(ctx))
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
 		log.WithFields(logrus.Fields{
@@ -226,7 +293,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 		return nil, err
 	}
 
-	return NewSQLRowIter(rows, n.Schema())
+	return NewSQLRowIter(rows, n.Schema(ctx))
 }
 
 func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn) (sql.RowIter, error) {
@@ -299,9 +366,9 @@ func queryForTranslation(ctx *sql.Context) string {
 }
 
 // containsVariable inspects if the plan contains a system or user variable.
-func containsVariable(n sql.Node) bool {
+func containsVariable(ctx *sql.Context, n sql.Node) bool {
 	found := false
-	transform.InspectExpressions(n, func(e sql.Expression) bool {
+	transform.InspectExpressions(ctx, n, func(_ *sql.Context, e sql.Expression) bool {
 		switch e.(type) {
 		case *expression.SystemVar, *expression.UserVar:
 			found = true
@@ -318,8 +385,8 @@ func containsVariable(n sql.Node) bool {
 // - `SELECT * FROM mysql.*`
 // - `TRUNCATE mysql.user`
 // - `SELECT DATABASE()`
-func IsPureDataQuery(n sql.Node) bool {
-	c := &tableAndFuncCollector{}
+func IsPureDataQuery(ctx *sql.Context, n sql.Node) bool {
+	c := &tableAndFuncCollector{ctx: ctx}
 	transform.Walk(c, n)
 
 	hasDataTable := false
@@ -348,13 +415,14 @@ func IsPureDataQuery(n sql.Node) bool {
 }
 
 type tableAndFuncCollector struct {
+	ctx       *sql.Context
 	functions []sql.FunctionExpression
 	tables    []sql.TableNode
 }
 
 type exprVisitor tableAndFuncCollector
 
-func (v *exprVisitor) Visit(expr sql.Expression) sql.Visitor {
+func (v *exprVisitor) Visit(ctx *sql.Context, expr sql.Expression) sql.Visitor {
 	if expr == nil {
 		return nil
 	} else if fe, ok := expr.(sql.FunctionExpression); ok {
@@ -364,7 +432,9 @@ func (v *exprVisitor) Visit(expr sql.Expression) sql.Visitor {
 	// Visit subquery nodes to collect any nested table references
 	if en, ok := expr.(sql.ExpressionWithNodes); ok {
 		for _, child := range en.NodeChildren() {
-			transform.Walk((*tableAndFuncCollector)(v), child)
+			collector := (*tableAndFuncCollector)(v)
+			collector.ctx = ctx
+			transform.Walk(collector, child)
 		}
 	}
 
@@ -381,7 +451,7 @@ func (c *tableAndFuncCollector) Visit(n sql.Node) transform.Visitor {
 	// Visit expressions to find functions e.g. database() and walk subquery nodes to collect any nested table references
 	if en, ok := n.(sql.Expressioner); ok {
 		for _, e := range en.Expressions() {
-			sql.Walk((*exprVisitor)(c), e)
+			sql.Walk(c.ctx, (*exprVisitor)(c), e)
 		}
 	}
 
