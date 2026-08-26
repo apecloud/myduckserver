@@ -1,5 +1,5 @@
 # Step 1: Build stage
-FROM --platform=${BUILDPLATFORM} golang:1.24.12-bookworm@sha256:322a794c4289ad86e3043e5d9f16ead790463658a1bd2c3983427f02983ab978 AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.26.2-bookworm@sha256:47ce5636e9936b2c5cbf708925578ef386b4f8872aec74a67bd13a627d242b19 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -14,7 +14,7 @@ WORKDIR /app
 
 # Install build dependencies
 RUN apt-get update && \
-    apt-get install -y debian-archive-keyring curl unzip \
+    apt-get install -y debian-archive-keyring curl unzip libicu-dev \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
@@ -71,6 +71,7 @@ LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
 RUN apt-get update && apt-get install -y debian-archive-keyring \
     && apt-get update && apt-get install -y \
     libssh-4 \
+    libicu72 \
     python3 python3-pip \
     postgresql-client \
     --no-install-recommends \
