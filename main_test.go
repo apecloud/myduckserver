@@ -3035,6 +3035,10 @@ func TestJsonScripts(t *testing.T) {
 		"select * from t order by col1 desc;",
 		// DuckDB preserves the original JSON text formatting and object key order.
 		"select pk, cast(col1 as char) from t order by pk asc;",
+		// GMS 7477 adds this MySQL ordering assertion. All four task-63 dependency
+		// overlays, including the exact parent, return the same DuckDB rows: scalar
+		// JSON values first, then the compact array and object representations.
+		"select x, cast(y as char) from xy order by y",
 		// DuckDB wildcard extraction returns LIST<JSON> and loses missing/null distinctions.
 		"select pk, json_extract(col1, '$.items.*') from t order by pk;",
 		// DuckDB has no compatible invalid-mode error for JSON_CONTAINS_PATH.

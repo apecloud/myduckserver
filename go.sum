@@ -99,8 +99,8 @@ github.com/apache/arrow-go/v18 v18.5.1 h1:yaQ6zxMGgf9YCYw4/oaeOU3AULySDlAYDOcnr4
 github.com/apache/arrow-go/v18 v18.5.1/go.mod h1:OCCJsmdq8AsRm8FkBSSmYTwL/s4zHW9CqxeBxEytkNE=
 github.com/apache/thrift v0.23.0 h1:wKR6YnefQSEnxpEfmgTPuJibNG4bF0p2TK34tHLWi3s=
 github.com/apache/thrift v0.23.0/go.mod h1:zPt6WxgvTOM6hF92y8C+MkEM5LMxZuk4JcQOiU4Esvs=
-github.com/apecloud/go-mysql-server v0.0.0-20260824134702-ce812a3e3e6e h1:GEzMKF9Y82t8xkXg1xJ66L7qJ/KzyN7wSJaxQ1Mp/MI=
-github.com/apecloud/go-mysql-server v0.0.0-20260824134702-ce812a3e3e6e/go.mod h1:+kBhllUzhxourihWb4h69IzBx3+fg1mXrPKeI4JkS3w=
+github.com/apecloud/go-mysql-server v0.0.0-20260824193556-7477d05ca7a3 h1:74Ou/W244+tlD7FBqc6aPpaQ5oGbMd0LT5H4XBgsbpQ=
+github.com/apecloud/go-mysql-server v0.0.0-20260824193556-7477d05ca7a3/go.mod h1:7Z71DCeZPBuG92QTM7KvQbpWCeNGZEL7chOHuSD4TOo=
 github.com/armon/consul-api v0.0.0-20180202201655-eb2c6b5be1b6/go.mod h1:grANhF5doyWs3UAsr3K4I6qtAmlQcZDesFNEHPZAzj8=
 github.com/aws/aws-sdk-go-v2 v1.41.5 h1:dj5kopbwUsVUVFgO4Fi5BIT3t4WyqIDjGKCangnV/yY=
 github.com/aws/aws-sdk-go-v2 v1.41.5/go.mod h1:mwsPRE8ceUUpiTgF7QmQIJ7lgsKUPQOUl3o72QBrE1o=
@@ -237,8 +237,8 @@ github.com/dolthub/pg_query_go/v6 v6.0.0-20251215122834-fb20be4254d1 h1:GY17cGA4
 github.com/dolthub/pg_query_go/v6 v6.0.0-20251215122834-fb20be4254d1/go.mod h1:qnrZP3/1slFl2Bq5yw38HLOsArZareGwdpEceriblLc=
 github.com/dolthub/sqllogictest/go v0.0.0-20260624223518-788480b24166 h1:fdexJBpLDyAGnFbviZYfZ0jhLMnbTWTh39CyQ1EhA28=
 github.com/dolthub/sqllogictest/go v0.0.0-20260624223518-788480b24166/go.mod h1:e/FIZVvT2IR53HBCAo41NjqgtEnjMJGKca3Y/dAmZaA=
-github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7 h1:gvOpHisi0CbG3hixdGulNQdXy3V7+AWxe37kGBgTmRI=
-github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7/go.mod h1:5SVEJgAhw5nnQUFnGgKI1Svqes1Mw+zKUsalyxmOuG0=
+github.com/dolthub/vitess v0.0.0-20260819175407-19559ab533b7 h1:EVQjlsya92uPG2jXtOLTl/bzChZMi27sBbmO8h6G1uI=
+github.com/dolthub/vitess v0.0.0-20260819175407-19559ab533b7/go.mod h1:5SVEJgAhw5nnQUFnGgKI1Svqes1Mw+zKUsalyxmOuG0=
 github.com/duckdb/duckdb-go-bindings v0.10505.0 h1:/0pPsTLrcCsTGxT0VrHgJWnOcPe1tQL1vrki1v3jbAI=
 github.com/duckdb/duckdb-go-bindings v0.10505.0/go.mod h1:HoD5xePkDj3VZbBnVVfxVVYIljZ9khCprWA7FgwIiC4=
 github.com/duckdb/duckdb-go-bindings/lib/darwin-amd64 v0.10505.0 h1:FrMqquFBQlMsi34h2KZgCku54rqA8xEbXZ0NLVDKwYs=

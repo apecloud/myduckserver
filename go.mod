@@ -16,7 +16,7 @@ require (
 	github.com/cockroachdb/errors v1.9.0
 	github.com/dolthub/doltgresql v1.2.0
 	github.com/dolthub/go-mysql-server v0.20.1-0.20260817180248-8ba7438d98bb
-	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
+	github.com/dolthub/vitess v0.0.0-20260819175407-19559ab533b7
 	github.com/duckdb/duckdb-go/v2 v2.10505.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/google/uuid v1.6.0
@@ -37,7 +37,7 @@ require (
 )
 
 replace (
-	github.com/dolthub/go-mysql-server => github.com/apecloud/go-mysql-server v0.0.0-20260824134702-ce812a3e3e6e
+	github.com/dolthub/go-mysql-server => github.com/apecloud/go-mysql-server v0.0.0-20260824193556-7477d05ca7a3
 	github.com/dolthub/vitess v0.0.0-20241220202600-b18f18d0cde7 => github.com/apecloud/dolt-vitess v0.0.0-20241230164356-4a83fa43c02a
 )
 
