@@ -520,13 +520,18 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			err = fmt.Errorf("%w: temporary tables cannot use object storage", catalog.ErrInvalidTableStorage)
 			break
 		}
+		existing, createErr := postgresCreateTableAlreadyExists(ctx, parsed)
+		if createErr != nil {
+			err = createErr
+			break
+		}
 		executionQuery, _, createErr := postgresCreateTableExecutionQuery(query, parsed)
 		if createErr != nil {
 			err = createErr
 			break
 		}
 		result, err = adapter.Exec(ctx, executionQuery)
-		if err == nil {
+		if err == nil && !existing {
 			err = persistPostgresCreateTableStorage(ctx, parsed, selection)
 		}
 		if err != nil {
@@ -768,6 +773,10 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 		if create.Persistence == tree.PersistenceTemporary && selection.IsObjectStorage() {
 			return nil, nil, nil, fmt.Errorf("%w: temporary tables cannot use object storage", catalog.ErrInvalidTableStorage)
 		}
+		existing, createErr := postgresCreateTableAlreadyExists(ctx, create)
+		if createErr != nil {
+			return nil, nil, nil, createErr
+		}
 		executionQuery, _, createErr := postgresCreateTableExecutionQuery(query, create)
 		if createErr != nil {
 			return nil, nil, nil, createErr
@@ -776,7 +785,10 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 		if createErr != nil {
 			return nil, nil, nil, createErr
 		}
-		if createErr = persistPostgresCreateTableStorage(ctx, create, selection); createErr != nil {
+		if !existing {
+			createErr = persistPostgresCreateTableStorage(ctx, create, selection)
+		}
+		if createErr != nil {
 			return nil, nil, nil, createErr
 		}
 		affected, _ := result.RowsAffected()

@@ -84,12 +84,16 @@ func setPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable) (ca
 	return selection, nil
 }
 
-func persistPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable, selection catalog.TableStorageSelection) error {
-	if stmt == nil || stmt.Persistence == tree.PersistenceTemporary || mycontext.IsReplicationQuery(ctx) {
-		return nil
+// postgresCreateTableIdentity resolves the physical catalog coordinates used
+// by the PostgreSQL protocol. Keep the fallback order in one place so the
+// preflight and metadata persistence paths inspect the same table.
+func postgresCreateTableIdentity(ctx *sql.Context, stmt *tree.CreateTable) (catalogName, schemaName, tableName string, err error) {
+	if stmt == nil || stmt.Table.Table() == "" {
+		return "", "", "", fmt.Errorf("cannot determine PostgreSQL table identity")
 	}
 
-	schemaName := stmt.Table.Schema()
+	tableName = stmt.Table.Table()
+	schemaName = stmt.Table.Schema()
 	if schemaName == "" {
 		schemaName = adapter.GetCurrentSchema(ctx)
 	}
@@ -97,18 +101,74 @@ func persistPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable,
 		schemaName = ctx.GetCurrentDatabase()
 	}
 	if schemaName == "" {
-		return fmt.Errorf("cannot determine PostgreSQL schema for table %q", stmt.Table.Table())
+		return "", "", "", fmt.Errorf("cannot determine PostgreSQL schema for table %q", tableName)
 	}
-	catalogName := stmt.Table.Catalog()
+
+	catalogName = stmt.Table.Catalog()
 	if catalogName == "" {
 		catalogName = adapter.GetCurrentCatalog(ctx)
 	}
 	if catalogName == "" {
-		return fmt.Errorf("cannot determine PostgreSQL catalog for table %q", stmt.Table.Table())
+		return "", "", "", fmt.Errorf("cannot determine PostgreSQL catalog for table %q", tableName)
+	}
+	return catalogName, schemaName, tableName, nil
+}
+
+// postgresCreateTableAlreadyExists performs the IF NOT EXISTS preflight before
+// DuckDB executes the DDL. DuckDB reports a successful no-op for an existing
+// table, and its DDL RowsAffected value cannot distinguish that case from a
+// newly-created table. The caller uses this result to avoid rewriting the
+// existing managed comment and storage selector.
+func postgresCreateTableAlreadyExists(ctx *sql.Context, stmt *tree.CreateTable) (bool, error) {
+	if stmt == nil || !stmt.IfNotExists || stmt.Persistence == tree.PersistenceTemporary || mycontext.IsReplicationQuery(ctx) {
+		return false, nil
+	}
+
+	catalogName, schemaName, tableName, err := postgresCreateTableIdentity(ctx, stmt)
+	if err != nil {
+		return false, err
+	}
+
+	rows, err := adapter.QueryCatalog(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM duckdb_tables()
+			WHERE database_name = ? AND schema_name = ? AND table_name = ?
+		)
+	`, catalogName, schemaName, tableName)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("catalog existence query returned no row for table %q", tableName)
+	}
+
+	var exists bool
+	if err := rows.Scan(&exists); err != nil {
+		return false, err
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func persistPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable, selection catalog.TableStorageSelection) error {
+	if stmt == nil || stmt.Persistence == tree.PersistenceTemporary || mycontext.IsReplicationQuery(ctx) {
+		return nil
+	}
+
+	catalogName, schemaName, tableName, err := postgresCreateTableIdentity(ctx, stmt)
+	if err != nil {
+		return err
 	}
 
 	db := catalog.NewDatabase(schemaName, catalogName)
-	return db.RecordTableStorageSelection(ctx, stmt.Table.Table(), selection)
+	return db.RecordTableStorageSelection(ctx, tableName, selection)
 }
 
 // postgresCreateTableQueryForPrepare sanitizes only CREATE TABLE statements;
