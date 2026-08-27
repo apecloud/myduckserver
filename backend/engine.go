@@ -22,6 +22,7 @@ import (
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/analyzer"
+	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/vitess/go/vt/sqlparser"
 )
@@ -33,11 +34,35 @@ func NewEngine(provider *catalog.DatabaseProvider) (*sqle.Engine, *DuckBuilder) 
 	parser := &mysqlParser{Parser: sql.NewMysqlParser()}
 	overrides := sql.EngineOverrides{
 		Builder: sql.BuilderOverrides{Parser: parser},
+		Hooks: sql.ExecutionHooks{
+			CreateTable: sql.CreateTable{
+				PreSQLExecution: prepareMySQLCreateTableStorage,
+			},
+		},
 	}
 	engine := sqle.New(analyzer.NewBuilder(provider).AddOverrides(overrides).Build(), nil)
 	builder := NewDuckBuilder(engine.Analyzer.ExecBuilder, provider)
 	engine.Analyzer.ExecBuilder.PriorityBuilder = builder
 	return engine, builder
+}
+
+// prepareMySQLCreateTableStorage bridges the planner's table-option map to
+// the catalog's request-scoped storage selector. The catalog consumes the
+// selector while creating the table and persists it in the managed comment;
+// no credentials, endpoints, or object paths are accepted from SQL.
+func prepareMySQLCreateTableStorage(ctx *sql.Context, _ sql.StatementRunner, node sql.Node) (sql.Node, error) {
+	create, ok := node.(*plan.CreateTable)
+	if !ok {
+		return node, nil
+	}
+	selection, err := catalog.ResolveMySQLTableStorage(create.TableOpts)
+	if err != nil {
+		return nil, err
+	}
+	if err := catalog.SetTableStorageSelection(ctx, selection); err != nil {
+		return nil, err
+	}
+	return create, nil
 }
 
 // registerMySQLCompatibilitySystemVariables keeps MyDuck's advertised SQL
@@ -67,13 +92,21 @@ type mysqlParser struct {
 func (p *mysqlParser) ParseSimple(query string) (sqlparser.Statement, error) {
 	compat := rewriteMySQLCompatibility(query)
 	stmt, err := p.Parser.ParseSimple(compat.query)
-	return normalizeMySQLStatement(stmt, compat.replacements), err
+	stmt = normalizeMySQLStatement(stmt, compat.replacements)
+	if err == nil {
+		err = validateMySQLTableStorageStatement(stmt)
+	}
+	return stmt, err
 }
 
 func (p *mysqlParser) Parse(ctx *sql.Context, query string, multi bool) (sqlparser.Statement, string, string, error) {
 	compat := rewriteMySQLCompatibility(query)
 	stmt, parsed, remainder, err := p.Parser.Parse(ctx, compat.query, multi)
-	return normalizeMySQLStatement(stmt, compat.replacements), compat.restoreParsedQuery(parsed), remainder, err
+	stmt = normalizeMySQLStatement(stmt, compat.replacements)
+	if err == nil {
+		err = validateMySQLTableStorageStatement(stmt)
+	}
+	return stmt, compat.restoreParsedQuery(parsed), remainder, err
 }
 
 func (p *mysqlParser) ParseWithOptions(
@@ -85,7 +118,11 @@ func (p *mysqlParser) ParseWithOptions(
 ) (sqlparser.Statement, string, string, error) {
 	compat := rewriteMySQLCompatibility(query)
 	stmt, parsed, remainder, err := p.Parser.ParseWithOptions(ctx, compat.query, delimiter, multi, options)
-	return normalizeMySQLStatement(stmt, compat.replacements), compat.restoreParsedQuery(parsed), remainder, err
+	stmt = normalizeMySQLStatement(stmt, compat.replacements)
+	if err == nil {
+		err = validateMySQLTableStorageStatement(stmt)
+	}
+	return stmt, compat.restoreParsedQuery(parsed), remainder, err
 }
 
 func (p *mysqlParser) ParseOneWithOptions(
@@ -95,7 +132,33 @@ func (p *mysqlParser) ParseOneWithOptions(
 ) (sqlparser.Statement, int, error) {
 	compat := rewriteMySQLCompatibility(query)
 	stmt, index, err := p.Parser.ParseOneWithOptions(ctx, compat.query, options)
-	return normalizeMySQLStatement(stmt, compat.replacements), compat.originalOffset(index), err
+	stmt = normalizeMySQLStatement(stmt, compat.replacements)
+	if err == nil {
+		err = validateMySQLTableStorageStatement(stmt)
+	}
+	return stmt, compat.originalOffset(index), err
+}
+
+// validateMySQLTableStorageStatement runs before the planner turns table
+// options into a map. That preserves duplicate ENGINE/myduck_storage
+// declarations, which would otherwise be silently overwritten by the map.
+func validateMySQLTableStorageStatement(stmt sqlparser.Statement) error {
+	ddl, ok := stmt.(*sqlparser.DDL)
+	if !ok || ddl.TableSpec == nil || len(ddl.TableSpec.TableOpts) == 0 {
+		return nil
+	}
+	options := make([]catalog.TableStorageOption, 0, len(ddl.TableSpec.TableOpts))
+	for _, option := range ddl.TableSpec.TableOpts {
+		if option == nil {
+			continue
+		}
+		options = append(options, catalog.TableStorageOption{
+			Name:  option.Name,
+			Value: option.Value,
+		})
+	}
+	_, err := catalog.NormalizeTableStorageOptions(options)
+	return err
 }
 
 type mysqlOptionReplacement struct {

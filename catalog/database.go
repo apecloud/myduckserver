@@ -146,7 +146,16 @@ func (d *Database) Name() string {
 	return d.name
 }
 
-func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, temporary bool) error {
+func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, storage TableStorageSelection, temporary bool) error {
+	if err := storage.Validate(); err != nil {
+		return err
+	}
+	if temporary && storage.IsObjectStorage() {
+		return fmt.Errorf("%w: temporary tables cannot use object storage", ErrInvalidTableStorage)
+	}
+	if storage.Kind == "" {
+		storage = DefaultTableStorageSelection()
+	}
 	var columns []string
 	var columnCommentSQLs []string
 	var fullTableName string
@@ -269,7 +278,13 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	b.WriteString(")")
 
 	// Add comment to the table
-	info := ExtraTableInfo{schema.PkOrdinals, withoutIndex, fullSequenceName, nil}
+	info := ExtraTableInfo{
+		PkOrdinals: schema.PkOrdinals,
+		Replicated: withoutIndex,
+		Sequence:   fullSequenceName,
+		Checks:     nil,
+		Storage:    storage.Kind,
+	}
 	b.WriteString(fmt.Sprintf(
 		"; COMMENT ON TABLE %s IS '%s'",
 		fullTableName,
@@ -322,14 +337,88 @@ func isIndexCreationDisabled(ctx *sql.Context) bool {
 func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.createAllTable(ctx, name, schema, collation, comment, false)
+	storage := DefaultTableStorageSelection()
+	if selected, ok := TableStorageSelectionFromContext(ctx); ok {
+		storage = selected
+	}
+	return d.createAllTable(ctx, name, schema, collation, comment, storage, false)
+}
+
+// CreateTableWithStorage is the explicit catalog boundary for protocol
+// adapters that already normalized a table selector. It is intentionally
+// limited to selection propagation and metadata; object-table physical
+// routing is owned by the follow-up storage implementation.
+func (d *Database) CreateTableWithStorage(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, storage TableStorageSelection) error {
+	if err := storage.Validate(); err != nil {
+		return err
+	}
+	if err := SetTableStorageSelection(ctx, storage); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.createAllTable(ctx, name, schema, collation, comment, storage, false)
+}
+
+// RecordTableStorageSelection updates the managed table metadata for a table
+// created by a protocol path that bypasses sql.TableCreator (currently the
+// PostgreSQL handler). It preserves the user-visible table comment and makes
+// the selection available after a fresh catalog reload.
+func (d *Database) RecordTableStorageSelection(ctx *sql.Context, name string, storage TableStorageSelection) error {
+	if err := storage.Validate(); err != nil {
+		return err
+	}
+	if d.catalog == "temp" && storage.IsObjectStorage() {
+		return fmt.Errorf("%w: temporary tables cannot use object storage", ErrInvalidTableStorage)
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := adapter.QueryCatalog(ctx, `
+		SELECT comment
+		FROM duckdb_tables()
+		WHERE database_name = ? AND schema_name = ? AND table_name = ?
+	`, d.catalog, d.name, name)
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return ErrDuckDB.New(err)
+		}
+		return sql.ErrTableNotFound.New(name)
+	}
+
+	var rawComment stdsql.NullString
+	if err := rows.Scan(&rawComment); err != nil {
+		_ = rows.Close()
+		return ErrDuckDB.New(err)
+	}
+	if err := rows.Close(); err != nil {
+		return ErrDuckDB.New(err)
+	}
+	comment := DecodeComment[ExtraTableInfo](rawComment.String)
+	info := comment.Meta
+	info.Storage = storage.Kind
+	encoded := NewCommentWithMeta(comment.Text, info).Encode()
+	_, err = adapter.Exec(ctx, fmt.Sprintf(`COMMENT ON TABLE %s IS '%s'`, FullTableName(d.catalog, d.name, name), encoded))
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+	return nil
 }
 
 // CreateTemporaryTable implements sql.CreateTemporaryTable.
 func (d *Database) CreateTemporaryTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.createAllTable(ctx, name, schema, collation, "", true)
+	storage := DefaultTableStorageSelection()
+	if selected, ok := TableStorageSelectionFromContext(ctx); ok {
+		storage = selected
+	}
+	return d.createAllTable(ctx, name, schema, collation, "", storage, true)
 }
 
 // DropTable implements sql.TableDropper.

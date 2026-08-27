@@ -32,6 +32,26 @@ type ExtraTableInfo struct {
 	Replicated bool
 	Sequence   string
 	Checks     []sql.CheckDefinition
+	// Storage records the table's durable storage class. An empty value is
+	// treated as local for metadata written before table-level storage
+	// selection existed; newly-created tables always write the explicit value.
+	Storage TableStorageKind `json:"storage,omitempty"`
+}
+
+// StorageKind returns the effective storage class for this metadata. Missing
+// storage metadata is the backwards-compatible local-table behavior.
+func (info ExtraTableInfo) StorageKind() TableStorageKind {
+	if info.Storage == TableStorageObject {
+		return TableStorageObject
+	}
+	return TableStorageLocal
+}
+
+func (info *ExtraTableInfo) normalizeStorage() {
+	if info == nil {
+		return
+	}
+	info.Storage = info.StorageKind()
 }
 
 type ColumnInfo struct {
@@ -75,6 +95,10 @@ func NewTable(db *Database, name string, hasPrimaryKey bool) *Table {
 }
 
 func (t *Table) withComment(comment *Comment[ExtraTableInfo]) *Table {
+	if comment == nil {
+		comment = NewComment[ExtraTableInfo]("")
+	}
+	comment.Meta.normalizeStorage()
 	t.comment = comment
 	return t
 }
@@ -100,7 +124,12 @@ func (t *Table) withSchema(ctx *sql.Context) error {
 }
 
 func (t *Table) ExtraTableInfo() ExtraTableInfo {
-	return t.comment.Meta
+	if t.comment == nil {
+		return ExtraTableInfo{Storage: TableStorageLocal}
+	}
+	info := t.comment.Meta
+	info.normalizeStorage()
+	return info
 }
 
 func (t *Table) HasPrimaryKey() bool {
