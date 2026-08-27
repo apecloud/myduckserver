@@ -20,7 +20,6 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"fmt"
-	"github.com/apecloud/myduckserver/catalog"
 	"io"
 	"os"
 	"regexp"
@@ -30,6 +29,8 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
+	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	sqle "github.com/dolthub/go-mysql-server"
@@ -103,6 +104,14 @@ func (h *DuckHandler) GetCatalogProvider() *catalog.DatabaseProvider {
 
 // ComBind implements the Handler interface.
 func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared PreparedStatementData, bindVars []any) ([]pgproto3.FieldDescription, error) {
+	if err := catalog.RejectSensitiveSQL(prepared.Statement.String); err != nil {
+		return nil, err
+	}
+	if auditQuery := prepared.Statement.QueryForAudit(); auditQuery != prepared.Statement.String {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return nil, err
+		}
+	}
 	vars := make([]driver.NamedValue, len(bindVars))
 	for i, v := range bindVars {
 		vars[i] = driver.NamedValue{
@@ -121,6 +130,14 @@ func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared Prepa
 
 // ComExecuteBound implements the Handler interface.
 func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, portal PortalData, callback func(*Result) error) error {
+	if err := catalog.RejectSensitiveSQL(portal.Statement.String); err != nil {
+		return err
+	}
+	if auditQuery := portal.Statement.QueryForAudit(); auditQuery != portal.Statement.String {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
 	if err := h.rejectReadOnly(portal.Statement); err != nil {
 		return err
 	}
@@ -134,6 +151,9 @@ func (h *DuckHandler) ComExecuteBound(ctx context.Context, conn *mysql.Conn, por
 
 // ComPrepareParsed implements the Handler interface.
 func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed tree.Statement) (*duckdb.Stmt, []uint32, []pgproto3.FieldDescription, error) {
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := h.rejectReadOnly(ConvertedStatement{String: query, AST: parsed}); err != nil {
 		return nil, nil, nil, err
 	}
@@ -182,7 +202,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		return nil
 	})
 	if err != nil {
-		logrus.WithField("query", query).Errorf("unable to prepare query: %s", err.Error())
+		logrus.WithField("query", catalog.RedactSensitiveSQL(query)).Errorf("unable to prepare query: %s", err.Error())
 		return nil, nil, nil, err
 	}
 
@@ -249,6 +269,14 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 
 // ComQuery implements the Handler interface.
 func (h *DuckHandler) ComQuery(ctx context.Context, c *mysql.Conn, query string, auditQuery string, parsed tree.Statement, callback func(*Result) error) error {
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return err
+	}
+	if auditQuery != "" && auditQuery != query {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
 	if err := h.rejectReadOnly(ConvertedStatement{String: query, AST: parsed}); err != nil {
 		return err
 	}
@@ -278,11 +306,12 @@ func (h *DuckHandler) ComResetConnection(c *mysql.Conn) error {
 	h.e.CloseSession(c.ConnectionID)
 
 	// Create a new session and set the current database
-	err := h.sm.NewSession(context.Background(), c)
+	frontendCtx := mycontext.WithFrontendQuery(context.Background())
+	err := h.sm.NewSession(frontendCtx, c)
 	if err != nil {
 		return err
 	}
-	return h.sm.SetDB(context.Background(), c, db)
+	return h.sm.SetDB(frontendCtx, c, db)
 }
 
 // ConnectionClosed implements the Handler interface.
@@ -310,7 +339,10 @@ func (h *DuckHandler) NewContext(ctx context.Context, c *mysql.Conn, query strin
 }
 
 func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (string, error) {
-	ctx := context.Background()
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return "", err
+	}
+	ctx := mycontext.WithFrontendQuery(context.Background())
 	sqlCtx, err := h.NewContext(ctx, mysqlConn, "")
 	if err != nil {
 		return "", err
@@ -337,8 +369,18 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 var queryLoggingRegex = regexp.MustCompile(`[\r\n\t ]+`)
 
 func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, auditQuery string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any, resultFormatCodes []int16, mode QueryMode, queryExec QueryExecutor, callback func(*Result) error) (returnErr error) {
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return err
+	}
 	if auditQuery != "" {
-		audit := backend.NewQueryAudit(c, "postgres", auditQuery)
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
+	redactedQuery := catalog.RedactSensitiveSQL(query)
+	redactedAuditQuery := catalog.RedactSensitiveSQL(auditQuery)
+	if auditQuery != "" {
+		audit := backend.NewQueryAudit(c, "postgres", redactedAuditQuery)
 		originalCallback := callback
 		callback = func(res *Result) error {
 			if err := originalCallback(res); err != nil {
@@ -352,22 +394,22 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 		}()
 	}
 
-	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, query)
+	sqlCtx, err := h.sm.NewContextWithQuery(ctx, c, redactedQuery)
 	if err != nil {
 		return err
 	}
 	sqlCtx.GetLogger().WithFields(logrus.Fields{
-		"query":    query,
+		"query":    redactedQuery,
 		"protocol": "postgres",
 	}).Trace("doQuery")
 
 	start := time.Now()
 	var queryStrToLog string
 	if h.encodeLoggedQuery {
-		queryStrToLog = base64.StdEncoding.EncodeToString([]byte(query))
+		queryStrToLog = base64.StdEncoding.EncodeToString([]byte(redactedQuery))
 	} else if logrus.IsLevelEnabled(logrus.DebugLevel) {
 		// this is expensive, so skip this unless we're logging at DEBUG level
-		queryStrToLog = string(queryLoggingRegex.ReplaceAll([]byte(query), []byte(" ")))
+		queryStrToLog = string(queryLoggingRegex.ReplaceAll([]byte(redactedQuery), []byte(" ")))
 	}
 
 	if queryStrToLog != "" {

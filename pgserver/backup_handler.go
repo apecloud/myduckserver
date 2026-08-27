@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/apecloud/myduckserver/storage"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -89,16 +90,25 @@ func parseBackupSQL(sql string) (*BackupConfig, error) {
 }
 
 func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, error) {
-	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	// Replication state changes deliberately use the historical unmarked
+	// context.  They must not receive service-owned DuckLake settings or
+	// credentials from the connection initializer.
+	replicationCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to create context for query: %w", err)
 	}
 
-	if err := stopAllReplication(sqlCtx); err != nil {
+	if err := stopAllReplication(replicationCtx); err != nil {
 		return "", fmt.Errorf("failed to stop replication: %w", err)
 	}
 
-	if err := doCheckpoint(sqlCtx); err != nil {
+	// CHECKPOINT is service-owned maintenance and is the only step in this
+	// sequence that needs the maintenance origin.
+	checkpointCtx, err := h.duckHandler.sm.NewContextWithQuery(mycontext.WithMaintenanceQuery(context.Background()), h.mysqlConn, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to create checkpoint context: %w", err)
+	}
+	if err := doCheckpoint(checkpointCtx); err != nil {
 		return "", fmt.Errorf("failed to do checkpoint: %w", err)
 	}
 
@@ -118,7 +128,7 @@ func (h *ConnectionHandler) executeBackup(backupConfig *BackupConfig) (string, e
 		return "", fmt.Errorf("backup finished: %s, but failed to restart server: %w", msg, err)
 	}
 
-	if err = startAllReplication(sqlCtx); err != nil {
+	if err = startAllReplication(replicationCtx); err != nil {
 		return "", fmt.Errorf("backup finished: %s, but failed to start replication: %w", msg, err)
 	}
 

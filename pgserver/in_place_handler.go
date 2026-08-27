@@ -10,6 +10,7 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/apecloud/myduckserver/pgserver/pgconfig"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -28,7 +29,7 @@ var currentSettingRegex = regexp.MustCompile(`(?i)^\s*select\s+(pg_catalog.)?cur
 // isInRecovery will get the count of
 func (h *ConnectionHandler) isInRecovery() (string, error) {
 	// Grab a sql.Context.
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	ctx, err := h.duckHandler.NewContext(mycontext.WithFrontendQuery(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return "f", err
 	}
@@ -47,7 +48,7 @@ func (h *ConnectionHandler) isInRecovery() (string, error) {
 // readOneWALPositionStr reads one of the recorded WAL position from the WAL position table
 func (h *ConnectionHandler) readOneWALPositionStr() (string, error) {
 	// Grab a sql.Context.
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	ctx, err := h.duckHandler.NewContext(mycontext.WithFrontendQuery(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return "0/0", err
 	}
@@ -73,7 +74,7 @@ func (h *ConnectionHandler) queryPGSetting(name string) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("error: %s variable was not found", name)
 	}
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	ctx, err := h.duckHandler.NewContext(mycontext.WithFrontendQuery(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return nil, fmt.Errorf("error creating context: %w", err)
 	}
@@ -91,7 +92,7 @@ func (h *ConnectionHandler) setPgSessionVar(name string, value any, useDefault b
 	if !ok {
 		return false, fmt.Errorf("error: %s variable was not found", name)
 	}
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	ctx, err := h.duckHandler.NewContext(mycontext.WithFrontendQuery(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return false, err
 	}

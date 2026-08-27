@@ -40,7 +40,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	stdsql "database/sql"
+	"errors"
 	"fmt"
 	"math/rand"
 	"path/filepath"
@@ -54,6 +54,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql/schema_ref"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/scalar"
+	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/duckdb/duckdb-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -159,7 +161,7 @@ func CreateDB() (*sql.DB, error) {
 		return nil, err
 	}
 
-	db := stdsql.OpenDB(connector)
+	db := sql.OpenDB(connector)
 
 	_, err = db.Exec(`
 	CREATE TABLE foreignTable (
@@ -209,24 +211,93 @@ type Statement struct {
 	stmt   *sql.Stmt
 	query  string
 	params [][]interface{}
+	// conn is set for statements prepared directly on a physical connection.
+	// Transaction-owned statements point at the transaction's connection as
+	// well, but do not own its lifetime.
+	conn *sql.Conn
+	// ownsConn is true only for a standalone prepared statement. Its connection
+	// must remain checked out until ClosePreparedStatement so the statement and
+	// every execution stay on the initialized physical connection.
+	ownsConn bool
+}
+
+type transactionState struct {
+	tx   *sql.Tx
+	conn *sql.Conn
 }
 
 type SQLiteFlightSQLServer struct {
 	flightsql.BaseServer
-	db   *sql.DB
-	conn *duckdb.Conn
+	db                *sql.DB
+	conn              *duckdb.Conn
+	initializeStorage func(context.Context, *sql.Conn) error
 
 	prepared         sync.Map
 	openTransactions sync.Map
 }
 
-func NewSQLiteFlightSQLServer(db *sql.DB) (*SQLiteFlightSQLServer, error) {
-	ret := &SQLiteFlightSQLServer{db: db}
+// NewSQLiteFlightSQLServer accepts an optional service initializer. Keeping
+// the initializer at the request boundary prevents the shared database pool
+// from receiving DuckLake credentials during process boot, while preserving
+// the original constructor for callers that do not enable DuckLake. The
+// callback receives the exact *sql.Conn selected for the request, so setup is
+// applied to that physical connection rather than to an unrelated pool slot.
+func NewSQLiteFlightSQLServer(db *sql.DB, initializer ...func(context.Context, *sql.Conn) error) (*SQLiteFlightSQLServer, error) {
+	if len(initializer) > 1 {
+		return nil, fmt.Errorf("at most one FlightSQL storage initializer is supported")
+	}
+	var initializeConnection func(context.Context, *sql.Conn) error
+	if len(initializer) == 1 {
+		initializeConnection = initializer[0]
+	}
+	ret := &SQLiteFlightSQLServer{db: db, initializeStorage: initializeConnection}
 	ret.Alloc = memory.DefaultAllocator
 	for k, v := range SqlInfoResultMap() {
 		ret.RegisterSqlInfo(flightsql.SqlInfo(k), v)
 	}
 	return ret, nil
+}
+
+// frontendConnection marks the request before selecting a physical
+// connection, then initializes that same connection. A failed initializer
+// never leaves the connection available to another request.
+func frontendConnection(ctx context.Context, db *sql.DB, initializer func(context.Context, *sql.Conn) error) (context.Context, *sql.Conn, error) {
+	ctx = mycontext.WithFrontendQuery(ctx)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if initializer != nil {
+		if err := initializer(ctx, conn); err != nil {
+			_ = conn.Close()
+			return nil, nil, err
+		}
+	}
+	return ctx, conn, nil
+}
+
+func (s *SQLiteFlightSQLServer) frontendConnection(ctx context.Context) (context.Context, *sql.Conn, error) {
+	return frontendConnection(ctx, s.db, s.initializeStorage)
+}
+
+func duckDBConn(conn *sql.Conn) (*duckdb.Conn, error) {
+	var duckConn *duckdb.Conn
+	if err := conn.Raw(func(driverConn any) error {
+		var ok bool
+		duckConn, ok = driverConn.(*duckdb.Conn)
+		if !ok {
+			return fmt.Errorf("unexpected DuckDB driver connection type %T", driverConn)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return duckConn, nil
+}
+
+func streamReaderWithConn(ctx context.Context, rdr array.RecordReader, conn *sql.Conn, ch chan<- flight.StreamChunk) {
+	defer conn.Close()
+	flight.StreamChunksFromReader(ctx, rdr, ch)
 }
 
 func (s *SQLiteFlightSQLServer) flightInfoForCommand(desc *flight.FlightDescriptor, schema *arrow.Schema) *flight.FlightInfo {
@@ -241,6 +312,9 @@ func (s *SQLiteFlightSQLServer) flightInfoForCommand(desc *flight.FlightDescript
 
 func (s *SQLiteFlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flightsql.StatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
 	query, txnid := cmd.GetQuery(), cmd.GetTransactionId()
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return nil, err
+	}
 	tkt, err := encodeTransactionQuery(query, txnid)
 	if err != nil {
 		return nil, err
@@ -272,7 +346,7 @@ func (s *SQLiteFlightSQLServer) DoGetStatement(ctx context.Context, cmd flightsq
 	// 	db = tx.(*sql.Tx)
 	// }
 
-	return doGetQuery(ctx, s.db, query, nil)
+	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, nil)
 }
 
 func (s *SQLiteFlightSQLServer) GetFlightInfoCatalogs(_ context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -346,35 +420,40 @@ func (s *SQLiteFlightSQLServer) GetFlightInfoTables(_ context.Context, cmd fligh
 
 func (s *SQLiteFlightSQLServer) DoGetTables(ctx context.Context, cmd flightsql.GetTables) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	query := prepareQueryForGetTables(cmd)
-
-	conn, err := s.db.Conn(ctx)
-	var duckConn *duckdb.Conn
-	err = conn.Raw(func(driverConn any) error {
-		duckConn = driverConn.(*duckdb.Conn)
-		return nil
-	})
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return nil, nil, err
+	}
+	ctx, conn, err := s.frontendConnection(ctx)
 	if err != nil {
+		return nil, nil, err
+	}
+	duckConn, err := duckDBConn(conn)
+	if err != nil {
+		_ = conn.Close()
 		return nil, nil, err
 	}
 	arrow, err := duckdb.NewArrowFromConn(duckConn)
 	if err != nil {
+		_ = conn.Close()
 		return nil, nil, err
 	}
 	rdr, err := arrow.QueryContext(ctx, query)
 	if err != nil {
+		_ = conn.Close()
 		return nil, nil, err
 	}
 
 	ch := make(chan flight.StreamChunk, 2)
 	if cmd.GetIncludeSchema() {
-		rdr, err = NewSqliteTablesSchemaBatchReader(ctx, s.Alloc, rdr, s.db, query)
+		rdr, err = newSqliteTablesSchemaBatchReader(ctx, s.Alloc, rdr, conn, query)
 		if err != nil {
+			_ = conn.Close()
 			return nil, nil, err
 		}
 	}
 
 	schema := rdr.Schema()
-	go flight.StreamChunksFromReader(ctx, rdr, ch)
+	go streamReaderWithConn(ctx, rdr, conn, ch)
 	return schema, ch, nil
 }
 
@@ -402,10 +481,14 @@ func (s *SQLiteFlightSQLServer) GetFlightInfoTableTypes(_ context.Context, desc 
 
 func (s *SQLiteFlightSQLServer) DoGetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	query := "SELECT DISTINCT type AS table_type FROM sqlite_master"
-	return doGetQuery(ctx, s.db, query, schema_ref.TableTypes)
+	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.TableTypes)
 }
 
 func (s *SQLiteFlightSQLServer) DoPutCommandStatementUpdate(ctx context.Context, cmd flightsql.StatementUpdate) (int64, error) {
+	if err := catalog.RejectSensitiveSQL(cmd.GetQuery()); err != nil {
+		return 0, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
 	var (
 		res sql.Result
 		err error
@@ -417,9 +500,15 @@ func (s *SQLiteFlightSQLServer) DoPutCommandStatementUpdate(ctx context.Context,
 			return -1, status.Error(codes.InvalidArgument, "invalid transaction handle provided")
 		}
 
-		res, err = tx.(*sql.Tx).ExecContext(ctx, cmd.GetQuery())
+		res, err = tx.(transactionState).tx.ExecContext(ctx, cmd.GetQuery())
 	} else {
-		res, err = s.db.ExecContext(ctx, cmd.GetQuery())
+		var conn *sql.Conn
+		ctx, conn, err = s.frontendConnection(ctx)
+		if err != nil {
+			return 0, err
+		}
+		defer conn.Close()
+		res, err = conn.ExecContext(ctx, cmd.GetQuery())
 	}
 
 	if err != nil {
@@ -431,25 +520,43 @@ func (s *SQLiteFlightSQLServer) DoPutCommandStatementUpdate(ctx context.Context,
 func (s *SQLiteFlightSQLServer) CreatePreparedStatement(ctx context.Context, req flightsql.ActionCreatePreparedStatementRequest) (result flightsql.ActionCreatePreparedStatementResult, err error) {
 	var stmt *sql.Stmt
 	query := req.GetQuery()
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return result, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
+	var stmtConn *sql.Conn
 
 	if len(req.GetTransactionId()) > 0 {
 		tx, loaded := s.openTransactions.Load(string(req.GetTransactionId()))
 		if !loaded {
 			return result, status.Error(codes.InvalidArgument, "invalid transaction handle provided")
 		}
-		stmt, err = tx.(*sql.Tx).PrepareContext(ctx, req.GetQuery())
+		state := tx.(transactionState)
+		stmt, err = state.tx.PrepareContext(ctx, req.GetQuery())
+		stmtConn = state.conn
 	} else {
-		stmt, err = s.db.PrepareContext(ctx, req.GetQuery())
+		ctx, stmtConn, err = s.frontendConnection(ctx)
+		if err == nil {
+			stmt, err = stmtConn.PrepareContext(ctx, req.GetQuery())
+		}
 	}
 
 	if err != nil {
+		// A transaction owns its connection and releases it only when the
+		// transaction ends. A standalone prepared statement checked out the
+		// connection itself, so only that path may close it on prepare failure.
+		if stmtConn != nil && len(req.GetTransactionId()) == 0 {
+			_ = stmtConn.Close()
+		}
 		return result, err
 	}
 
 	handle := genRandomString()
 	s.prepared.Store(string(handle), Statement{
-		stmt:  stmt,
-		query: query,
+		stmt:     stmt,
+		query:    query,
+		conn:     stmtConn,
+		ownsConn: len(req.GetTransactionId()) == 0,
 	})
 
 	result.Handle = handle
@@ -461,7 +568,12 @@ func (s *SQLiteFlightSQLServer) ClosePreparedStatement(ctx context.Context, requ
 	handle := request.GetPreparedStatementHandle()
 	if val, loaded := s.prepared.LoadAndDelete(string(handle)); loaded {
 		stmt := val.(Statement)
-		return stmt.stmt.Close()
+		stmtErr := stmt.stmt.Close()
+		if stmt.conn == nil || !stmt.ownsConn {
+			return stmtErr
+		}
+		connErr := stmt.conn.Close()
+		return errors.Join(stmtErr, connErr)
 	}
 
 	return status.Error(codes.InvalidArgument, "prepared statement not found")
@@ -486,24 +598,35 @@ type dbQueryCtx interface {
 }
 
 func doGetQuery(ctx context.Context, db *sql.DB, query string, schema *arrow.Schema, args ...interface{}) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	return doGetQueryWithInitializer(ctx, nil, db, query, schema, args...)
+}
 
-	conn, err := db.Conn(ctx)
-	var duckConn *duckdb.Conn
-	err = conn.Raw(func(driverConn any) error {
-		duckConn = driverConn.(*duckdb.Conn)
-		return nil
-	})
+func doGetQueryWithInitializer(ctx context.Context, initializer func(context.Context, *sql.Conn) error, db *sql.DB, query string, schema *arrow.Schema, args ...interface{}) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return nil, nil, err
+	}
+	ctx, conn, err := frontendConnection(ctx, db, initializer)
+	if err != nil {
+		return nil, nil, err
+	}
+	duckConn, err := duckDBConn(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
 	arrow, err := duckdb.NewArrowFromConn(duckConn)
 	if err != nil {
+		_ = conn.Close()
 		return nil, nil, err
 	}
 	rdr, err := arrow.QueryContext(ctx, query, args...)
 	if err != nil {
+		_ = conn.Close()
 		return nil, nil, err
 	}
 	schema = rdr.Schema()
 	ch := make(chan flight.StreamChunk)
-	go flight.StreamChunksFromReader(ctx, rdr, ch)
+	go streamReaderWithConn(ctx, rdr, conn, ch)
 	return schema, ch, nil
 }
 
@@ -513,18 +636,25 @@ func (s *SQLiteFlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd 
 	if !ok {
 		return nil, nil, status.Error(codes.InvalidArgument, "prepared statement not found")
 	}
+	stmt := val.(Statement)
+	if err := catalog.RejectSensitiveSQL(stmt.query); err != nil {
+		return nil, nil, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
+	// The prepared statement was bound either to its standalone checked-out
+	// connection or to the transaction connection at creation time. Reusing a
+	// newly acquired *sql.Conn here would lose both the prepared state and the
+	// transaction, and could bypass the per-physical initializer.
+	conn := stmt.conn
+	if conn == nil {
+		return nil, nil, fmt.Errorf("prepared statement has no owning connection")
+	}
 
-	conn, err := s.db.Conn(ctx)
-	var duckConn *duckdb.Conn
-	err = conn.Raw(func(driverConn any) error {
-		duckConn = driverConn.(*duckdb.Conn)
-		return nil
-	})
+	duckConn, err := duckDBConn(conn)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	stmt := val.(Statement)
 	arrow, err := duckdb.NewArrowFromConn(duckConn)
 	if err != nil {
 		return nil, nil, err
@@ -558,6 +688,9 @@ func (s *SQLiteFlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd 
 		}
 	}
 	ch := make(chan flight.StreamChunk)
+	// Keep the owning connection checked out. Standalone statements release it
+	// from ClosePreparedStatement; transaction statements release it when the
+	// transaction ends.
 	go flight.ConcatenateReaders(readers, ch)
 	out = ch
 	return
@@ -635,6 +768,9 @@ func (s *SQLiteFlightSQLServer) DoPutPreparedStatementQuery(_ context.Context, c
 	}
 
 	stmt := val.(Statement)
+	if err := catalog.RejectSensitiveSQL(stmt.query); err != nil {
+		return nil, err
+	}
 	args, err := getParamsForStatement(rdr)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "error gathering parameters for prepared statement query: %s", err.Error())
@@ -652,6 +788,10 @@ func (s *SQLiteFlightSQLServer) DoPutPreparedStatementUpdate(ctx context.Context
 	}
 
 	stmt := val.(Statement)
+	if err := catalog.RejectSensitiveSQL(stmt.query); err != nil {
+		return 0, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
 	args, err := getParamsForStatement(rdr)
 	if err != nil {
 		return 0, status.Errorf(codes.Internal, "error gathering parameters for prepared statement: %s", err.Error())
@@ -713,7 +853,7 @@ func (s *SQLiteFlightSQLServer) DoGetPrimaryKeys(ctx context.Context, cmd flight
 
 	fmt.Fprintf(&b, " and table_name LIKE '%s'", cmd.Table)
 
-	return doGetQuery(ctx, s.db, b.String(), schema_ref.PrimaryKeys)
+	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, b.String(), schema_ref.PrimaryKeys)
 }
 
 func (s *SQLiteFlightSQLServer) GetFlightInfoImportedKeys(_ context.Context, _ flightsql.TableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -729,7 +869,7 @@ func (s *SQLiteFlightSQLServer) DoGetImportedKeys(ctx context.Context, ref fligh
 		filter += " AND fk_schema_name = '" + *ref.DBSchema + "'"
 	}
 	query := prepareQueryForGetKeys(filter)
-	return doGetQuery(ctx, s.db, query, schema_ref.ImportedKeys)
+	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.ImportedKeys)
 }
 
 func (s *SQLiteFlightSQLServer) GetFlightInfoExportedKeys(_ context.Context, _ flightsql.TableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -745,7 +885,7 @@ func (s *SQLiteFlightSQLServer) DoGetExportedKeys(ctx context.Context, ref fligh
 		filter += " AND pk_schema_name = '" + *ref.DBSchema + "'"
 	}
 	query := prepareQueryForGetKeys(filter)
-	return doGetQuery(ctx, s.db, query, schema_ref.ExportedKeys)
+	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.ExportedKeys)
 }
 
 func (s *SQLiteFlightSQLServer) GetFlightInfoCrossReference(_ context.Context, _ flightsql.CrossTableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -771,17 +911,22 @@ func (s *SQLiteFlightSQLServer) DoGetCrossReference(ctx context.Context, cmd fli
 		filter += " AND fk_schema_name = '" + *fkref.DBSchema + "'"
 	}
 	query := prepareQueryForGetKeys(filter)
-	return doGetQuery(ctx, s.db, query, schema_ref.ExportedKeys)
+	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.ExportedKeys)
 }
 
-func (s *SQLiteFlightSQLServer) BeginTransaction(_ context.Context, req flightsql.ActionBeginTransactionRequest) (id []byte, err error) {
-	tx, err := s.db.Begin()
+func (s *SQLiteFlightSQLServer) BeginTransaction(ctx context.Context, req flightsql.ActionBeginTransactionRequest) (id []byte, err error) {
+	ctx, conn, err := s.frontendConnection(ctx)
 	if err != nil {
+		return nil, err
+	}
+	tx, err := conn.BeginTx(context.WithoutCancel(ctx), nil)
+	if err != nil {
+		_ = conn.Close()
 		return nil, status.Errorf(codes.Internal, "failed to begin transaction: %s", err.Error())
 	}
 
 	handle := genRandomString()
-	s.openTransactions.Store(string(handle), tx)
+	s.openTransactions.Store(string(handle), transactionState{tx: tx, conn: conn})
 	return handle, nil
 }
 
@@ -792,16 +937,25 @@ func (s *SQLiteFlightSQLServer) EndTransaction(_ context.Context, req flightsql.
 
 	handle := string(req.GetTransactionId())
 	if tx, loaded := s.openTransactions.LoadAndDelete(handle); loaded {
-		txn := tx.(*sql.Tx)
+		state := tx.(transactionState)
+		txn := state.tx
+		var txErr error
 		switch req.GetAction() {
 		case flightsql.EndTransactionCommit:
-			if err := txn.Commit(); err != nil {
-				return status.Error(codes.Internal, "failed to commit transaction: "+err.Error())
-			}
+			txErr = txn.Commit()
 		case flightsql.EndTransactionRollback:
-			if err := txn.Rollback(); err != nil {
-				return status.Error(codes.Internal, "failed to rollback transaction: "+err.Error())
+			txErr = txn.Rollback()
+		}
+		connErr := state.conn.Close()
+		if txErr != nil {
+			action := "commit"
+			if req.GetAction() == flightsql.EndTransactionRollback {
+				action = "rollback"
 			}
+			return status.Error(codes.Internal, fmt.Sprintf("failed to %s transaction: %s", action, txErr))
+		}
+		if connErr != nil && !errors.Is(connErr, sql.ErrConnDone) {
+			return status.Error(codes.Internal, "failed to close transaction connection: "+connErr.Error())
 		}
 		return nil
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apecloud/myduckserver/backend"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/configuration"
 	"github.com/apecloud/myduckserver/flightsqlserver"
 	"github.com/apecloud/myduckserver/myfunc"
 	"github.com/apecloud/myduckserver/pgserver"
@@ -138,7 +139,14 @@ func main() {
 		return
 	}
 
-	provider, err := catalog.NewDBProvider(defaultTimeZone, dataDirectory, defaultDb)
+	duckLakeConfig, err := configuration.LoadDuckLakeConfig()
+	if err != nil {
+		// Configuration errors fail closed before any provider or protocol
+		// listener is created. LoadDuckLakeConfig never includes credential
+		// values in its error text.
+		logrus.Fatalln("Failed to load DuckLake service configuration:", err)
+	}
+	provider, err := catalog.NewDBProvider(defaultTimeZone, dataDirectory, defaultDb, catalog.WithDuckLakeConfig(duckLakeConfig))
 	if err != nil {
 		logrus.Fatalln("Failed to open the database:", err)
 	}
@@ -210,14 +218,10 @@ func main() {
 	}
 
 	if flightsqlPort > 0 {
-
 		db := provider.Storage()
-		if err != nil {
-			log.Fatal(err)
-		}
 		defer db.Close()
 
-		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db)
+		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db, provider.InitializeConnection)
 		if err != nil {
 			log.Fatal(err)
 		}
