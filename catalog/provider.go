@@ -20,6 +20,7 @@ import (
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/configuration"
 	"github.com/apecloud/myduckserver/initialdata"
+	"github.com/apecloud/myduckserver/mycontext"
 )
 
 type DatabaseProvider struct {
@@ -33,6 +34,7 @@ type DatabaseProvider struct {
 	dbFile                    string
 	dsn                       string
 	externalProcedureRegistry sql.ExternalStoredProcedureRegistry
+	duckLake                  *duckLakeRuntime
 	ready                     bool
 }
 
@@ -41,20 +43,34 @@ var _ sql.MutableDatabaseProvider = (*DatabaseProvider)(nil)
 var _ sql.ExternalStoredProcedureProvider = (*DatabaseProvider)(nil)
 var _ configuration.DataDirProvider = (*DatabaseProvider)(nil)
 
-func NewInMemoryDBProvider() *DatabaseProvider {
-	prov, err := NewDBProvider("", ".", "")
+func NewInMemoryDBProvider(options ...ProviderOption) *DatabaseProvider {
+	prov, err := NewDBProvider("", ".", "", options...)
 	if err != nil {
 		panic(err)
 	}
 	return prov
 }
 
-func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabaseProvider, err error) {
+func NewDBProvider(defaultTimeZone, dataDir, defaultDB string, options ...ProviderOption) (prov *DatabaseProvider, err error) {
+	providerOptions := &providerOptions{}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(providerOptions); err != nil {
+			return nil, err
+		}
+	}
+	duckLake, err := newDuckLakeRuntime(providerOptions.duckLake)
+	if err != nil {
+		return nil, err
+	}
 	prov = &DatabaseProvider{
 		mu:                        &sync.RWMutex{},
 		defaultTimeZone:           defaultTimeZone,
 		externalProcedureRegistry: sql.NewExternalStoredProcedureRegistry(), // This has no effect, just to satisfy the upper layer interface
 		dataDir:                   dataDir,
+		duckLake:                  duckLake,
 	}
 
 	if defaultDB == "" || defaultDB == "memory" {
@@ -101,6 +117,10 @@ func NewDBProvider(defaultTimeZone, dataDir, defaultDB string) (prov *DatabasePr
 }
 
 func (prov *DatabaseProvider) openStorage(readOnly bool) error {
+	return prov.openStorageWithContext(readOnly, context.Background())
+}
+
+func (prov *DatabaseProvider) openStorageWithContext(readOnly bool, openCtx context.Context) error {
 	connectorDSN := prov.dsn
 	if readOnly && prov.dsn == "" {
 		connectorDSN = "?access_mode=read_only"
@@ -131,22 +151,66 @@ func (prov *DatabaseProvider) openStorage(readOnly bool) error {
 	if err != nil {
 		return err
 	}
+	// Keep the connector callback limited to context-free, non-secret session
+	// setup above. DuckLake extensions and the service secret are initialized
+	// only after an explicit origin is available at a pool or direct-storage
+	// caller boundary.
 	storage := stdsql.OpenDB(connector)
+	if prov.duckLake != nil {
+		// Storage initializes one physical connection at its explicit boundary;
+		// retaining one idle connection lets direct callers reuse that initialized
+		// session while pooled acquisitions still run their own origin guard.
+		storage.SetMaxIdleConns(1)
+	}
 	if prov.pool == nil {
 		prov.pool = NewConnectionPool(connector, storage, prov.defaultCatalogName)
 	} else if err := prov.pool.Reset(connector, storage); err != nil {
 		_ = storage.Close()
 		_ = connector.Close()
 		return err
+	} else if prov.duckLake != nil {
+		// Reset closes every old physical connection. Forget its identities so
+		// a new pool generation is initialized even if the driver reuses an
+		// address for a fresh connection.
+		prov.duckLake.resetInitialized()
 	}
+	prov.pool.SetConnectionInitializer(prov.initializeConnection)
 	prov.connector = connector
 	prov.storage = storage
 
+	ctx := openCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	recovery := mycontext.QueryOrigin(ctx) == mycontext.RecoveryQueryOrigin
 	if prov.dsn == "" {
+		if !recovery {
+			return nil
+		}
+		// An in-memory provider has no ATTACH/WAL boundary, but Restart still
+		// needs an explicit recovery-origin initialization on the physical
+		// connection selected for that restart. Keep this connection scoped to
+		// the recovery operation and let later requests use the pool hook.
+		conn, err := storage.Conn(ctx)
+		if err != nil {
+			_ = storage.Close()
+			_ = connector.Close()
+			return err
+		}
+		if err := prov.InitializeConnection(ctx, conn); err != nil {
+			_ = conn.Close()
+			_ = storage.Close()
+			_ = connector.Close()
+			return err
+		}
+		if err := conn.Close(); err != nil {
+			_ = storage.Close()
+			_ = connector.Close()
+			return err
+		}
 		return nil
 	}
 
-	ctx := context.Background()
 	conn, err := storage.Conn(ctx)
 	if err != nil {
 		_ = storage.Close()
@@ -154,7 +218,6 @@ func (prov *DatabaseProvider) openStorage(readOnly bool) error {
 		return err
 	}
 	defer conn.Close()
-
 	// Generated expressions may reference MyDuck UDFs. Register them before
 	// ATTACH triggers WAL replay so the expression binder can resolve them.
 	if err := prov.pool.registerMySQLUDFs(conn); err != nil {
@@ -173,6 +236,16 @@ func (prov *DatabaseProvider) openStorage(readOnly bool) error {
 		return err
 	}
 	attached.Store(true)
+	if recovery {
+		// Recovery initialization must run on the same physical connection that
+		// performed ATTACH and any WAL replay. Constructor/openStorage calls use
+		// an unknown origin and therefore remain strictly zero-init.
+		if err := prov.InitializeConnection(ctx, conn); err != nil {
+			_ = storage.Close()
+			_ = connector.Close()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -450,7 +523,58 @@ func (prov *DatabaseProvider) Connector() *duckdb.Connector {
 }
 
 func (prov *DatabaseProvider) Storage() *stdsql.DB {
+	if prov == nil {
+		return nil
+	}
+	// Storage is intentionally a passive escape hatch. It must not invent a
+	// query origin: callers that own an explicit query/maintenance/recovery
+	// context initialize through the provider or pool boundary before using it.
 	return prov.storage
+}
+
+// InitializeStorage is retained as a compatibility wrapper for callers that
+// have not yet acquired a connection. New request paths must use
+// InitializeConnection on their already-owned *sql.Conn; this wrapper never
+// caches a database generation and is not used to warm a different request
+// connection.
+func (prov *DatabaseProvider) InitializeStorage(ctx context.Context) error {
+	if prov == nil || prov.duckLake == nil {
+		return nil
+	}
+	if !mycontext.IsDuckLakeEligibleQuery(ctx) {
+		return nil
+	}
+
+	storage := prov.storage
+	if storage == nil {
+		return fmt.Errorf("ducklake storage is unavailable")
+	}
+
+	conn, err := storage.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return prov.InitializeConnection(ctx, conn)
+}
+
+// InitializeConnection applies the service-managed DuckLake setup to an
+// already acquired physical connection. Callers must provide an explicit
+// frontend, maintenance, or recovery origin in ctx; unknown and replication
+// origins deliberately no-op. The runtime keys successful setup by the
+// underlying driver.Conn, so a reused logical *sql.Conn is cheap while every
+// newly opened physical connection is initialized independently.
+func (prov *DatabaseProvider) InitializeConnection(ctx context.Context, conn *stdsql.Conn) error {
+	if prov == nil || prov.duckLake == nil {
+		return nil
+	}
+	if !mycontext.IsDuckLakeEligibleQuery(ctx) {
+		return nil
+	}
+	if conn == nil {
+		return fmt.Errorf("ducklake storage connection is unavailable")
+	}
+	return prov.initializeConnection(ctx, conn)
 }
 
 func (prov *DatabaseProvider) Pool() *ConnectionPool {
@@ -467,6 +591,27 @@ func (prov *DatabaseProvider) DataDir() string {
 
 func (prov *DatabaseProvider) DbFile() string {
 	return prov.dbFile
+}
+
+// DuckLakeEnabled reports whether the service-managed DuckLake connection
+// layer passed validation at provider construction. It never exposes secret
+// values.
+func (prov *DatabaseProvider) DuckLakeEnabled() bool {
+	return prov != nil && prov.duckLake != nil
+}
+
+func (prov *DatabaseProvider) initializeConnection(ctx context.Context, conn *stdsql.Conn) error {
+	if prov.duckLake == nil || conn == nil {
+		return nil
+	}
+	return conn.Raw(func(driverConn any) error {
+		execer, ok := driverConn.(driver.ExecerContext)
+		if !ok {
+			return fmt.Errorf("duckdb connection does not support context execution")
+		}
+		physicalConn, _ := driverConn.(driver.Conn)
+		return prov.duckLake.initializeForConn(ctx, physicalConn, execer)
+	})
 }
 
 // ExternalStoredProcedure implements sql.ExternalStoredProcedureProvider.
@@ -589,5 +734,11 @@ func (prov *DatabaseProvider) Restart(readOnly bool) error {
 		return err
 	}
 
-	return prov.openStorage(readOnly)
+	recoveryCtx := mycontext.WithRecoveryQuery(context.Background())
+	if err := prov.openStorageWithContext(readOnly, recoveryCtx); err != nil {
+		return err
+	}
+	// openStorageWithContext performs recovery initialization on the exact
+	// attach/replay connection. No second pool connection is warmed here.
+	return nil
 }

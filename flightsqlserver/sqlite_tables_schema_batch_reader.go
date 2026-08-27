@@ -47,12 +47,25 @@ type SqliteTablesSchemaBatchReader struct {
 	err        error
 }
 
+type statementPreparer interface {
+	PrepareContext(context.Context, string) (*sql.Stmt, error)
+}
+
 func NewSqliteTablesSchemaBatchReader(ctx context.Context, mem memory.Allocator, rdr array.RecordReader, db *sql.DB, mainQuery string) (*SqliteTablesSchemaBatchReader, error) {
+	return newSqliteTablesSchemaBatchReader(ctx, mem, rdr, db, mainQuery)
+}
+
+// newSqliteTablesSchemaBatchReader binds the metadata statement to the same
+// physical connection as the main query. The public constructor above keeps
+// the historical *sql.DB API for external callers; FlightSQL uses this
+// connection-bound variant so a second uninitialized pool connection cannot
+// be opened while a request is streaming.
+func newSqliteTablesSchemaBatchReader(ctx context.Context, mem memory.Allocator, rdr array.RecordReader, preparer statementPreparer, mainQuery string) (*SqliteTablesSchemaBatchReader, error) {
 	schemaQuery := `SELECT table_name, name, type, [notnull] 
 					FROM pragma_table_info(table_name)
 					JOIN (` + mainQuery + `) WHERE table_name = ?`
 
-	stmt, err := db.PrepareContext(ctx, schemaQuery)
+	stmt, err := preparer.PrepareContext(ctx, schemaQuery)
 	if err != nil {
 		rdr.Release()
 		return nil, err
