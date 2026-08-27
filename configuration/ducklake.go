@@ -15,6 +15,8 @@ const DefaultDuckLakeExtensionDir = "/usr/local/lib/myduckserver/duckdb-extensio
 const (
 	duckLakeEnabledEnv      = "MYDUCK_DUCKLAKE_ENABLED"
 	duckLakeExtensionDirEnv = "MYDUCK_DUCKLAKE_EXTENSION_DIR"
+	duckLakeMetadataPathEnv = "MYDUCK_DUCKLAKE_METADATA_PATH"
+	duckLakeDataPathEnv     = "MYDUCK_DUCKLAKE_DATA_PATH"
 	duckLakeEndpointEnv     = "MYDUCK_DUCKLAKE_S3_ENDPOINT"
 	duckLakeRegionEnv       = "MYDUCK_DUCKLAKE_S3_REGION"
 	duckLakeUseSSLEnv       = "MYDUCK_DUCKLAKE_S3_USE_SSL"
@@ -78,7 +80,15 @@ type S3Config = DuckLakeS3Config
 type DuckLakeConfig struct {
 	Enabled      bool
 	ExtensionDir string
-	S3           DuckLakeS3Config
+	// MetadataPath is the direct DuckLake metadata URI/path. The runtime
+	// prepends the DuckLake scheme when constructing ATTACH, so callers must
+	// not provide a named DuckLake secret here.
+	MetadataPath string
+	// DataPath is the service-owned DATA_PATH passed to DuckLake ATTACH. It may
+	// be a local absolute path or an object-storage URI, but it is never read
+	// from table SQL.
+	DataPath string
+	S3       DuckLakeS3Config
 }
 
 // DuckLakeServiceConfig is an explicit alias for service configuration APIs.
@@ -89,6 +99,8 @@ type DuckLakeServiceConfig = DuckLakeConfig
 const (
 	DuckLakeEnabledEnv              = duckLakeEnabledEnv
 	DuckLakeExtensionDirEnv         = duckLakeExtensionDirEnv
+	DuckLakeMetadataPathEnv         = duckLakeMetadataPathEnv
+	DuckLakeDataPathEnv             = duckLakeDataPathEnv
 	DuckLakeS3EndpointEnv           = duckLakeEndpointEnv
 	DuckLakeS3RegionEnv             = duckLakeRegionEnv
 	DuckLakeS3UseSSLEnv             = duckLakeUseSSLEnv
@@ -112,6 +124,21 @@ func (c DuckLakeConfig) Normalize() (DuckLakeConfig, error) {
 	}
 	if !isAbsolutePath(out.ExtensionDir) {
 		return DuckLakeConfig{}, fmt.Errorf("ducklake extension directory must be absolute")
+	}
+	// Paths are optional for the first (extension-only) service slice. An
+	// enabled object-table request checks both values at the ATTACH boundary;
+	// keeping them optional here preserves existing #71 configurations.
+	if out.MetadataPath != "" {
+		if err := validateDuckLakeMetadataPath(out.MetadataPath); err != nil {
+			return DuckLakeConfig{}, err
+		}
+		out.MetadataPath = strings.TrimSpace(out.MetadataPath)
+	}
+	if out.DataPath != "" {
+		if err := validateDuckLakeDataPath(out.DataPath); err != nil {
+			return DuckLakeConfig{}, err
+		}
+		out.DataPath = strings.TrimSpace(out.DataPath)
 	}
 
 	var err error
@@ -273,7 +300,12 @@ func LoadDuckLakeConfig() (DuckLakeConfig, error) {
 	if err != nil {
 		return DuckLakeConfig{}, err
 	}
-	c := DuckLakeConfig{Enabled: enabled, ExtensionDir: os.Getenv(duckLakeExtensionDirEnv)}
+	c := DuckLakeConfig{
+		Enabled:      enabled,
+		ExtensionDir: os.Getenv(duckLakeExtensionDirEnv),
+		MetadataPath: os.Getenv(duckLakeMetadataPathEnv),
+		DataPath:     os.Getenv(duckLakeDataPathEnv),
+	}
 	if !enabled {
 		return c, nil
 	}
@@ -324,6 +356,79 @@ func parseBool(raw string) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid boolean")
 	}
+}
+
+func validateDuckLakeMetadataPath(raw string) error {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return nil
+	}
+	if strings.ContainsRune(path, '\x00') || strings.ContainsAny(path, "\r\n\t") {
+		return fmt.Errorf("ducklake metadata path is invalid")
+	}
+	if strings.HasPrefix(strings.ToLower(path), "ducklake:") {
+		return fmt.Errorf("ducklake metadata path must be a direct URI or file path")
+	}
+	// DuckLake treats an identifier-only value after the `ducklake:` prefix as
+	// the name of a DuckLake secret. MetadataPath is deliberately a direct
+	// service-owned path, so reject values that could be parsed as a secret
+	// name instead of silently changing the ATTACH meaning.
+	if isIdentifierOnly(path) {
+		return fmt.Errorf("ducklake metadata path must be a direct URI or file path")
+	}
+	if strings.Contains(path, "#") {
+		return fmt.Errorf("ducklake metadata path is invalid")
+	}
+	if strings.Contains(path, "://") {
+		u, err := url.Parse(path)
+		if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("ducklake metadata path is invalid")
+		}
+		if u.Scheme != "file" && u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "s3" {
+			return fmt.Errorf("ducklake metadata path uses an unsupported URI scheme")
+		}
+	}
+	return nil
+}
+
+func isIdentifierOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || (i > 0 && r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validateDuckLakeDataPath(raw string) error {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return nil
+	}
+	if strings.ContainsRune(path, '\x00') || strings.ContainsAny(path, "\r\n\t") {
+		return fmt.Errorf("ducklake data path is invalid")
+	}
+	if strings.Contains(path, "#") {
+		return fmt.Errorf("ducklake data path is invalid")
+	}
+	if strings.Contains(path, "://") {
+		u, err := url.Parse(path)
+		if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("ducklake data path is invalid")
+		}
+		if u.Scheme != "file" && u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "s3" {
+			return fmt.Errorf("ducklake data path uses an unsupported URI scheme")
+		}
+		return nil
+	}
+	if !isAbsolutePath(path) {
+		return fmt.Errorf("ducklake data path must be absolute or a URI")
+	}
+	return nil
 }
 
 // RedactedString intentionally omits all credential values and references.

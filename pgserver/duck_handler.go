@@ -506,6 +506,10 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		result stdsql.Result
 		err    error
 	)
+	routedQuery, routeErr := h.rewritePostgresObjectRelations(ctx, query)
+	if routeErr != nil {
+		return nil, nil, nil, routeErr
+	}
 
 	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
 	//   Consequently, the following classification is not perfect.
@@ -527,7 +531,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		}
 		result, err = adapter.Exec(ctx, executionQuery)
 		if err == nil {
-			err = persistPostgresCreateTableStorage(ctx, parsed, selection)
+			err = persistPostgresCreateTableStorage(ctx, parsed, selection, h.GetCatalogProvider())
 		}
 		if err != nil {
 			break
@@ -542,7 +546,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
 		*tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
 		*tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo, *tree.SetVar:
-		result, err = adapter.Exec(ctx, query)
+		result, err = adapter.Exec(ctx, routedQuery)
 		if err != nil {
 			break
 		}
@@ -555,7 +559,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		}))
 	case *tree.Insert:
 		if _, ok := postgresInsertReturningRows(parsed); ok {
-			rows, err = adapter.QueryCatalog(ctx, query)
+			rows, err = adapter.QueryCatalog(ctx, routedQuery)
 			if err != nil {
 				break
 			}
@@ -570,7 +574,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			}
 			break
 		}
-		result, err = adapter.Exec(ctx, query)
+		result, err = adapter.Exec(ctx, routedQuery)
 		if err != nil {
 			break
 		}
@@ -608,7 +612,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		schema = types.OkResultSchema
 		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
 	case *tree.Select, tree.SelectStatement:
-		rows, schema, err = queryCatalogWithJSONScan(ctx, query)
+		rows, schema, err = queryCatalogWithJSONScan(ctx, routedQuery)
 		if err != nil {
 			break
 		}
@@ -618,7 +622,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 	default:
-		rows, err = adapter.QueryCatalog(ctx, query)
+		rows, err = adapter.QueryCatalog(ctx, routedQuery)
 		if err != nil {
 			break
 		}
@@ -742,8 +746,12 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 		rows   *stdsql.Rows
 		result stdsql.Result
 	)
+	routedQuery, routeErr := h.rewritePostgresObjectRelations(ctx, query)
+	if routeErr != nil {
+		return nil, nil, nil, routeErr
+	}
 	if _, ok := postgresInsertReturningRows(parsed); ok {
-		rows, err = adapter.QueryCatalog(ctx, query, vars...)
+		rows, err = adapter.QueryCatalog(ctx, routedQuery, vars...)
 		if err == nil {
 			schema, err = pgtypes.InferSchema(rows)
 		}
@@ -776,7 +784,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 		if createErr != nil {
 			return nil, nil, nil, createErr
 		}
-		if createErr = persistPostgresCreateTableStorage(ctx, create, selection); createErr != nil {
+		if createErr = persistPostgresCreateTableStorage(ctx, create, selection, h.GetCatalogProvider()); createErr != nil {
 			return nil, nil, nil, createErr
 		}
 		affected, _ := result.RowsAffected()
@@ -790,7 +798,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 	switch stmtType {
 	case duckdb.STATEMENT_TYPE_SELECT,
 		duckdb.STATEMENT_TYPE_RELATION:
-		rows, schema, err = queryCatalogWithJSONScan(ctx, query, vars...)
+		rows, schema, err = queryCatalogWithJSONScan(ctx, routedQuery, vars...)
 		if err != nil {
 			break
 		}
@@ -802,7 +810,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 	case duckdb.STATEMENT_TYPE_CALL,
 		duckdb.STATEMENT_TYPE_PRAGMA,
 		duckdb.STATEMENT_TYPE_EXPLAIN:
-		rows, err = adapter.QueryCatalog(ctx, query, vars...)
+		rows, err = adapter.QueryCatalog(ctx, routedQuery, vars...)
 		if err != nil {
 			break
 		}
@@ -817,7 +825,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 			break
 		}
 	default:
-		result, err = adapter.ExecCatalog(ctx, query, vars...)
+		result, err = adapter.ExecCatalog(ctx, routedQuery, vars...)
 		if err != nil {
 			break
 		}

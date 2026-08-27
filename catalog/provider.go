@@ -600,6 +600,142 @@ func (prov *DatabaseProvider) DuckLakeEnabled() bool {
 	return prov != nil && prov.duckLake != nil
 }
 
+// EnsureDuckLakeConnection makes the service-owned lake available on an
+// already acquired physical connection. Object-table paths call this after
+// resolving persisted metadata; ordinary local and catalog operations do not
+// need to invoke it explicitly.
+func (prov *DatabaseProvider) EnsureDuckLakeConnection(ctx context.Context, conn *stdsql.Conn) error {
+	if prov == nil || prov.duckLake == nil {
+		return fmt.Errorf("ducklake is disabled")
+	}
+	if conn == nil {
+		return fmt.Errorf("ducklake storage connection is unavailable")
+	}
+	return conn.Raw(func(driverConn any) error {
+		execer, ok := driverConn.(driver.ExecerContext)
+		if !ok {
+			return fmt.Errorf("duckdb connection does not support context execution")
+		}
+		physicalConn, _ := driverConn.(driver.Conn)
+		return prov.duckLake.EnsureAttached(ctx, physicalConn, execer)
+	})
+}
+
+// LakeSchemaName returns the deterministic physical schema used for a logical
+// MyDuck catalog/schema pair. The default database retains its schema names so
+// the attached catalog remains inspectable with the normal DuckLake helpers;
+// additional database files are prefixed to avoid collisions in the single
+// service lake catalog.
+func (prov *DatabaseProvider) LakeSchemaName(catalogName, schemaName string) string {
+	if prov == nil || catalogName == "" || catalogName == prov.defaultCatalogName {
+		return schemaName
+	}
+	return "__myduck_" + lakeIdentifierPart(catalogName) + "__" + lakeIdentifierPart(schemaName)
+}
+
+func lakeIdentifierPart(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "default"
+	}
+	return b.String()
+}
+
+// ObjectTableName resolves a persisted object-table comment to its physical
+// DuckLake relation. It deliberately consults the durable local shadow table
+// on every call, so a provider restart cannot retain stale in-memory routing.
+func (prov *DatabaseProvider) ObjectTableName(ctx *sql.Context, catalogName, schemaName, tableName string) (string, bool, error) {
+	if prov == nil || prov.duckLake == nil {
+		return "", false, nil
+	}
+	if strings.TrimSpace(catalogName) == "" || strings.TrimSpace(schemaName) == "" || strings.TrimSpace(tableName) == "" {
+		return "", false, nil
+	}
+	rows, err := adapter.QueryCatalog(ctx, `
+		SELECT comment
+		FROM duckdb_tables()
+		WHERE database_name = ? AND schema_name = ? AND table_name = ?
+	`, catalogName, schemaName, tableName)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+	var comment stdsql.NullString
+	if err := rows.Scan(&comment); err != nil {
+		return "", false, err
+	}
+	info := DecodeComment[ExtraTableInfo](comment.String).Meta
+	if info.StorageKind() != TableStorageObject {
+		return "", false, nil
+	}
+	return FullTableName(DuckLakeCatalogName, prov.LakeSchemaName(catalogName, schemaName), tableName), true, nil
+}
+
+// ObjectTables returns all durable object-table mappings for a logical
+// catalog. The result is used by the protocol SQL rewriter and is intentionally
+// sourced from duckdb_tables() rather than process-local state.
+type ObjectTableMapping struct {
+	Catalog        string
+	Schema         string
+	Table          string
+	PhysicalName   string
+	PhysicalSchema string
+}
+
+func (prov *DatabaseProvider) ObjectTables(ctx *sql.Context, catalogName string) ([]ObjectTableMapping, error) {
+	if prov == nil || prov.duckLake == nil {
+		return nil, nil
+	}
+	rows, err := adapter.QueryCatalog(ctx, `
+		SELECT schema_name, table_name, comment
+		FROM duckdb_tables()
+		WHERE database_name = ?
+	`, catalogName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var mappings []ObjectTableMapping
+	for rows.Next() {
+		var schemaName, tableName string
+		var comment stdsql.NullString
+		if err := rows.Scan(&schemaName, &tableName, &comment); err != nil {
+			return nil, err
+		}
+		info := DecodeComment[ExtraTableInfo](comment.String).Meta
+		if info.StorageKind() != TableStorageObject {
+			continue
+		}
+		physicalSchema := prov.LakeSchemaName(catalogName, schemaName)
+		mappings = append(mappings, ObjectTableMapping{
+			Catalog: catalogName, Schema: schemaName, Table: tableName,
+			PhysicalSchema: physicalSchema,
+			PhysicalName:   FullTableName(DuckLakeCatalogName, physicalSchema, tableName),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return mappings, nil
+}
+
 func (prov *DatabaseProvider) initializeConnection(ctx context.Context, conn *stdsql.Conn) error {
 	if prov.duckLake == nil || conn == nil {
 		return nil
@@ -648,7 +784,7 @@ func (prov *DatabaseProvider) AllDatabases(ctx *sql.Context) []sql.Database {
 			continue
 		}
 
-		all = append(all, NewDatabase(schemaName, catalogName))
+		all = append(all, newDatabase(schemaName, catalogName, prov))
 	}
 
 	sort.Slice(all, func(i, j int) bool {
@@ -670,7 +806,7 @@ func (prov *DatabaseProvider) Database(ctx *sql.Context, name string) (sql.Datab
 	}
 
 	if ok {
-		return NewDatabase(name, catalogName), nil
+		return newDatabase(name, catalogName, prov), nil
 	}
 	return nil, sql.ErrDatabaseNotFound.New(name)
 }

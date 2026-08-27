@@ -164,7 +164,11 @@ func (t *Table) Schema(_ *sql.Context) sql.Schema {
 // RowCount implements sql.StatisticsTable.
 func (t *Table) RowCount(ctx *sql.Context) (uint64, bool, error) {
 	var n uint64
-	q := `SELECT COUNT(*) FROM ` + FullTableName(t.db.catalog, t.db.name, t.name)
+	physical, err := t.physicalTableName(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	q := `SELECT COUNT(*) FROM ` + physical
 	if err := adapter.QueryRowCatalog(ctx, q).Scan(&n); err != nil {
 		return 0, false, ErrDuckDB.New(err)
 	}
@@ -316,6 +320,9 @@ func getCreateSequence(temporary bool, sequenceName string) (createStmt, fullNam
 func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.ColumnOrder) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return t.addObjectColumn(ctx, column)
+	}
 
 	// TODO: Column order is ignored as DuckDB does not support it.
 
@@ -404,6 +411,9 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 func (t *Table) DropColumn(ctx *sql.Context, columnName string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return t.dropObjectColumn(ctx, columnName)
+	}
 
 	// Check if the column is AUTO_INCREMENT
 	autoIncrement := false
@@ -442,6 +452,9 @@ func (t *Table) DropColumn(ctx *sql.Context, columnName string) error {
 func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Column, order *sql.ColumnOrder) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return t.modifyObjectColumn(ctx, columnName, column)
+	}
 
 	typ, err := DuckdbDataType(column.Type)
 	if err != nil {
@@ -609,10 +622,12 @@ func (t *Table) Updater(ctx *sql.Context) sql.RowUpdater {
 // Inserter implements sql.InsertableTable.
 func (t *Table) Inserter(*sql.Context) sql.RowInserter {
 	return &rowInserter{
-		db:     t.db.Name(),
-		table:  t.name,
-		schema: t.schema.Schema,
-		hasPK:  t.hasPrimaryKey,
+		catalog:  t.db.catalog,
+		db:       t.db.Name(),
+		table:    t.name,
+		schema:   t.schema.Schema,
+		hasPK:    t.hasPrimaryKey,
+		provider: t.db.provider,
 	}
 }
 
@@ -623,7 +638,11 @@ func (t *Table) Deleter(*sql.Context) sql.RowDeleter {
 
 // Truncate implements sql.TruncateableTable.
 func (t *Table) Truncate(ctx *sql.Context) (int, error) {
-	result, err := adapter.ExecCatalog(ctx, `TRUNCATE TABLE `+FullTableName(t.db.catalog, t.db.name, t.name))
+	physical, err := t.physicalTableName(ctx)
+	if err != nil {
+		return 0, err
+	}
+	result, err := adapter.ExecCatalog(ctx, `TRUNCATE TABLE `+physical)
 	if err != nil {
 		return 0, err
 	}
@@ -635,11 +654,13 @@ func (t *Table) Truncate(ctx *sql.Context) (int, error) {
 func (t *Table) Replacer(*sql.Context) sql.RowReplacer {
 	hasKey := len(t.schema.PkOrdinals) > 0 || !sql.IsKeyless(t.schema.Schema)
 	return &rowInserter{
-		db:      t.db.Name(),
-		table:   t.name,
-		schema:  t.schema.Schema,
-		hasPK:   t.hasPrimaryKey,
-		replace: hasKey,
+		catalog:  t.db.catalog,
+		db:       t.db.Name(),
+		table:    t.name,
+		schema:   t.schema.Schema,
+		hasPK:    t.hasPrimaryKey,
+		provider: t.db.provider,
+		replace:  hasKey,
 	}
 }
 
@@ -648,6 +669,9 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 	// Lock the table to ensure thread-safety during index creation
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support indexes", ErrInvalidTableStorage)
+	}
 
 	// https://github.com/apecloud/myduckserver/issues/272
 	if isIndexCreationDisabled(ctx) {
@@ -723,6 +747,9 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 func (t *Table) DropIndex(ctx *sql.Context, indexName string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support indexes", ErrInvalidTableStorage)
+	}
 
 	// Construct the SQL statement for dropping the index
 	// DuckDB requires switching context to the schema by USE statement
@@ -749,6 +776,9 @@ func (t *Table) RenameIndex(ctx *sql.Context, fromIndexName string, toIndexName 
 func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	if t.objectStorage() {
+		return nil, nil
+	}
 
 	// Query to get the indexes for the table
 	rows, err := adapter.QueryCatalog(ctx, `SELECT index_name, is_unique, comment, sql FROM duckdb_indexes() WHERE (database_name = ? AND schema_name = ? AND table_name = ?) or (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)`,
@@ -1088,6 +1118,9 @@ func (t *Table) GetChecks(ctx *sql.Context) ([]sql.CheckDefinition, error) {
 func (t *Table) CreateCheck(ctx *sql.Context, check *sql.CheckDefinition) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support CHECK constraints", ErrInvalidTableStorage)
+	}
 
 	// TODO(fan): Implement this once DuckDB supports modifying check constraints.
 	// https://duckdb.org/docs/sql/statements/alter_table.html#add--drop-constraint
@@ -1102,6 +1135,9 @@ func (t *Table) CreateCheck(ctx *sql.Context, check *sql.CheckDefinition) error 
 func (t *Table) DropCheck(ctx *sql.Context, checkName string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support CHECK constraints", ErrInvalidTableStorage)
+	}
 
 	checks := make([]sql.CheckDefinition, 0, max(len(t.comment.Meta.Checks)-1, 0))
 	found := false

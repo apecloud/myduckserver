@@ -30,6 +30,11 @@ const DuckDBExtensionABI = DuckDBExtensionVersion
 // mentions any SECRET object is rejected before it reaches DuckDB.
 const DuckLakeSecretName = "__myduckserver_ducklake_service"
 
+// DuckLakeCatalogName is the one service-owned catalog attached to each
+// eligible physical connection. Logical MyDuck databases and schemas are
+// mapped into this catalog by the provider; clients never select it directly.
+const DuckLakeCatalogName = "__myduck_ducklake"
+
 // ExtensionArtifact is one fixed, decompressed DuckDB extension binary. The
 // filename is deliberately fixed so service configuration cannot select an
 // arbitrary extension or trigger an INSTALL/network fallback.
@@ -209,6 +214,7 @@ type duckLakeRuntime struct {
 	// statement while the provider clears it whenever the pool generation is
 	// replaced (Reset/Restart).
 	initialized sync.Map // map[driver.Conn]struct{}
+	attached    sync.Map // map[driver.Conn]struct{}
 }
 
 func newDuckLakeRuntime(config configuration.DuckLakeConfig) (*duckLakeRuntime, error) {
@@ -297,8 +303,83 @@ func (rt *duckLakeRuntime) initializeForConn(ctx context.Context, conn driver.Co
 		// service credential in an extension/provider error.
 		return fmt.Errorf("create ducklake service secret failed")
 	}
+	// A deployment may enable only the extension/S3 service layer (the #71
+	// configuration). Attach the lake lazily in that case; object-table callers
+	// use EnsureAttached, which fails closed if either path is absent. When both
+	// paths are configured, attaching here guarantees that every eligible
+	// physical connection is ready before a transaction can begin.
+	if rt.config.MetadataPath != "" && rt.config.DataPath != "" {
+		if err := rt.attachLocked(ctx, key, execer); err != nil {
+			return err
+		}
+	}
 	if key != nil {
 		rt.initialized.Store(key, struct{}{})
+	}
+	return nil
+}
+
+// EnsureAttached initializes and attaches the service lake on an eligible
+// physical connection. It is the object-table boundary: incomplete service
+// paths are rejected here rather than guessed from SQL or process state.
+func (rt *duckLakeRuntime) EnsureAttached(ctx context.Context, conn driver.Conn, execer driver.ExecerContext) error {
+	if rt == nil {
+		return fmt.Errorf("ducklake is disabled")
+	}
+	if !mycontext.IsDuckLakeEligibleQuery(ctx) {
+		return fmt.Errorf("ducklake is unavailable for this query origin")
+	}
+	if strings.TrimSpace(rt.config.MetadataPath) == "" || strings.TrimSpace(rt.config.DataPath) == "" {
+		return fmt.Errorf("ducklake metadata and data paths are required for object tables")
+	}
+	if err := rt.initializeForConn(ctx, conn, execer); err != nil {
+		return err
+	}
+	// initializeForConn attaches when both paths are configured. The fallback
+	// below covers a nil/non-comparable driver identity used by unit tests.
+	var key any
+	if conn != nil {
+		typ := reflect.TypeOf(conn)
+		if typ != nil && typ.Comparable() {
+			key = conn
+		}
+	}
+	rt.initializeMu.Lock()
+	defer rt.initializeMu.Unlock()
+	if key != nil {
+		if _, ok := rt.attached.Load(key); ok {
+			return nil
+		}
+	}
+	if err := rt.attachLocked(ctx, key, execer); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (rt *duckLakeRuntime) attachLocked(ctx context.Context, key any, execer driver.ExecerContext) error {
+	if key != nil {
+		if _, ok := rt.attached.Load(key); ok {
+			return nil
+		}
+	}
+	metadata := strings.TrimSpace(rt.config.MetadataPath)
+	dataPath := strings.TrimSpace(rt.config.DataPath)
+	if metadata == "" || dataPath == "" {
+		return fmt.Errorf("ducklake metadata and data paths are required for object tables")
+	}
+	// Both values have already passed configuration validation. SQL-literal
+	// quoting is still required because service paths can contain apostrophes.
+	attach := "ATTACH IF NOT EXISTS " + duckDBStringLiteral("ducklake:"+metadata) +
+		" AS " + QuoteIdentifierANSI(DuckLakeCatalogName) +
+		" (DATA_PATH " + duckDBStringLiteral(dataPath) + ", DATA_INLINING_ROW_LIMIT 0)"
+	if _, err := execer.ExecContext(ctx, attach, nil); err != nil {
+		// Do not expose the metadata/data path or a driver error that may echo
+		// the generated statement in a protocol response.
+		return fmt.Errorf("attach ducklake catalog failed")
+	}
+	if key != nil {
+		rt.attached.Store(key, struct{}{})
 	}
 	return nil
 }
@@ -312,6 +393,7 @@ func (rt *duckLakeRuntime) resetInitialized() {
 	}
 	rt.initializeMu.Lock()
 	rt.initialized.Clear()
+	rt.attached.Clear()
 	rt.initializeMu.Unlock()
 }
 

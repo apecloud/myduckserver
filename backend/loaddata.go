@@ -137,6 +137,13 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 	b.WriteString(" INTO ")
 
 	qualifiedTableName := catalog.ConnectIdentifiersANSI(insert.Database().Name(), dst.Name())
+	if db.provider != nil {
+		if physical, object, err := db.provider.PhysicalTableNameForTable(ctx, dst); err != nil {
+			return nil, err
+		} else if object {
+			qualifiedTableName = physical
+		}
+	}
 	b.WriteString(qualifiedTableName)
 
 	if len(load.ColNames) > 0 {

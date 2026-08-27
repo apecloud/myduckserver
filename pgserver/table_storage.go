@@ -84,7 +84,7 @@ func setPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable) (ca
 	return selection, nil
 }
 
-func persistPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable, selection catalog.TableStorageSelection) error {
+func persistPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable, selection catalog.TableStorageSelection, provider *catalog.DatabaseProvider) error {
 	if stmt == nil || stmt.Persistence == tree.PersistenceTemporary || mycontext.IsReplicationQuery(ctx) {
 		return nil
 	}
@@ -107,7 +107,7 @@ func persistPostgresCreateTableStorage(ctx *sql.Context, stmt *tree.CreateTable,
 		return fmt.Errorf("cannot determine PostgreSQL catalog for table %q", stmt.Table.Table())
 	}
 
-	db := catalog.NewDatabase(schemaName, catalogName)
+	db := catalog.NewDatabaseWithProvider(schemaName, catalogName, provider)
 	return db.RecordTableStorageSelection(ctx, stmt.Table.Table(), selection)
 }
 

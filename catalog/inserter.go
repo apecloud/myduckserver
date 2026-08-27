@@ -12,11 +12,13 @@ import (
 )
 
 type rowInserter struct {
-	db      string
-	table   string
-	schema  sql.Schema
-	hasPK   bool
-	replace bool
+	catalog  string
+	db       string
+	table    string
+	schema   sql.Schema
+	hasPK    bool
+	replace  bool
+	provider *DatabaseProvider
 
 	once     sync.Once
 	conn     *stdsql.Conn
@@ -43,11 +45,24 @@ func (ri *rowInserter) init(ctx *sql.Context) {
 	if ri.err != nil {
 		return
 	}
+	target := ConnectIdentifiersANSI(ri.db, ri.table)
+	if ri.provider != nil && ri.catalog != "" {
+		if physical, found, err := ri.provider.ObjectTableName(ctx, ri.catalog, ri.db, ri.table); err != nil {
+			ri.err = err
+			return
+		} else if found {
+			if err := ri.provider.EnsureDuckLakeConnection(ctx, ri.conn); err != nil {
+				ri.err = err
+				return
+			}
+			target = physical
+		}
+	}
 	ctx.GetLogger().WithField("db", ri.db).WithField("table", ri.table).Infoln("Creating temp table", ri.tmpTable)
 	createTable := fmt.Sprintf(
 		"CREATE TEMP TABLE IF NOT EXISTS %s AS FROM %s LIMIT 0",
 		QuoteIdentifierANSI(ri.tmpTable),
-		ConnectIdentifiersANSI(ri.db, ri.table),
+		target,
 	)
 	if _, ri.err = ri.conn.ExecContext(ctx, createTable); ri.err != nil {
 		return
@@ -75,7 +90,7 @@ func (ri *rowInserter) init(ctx *sql.Context) {
 		insert.WriteString(" OR REPLACE")
 	}
 	insert.WriteString(" INTO ")
-	insert.WriteString(ConnectIdentifiersANSI(ri.db, ri.table))
+	insert.WriteString(target)
 	insert.WriteString(" FROM ")
 	insert.WriteString(QuoteIdentifierANSI(ri.tmpTable))
 	ri.flushSQL = insert.String()

@@ -16,6 +16,7 @@ package backend
 import (
 	stdsql "database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
@@ -279,6 +280,10 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 		return nil, catalog.ErrTranspiler.New(err)
 	}
 	duckSQL = QueryForJSONScan(duckSQL, n.Schema(ctx))
+	duckSQL, err = b.rewriteObjectRelations(ctx, n, duckSQL)
+	if err != nil {
+		return nil, err
+	}
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
 		log.WithFields(logrus.Fields{
@@ -301,6 +306,10 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 	duckSQL, err := transpiler.TranslateWithSQLGlot(queryForTranslation(ctx))
 	if err != nil {
 		return nil, catalog.ErrTranspiler.New(err)
+	}
+	duckSQL, err = b.rewriteObjectRelations(ctx, n, duckSQL)
+	if err != nil {
+		return nil, err
 	}
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
@@ -347,6 +356,66 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 		InsertID:     uint64(insertID),
 		Info:         info,
 	})), nil
+}
+
+// rewriteObjectRelations keeps GMS's logical shadow tables available for
+// analysis while routing the executed SQL to the durable DuckLake relation.
+// The plan is the source of truth for relation identity, so a bare table name
+// is only routed when it is unambiguous within this statement.
+func (b *DuckBuilder) rewriteObjectRelations(ctx *sql.Context, root sql.Node, query string) (string, error) {
+	if b.provider == nil || root == nil {
+		return query, nil
+	}
+	collector := &tableAndFuncCollector{ctx: ctx}
+	transform.Walk(collector, root)
+	routes := make(map[string]string)
+	bareRoutes := make(map[string]string)
+	bareHasLocal := make(map[string]bool)
+	ambiguousBare := make(map[string]bool)
+	for _, node := range collector.tables {
+		var table *catalog.Table
+		switch underlying := node.UnderlyingTable().(type) {
+		case *catalog.Table:
+			table = underlying
+		case *catalog.IndexedTable:
+			table = underlying.Table
+		}
+		if table == nil {
+			continue
+		}
+		physical, object, err := b.provider.PhysicalTableNameForTable(ctx, table)
+		if err != nil {
+			return "", err
+		}
+		if !object {
+			bareHasLocal[strings.ToLower(table.Name())] = true
+			continue
+		}
+		schema := ""
+		if db := node.Database(); db != nil {
+			schema = db.Name()
+		}
+		name := strings.ToLower(table.Name())
+		if schema != "" {
+			routes[strings.ToLower(schema)+"."+name] = physical
+		}
+		if ambiguousBare[name] {
+			continue
+		}
+		if previous, exists := bareRoutes[name]; exists && previous != physical {
+			delete(bareRoutes, name)
+			ambiguousBare[name] = true
+			continue
+		}
+		bareRoutes[name] = physical
+	}
+	for name, physical := range bareRoutes {
+		if !bareHasLocal[name] && !ambiguousBare[name] {
+			routes[name] = physical
+		}
+	}
+	rewritten, _ := RewriteSQLRelations(query, routes)
+	return rewritten, nil
 }
 
 // queryForTranslation canonicalizes ANSI-quoted identifiers before SQLGlot
