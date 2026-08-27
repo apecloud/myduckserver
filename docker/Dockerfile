@@ -12,10 +12,16 @@ ENV GOARCH=$TARGETARCH
 
 WORKDIR /app
 
-# Install build dependencies
+# Install build dependencies.
+# Hosted dual-arch builds run on amd64 and cross-link arm64, so ICU must
+# include the arm64 libraries, not only the build-platform libicu-dev.
 RUN apt-get update && \
-    apt-get install -y debian-archive-keyring curl unzip libicu-dev \
+    apt-get install -y debian-archive-keyring curl unzip \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+    --no-install-recommends && \
+    dpkg --add-architecture arm64 && \
+    apt-get update && \
+    apt-get install -y libicu-dev libicu-dev:arm64 \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
@@ -49,7 +55,7 @@ RUN --mount=type=bind,target=. \
     --mount=type=cache,target=/go/pkg/mod \
     go env && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-      CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++" CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags=duckdb_arrow -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
+      CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++" CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib/aarch64-linux-gnu" GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags=duckdb_arrow -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
     else \
       CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags=duckdb_arrow -trimpath -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -X main.SourceRepository=${SOURCE_REPOSITORY}" -o /myduckserver; \
     fi
