@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +31,8 @@ import (
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/backend"
+	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	gms "github.com/dolthub/go-mysql-server"
@@ -60,6 +61,32 @@ type ConnectionHandler struct {
 	server   *Server
 	readOnly bool
 	logger   *logrus.Entry
+}
+
+// frontendContext explicitly marks ordinary PostgreSQL protocol work. The
+// origin marker is propagated into sql.Context and eventually into the
+// provider's per-connection initializer; unmarked and replication contexts
+// remain fail-closed.
+func frontendContext(ctx context.Context) context.Context {
+	return mycontext.WithFrontendQuery(ctx)
+}
+
+// statementLogText keeps diagnostic logging useful without formatting the
+// full ConvertedStatement. The latter may carry a BackupConfig/RestoreConfig
+// whose ObjectStorageConfig contains client credentials, and prepared portals
+// may also carry bound values that must never be serialized into logs.
+func statementLogText(statement ConvertedStatement) string {
+	if statement.BackupConfig != nil || statement.RestoreConfig != nil {
+		// The parsed config contains ObjectStorage credentials even when the
+		// original text was embedded in a larger statement. Never serialize that
+		// text or config into diagnostics.
+		return catalog.RedactedSensitiveSQL
+	}
+	query := statement.QueryForAudit()
+	if query == "" {
+		query = statement.String
+	}
+	return catalog.RedactSensitiveSQL(query)
 }
 
 // Set this env var to disable panic handling in the connection, which is useful when debugging a panic
@@ -328,7 +355,7 @@ func (h *ConnectionHandler) chooseInitialDatabase(startupMessage *pgproto3.Start
 	if err != nil {
 		return err
 	}
-	err = h.duckHandler.ComQuery(context.Background(), h.mysqlConn, useStmt, "", parsed.AST, func(res *Result) error {
+	err = h.duckHandler.ComQuery(frontendContext(context.Background()), h.mysqlConn, useStmt, "", parsed.AST, func(res *Result) error {
 		return nil
 	})
 	// If a database isn't specified, then we attempt to connect to a database with the same name as the user,
@@ -381,15 +408,10 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 		return false, fmt.Errorf("error receiving message: %w", err)
 	}
 
-	if m, ok := msg.(json.Marshaler); ok && logrus.IsLevelEnabled(logrus.DebugLevel) {
-		msgInfo, err := m.MarshalJSON()
-		if err != nil {
-			return false, err
-		}
-		logrus.Debugf("Received message: %s", string(msgInfo))
-	} else {
-		logrus.Debugf("Received message: %t", msg)
-	}
+	// Message bodies can contain credentials or service-managed SQL. Keep the
+	// receive-stage diagnostic useful without logging any client payload before
+	// the protocol-specific sensitive-SQL gate runs.
+	logrus.Debugf("Received message type: %T", msg)
 
 	var stop bool
 	stop, endOfMessages, err = h.handleMessage(msg)
@@ -452,6 +474,10 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 // expected as part of this query, in which case the server will send a READY FOR QUERY message back to the client so
 // that it can send its next query.
 func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages bool, err error) {
+	if err := catalog.RejectSensitiveSQL(message.String); err != nil {
+		return true, err
+	}
+
 	// usql use ";" to test if the connection is alive. If we don't handle it, this will return an error. So we need to
 	// manually handle it here.
 	if message.String == ";" {
@@ -492,12 +518,12 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 		handled, endOfMessages, err = h.handleStatementOutsideEngine(statement)
 		if handled {
 			if err != nil {
-				h.logger.Warnf("Failed to handle statement %v outside engine: %v", statement, err)
+				h.logger.Warnf("Failed to handle statement %s outside engine: %v", statementLogText(statement), err)
 				return true, err
 			}
 		} else {
 			if err != nil {
-				h.logger.Warnf("Failed to handle statement %v outside engine: %v", statement, err)
+				h.logger.Warnf("Failed to handle statement %s outside engine: %v", statementLogText(statement), err)
 			}
 			endOfMessages, err = true, h.run(statement)
 			if err != nil {
@@ -568,6 +594,9 @@ func (h *ConnectionHandler) handleStatementOutsideEngine(statement ConvertedStat
 // handleParse handles a parse message, returning any error that occurs
 func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	h.waitForSync = true
+	if err := catalog.RejectSensitiveSQL(message.Query); err != nil {
+		return err
+	}
 
 	// TODO: "Named prepared statements must be explicitly closed before they can be redefined by another Parse message, but this is not required for the unnamed statement"
 	statements, err := h.convertQuery(message.Query)
@@ -604,7 +633,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		return h.send(&pgproto3.ParseComplete{})
 	}
 
-	stmt, params, fields, err := h.duckHandler.ComPrepareParsed(context.Background(), h.mysqlConn, statement.String, statement.AST)
+	stmt, params, fields, err := h.duckHandler.ComPrepareParsed(frontendContext(context.Background()), h.mysqlConn, statement.String, statement.AST)
 	if err != nil {
 		return err
 	}
@@ -701,11 +730,19 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 
 	// TODO: a named portal object lasts till the end of the current transaction, unless explicitly destroyed
 	//  we need to destroy the named portal as a side effect of the transaction ending
-	logrus.Tracef("binding portal %q to prepared statement %s", message.DestinationPortal, message.PreparedStatement)
 	preparedData, ok := h.preparedStatements[message.PreparedStatement]
 	if !ok {
 		return fmt.Errorf("prepared statement %s does not exist", message.PreparedStatement)
 	}
+	if err := catalog.RejectSensitiveSQL(preparedData.Statement.String); err != nil {
+		return err
+	}
+	if auditQuery := preparedData.Statement.QueryForAudit(); auditQuery != preparedData.Statement.String {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
+	logrus.Tracef("binding portal %q to prepared statement %s", message.DestinationPortal, message.PreparedStatement)
 
 	if preparedData.Stmt == nil {
 		h.portals[message.DestinationPortal] = PortalData{
@@ -732,7 +769,7 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 		return err
 	}
 
-	fields, err := h.duckHandler.ComBind(context.Background(), h.mysqlConn, preparedData, bindVars)
+	fields, err := h.duckHandler.ComBind(frontendContext(context.Background()), h.mysqlConn, preparedData, bindVars)
 	if err != nil {
 		return err
 	}
@@ -758,8 +795,16 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 		return fmt.Errorf("portal %s does not exist", message.Portal)
 	}
 
-	logrus.Tracef("executing portal %s with contents %v", message.Portal, portalData)
 	query := portalData.Statement
+	if err := catalog.RejectSensitiveSQL(query.String); err != nil {
+		return err
+	}
+	if auditQuery := query.QueryForAudit(); auditQuery != query.String {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
+	logrus.Tracef("executing portal %s with statement %s and %d bound values", message.Portal, statementLogText(query), len(portalData.Vars))
 
 	if portalData.IsEmptyQuery {
 		err := h.send(&pgproto3.NoData{})
@@ -781,7 +826,7 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	rowsAffected := int32(0)
 
 	callback := h.spoolRowsCallback(query, &rowsAffected, true)
-	err := h.duckHandler.ComExecuteBound(context.Background(), h.mysqlConn, portalData, callback)
+	err := h.duckHandler.ComExecuteBound(frontendContext(context.Background()), h.mysqlConn, portalData, callback)
 	if err != nil {
 		return err
 	}
@@ -823,7 +868,7 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 	}
 
 	// Grab a sql.Context.
-	sqlCtx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	sqlCtx, err := h.duckHandler.NewContext(frontendContext(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return false, false, err
 	}
@@ -914,7 +959,7 @@ func (h *ConnectionHandler) handleCopyDone(_ *pgproto3.CopyDone) (stop bool, end
 			fmt.Errorf("no data loader found for COPY FROM STDIN operation")
 	}
 
-	sqlCtx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
+	sqlCtx, err := h.duckHandler.NewContext(frontendContext(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return false, false, err
 	}
@@ -1009,7 +1054,15 @@ func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []
 
 // run runs the given statement and sends a CommandComplete message to the client
 func (h *ConnectionHandler) run(statement ConvertedStatement) error {
-	h.logger.Tracef("running statement %v", statement)
+	if err := catalog.RejectSensitiveSQL(statement.String); err != nil {
+		return err
+	}
+	if auditQuery := statement.QueryForAudit(); auditQuery != statement.String {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
+	h.logger.Tracef("running statement %s", statementLogText(statement))
 
 	// |rowsAffected| gets altered by the callback below
 	rowsAffected := int32(0)
@@ -1020,7 +1073,7 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 		if err != nil {
 			return err
 		}
-		h.logger.Tracef("getting statement tag for statement %v via preparing in DuckDB: %s", statement, tag)
+		h.logger.Tracef("getting statement tag for statement %s via preparing in DuckDB: %s", statementLogText(statement), tag)
 		statement.Tag = tag
 	}
 
@@ -1046,7 +1099,7 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 
 	callback := h.spoolRowsCallback(statement, &rowsAffected, false)
 	if err := h.duckHandler.ComQuery(
-		context.Background(),
+		frontendContext(context.Background()),
 		h.mysqlConn,
 		statement.String,
 		statement.QueryForAudit(),
@@ -1378,11 +1431,19 @@ func (h *ConnectionHandler) handleCopyFromStdinQuery(
 	query ConvertedStatement, copyFrom *tree.CopyFrom,
 	rawOptions string, // For non-PG-parseable COPY FROM
 ) error {
-	sqlCtx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, query.String)
+	if err := catalog.RejectSensitiveSQL(query.String); err != nil {
+		return err
+	}
+	if auditQuery := query.QueryForAudit(); auditQuery != query.String {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
+	sqlCtx, err := h.duckHandler.NewContext(frontendContext(context.Background()), h.mysqlConn, query.String)
 	if err != nil {
 		return err
 	}
-	sqlCtx.SetLogger(sqlCtx.GetLogger().WithField("query", query.String))
+	sqlCtx.SetLogger(sqlCtx.GetLogger().WithField("query", catalog.RedactSensitiveSQL(query.QueryForAudit())))
 
 	table, err := ValidateCopyFrom(copyFrom, sqlCtx)
 	if err != nil {
@@ -1440,11 +1501,19 @@ func returnsRow(tag string) bool {
 }
 
 func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo *tree.CopyTo, subquery string, format tree.CopyFormat, rawOptions string) error {
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, query.String)
+	if err := catalog.RejectSensitiveSQL(query.String); err != nil {
+		return err
+	}
+	if auditQuery := query.QueryForAudit(); auditQuery != query.String {
+		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
+			return err
+		}
+	}
+	ctx, err := h.duckHandler.NewContext(frontendContext(context.Background()), h.mysqlConn, query.String)
 	if err != nil {
 		return err
 	}
-	ctx.SetLogger(ctx.GetLogger().WithField("query", query.String))
+	ctx.SetLogger(ctx.GetLogger().WithField("query", catalog.RedactSensitiveSQL(query.QueryForAudit())))
 
 	// Create cancelable context
 	childCtx, cancel := context.WithCancel(ctx)

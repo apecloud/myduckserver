@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/apecloud/myduckserver/testutil"
 	gmsql "github.com/dolthub/go-mysql-server/sql"
 	"github.com/duckdb/duckdb-go/v2"
@@ -134,6 +135,56 @@ func TestTransactionOutlivesRequestContext(t *testing.T) {
 	var got int
 	require.NoError(t, conn.QueryRowContext(context.Background(), "SELECT 1").Scan(&got))
 	require.Equal(t, 1, got)
+}
+
+func TestConnectionPoolInitializerSkipsActiveTransaction(t *testing.T) {
+	connector, err := duckdb.NewConnector("", nil)
+	require.NoError(t, err)
+	db := stdsql.OpenDB(connector)
+	pool := NewConnectionPool(connector, db, "memory")
+	t.Cleanup(func() {
+		require.NoError(t, pool.Close())
+		require.NoError(t, connector.Close())
+	})
+
+	var origins []mycontext.QueryOriginKind
+	pool.SetConnectionInitializer(func(ctx context.Context, _ *stdsql.Conn) error {
+		origins = append(origins, mycontext.QueryOrigin(ctx))
+		return nil
+	})
+	frontendCtx := mycontext.WithFrontendQuery(context.Background())
+
+	// A fresh acquisition and a reuse without a transaction both run the
+	// initializer, so a changed origin can be handled at the next boundary.
+	_, err = pool.GetConn(frontendCtx, 1)
+	require.NoError(t, err)
+	_, err = pool.GetConn(frontendCtx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []mycontext.QueryOriginKind{
+		mycontext.FrontendQueryOrigin,
+		mycontext.FrontendQueryOrigin,
+	}, origins)
+
+	// GetTxn must initialize before BeginTx, but subsequent acquisitions keep
+	// transaction-scoped connection state stable until the transaction closes.
+	tx, err := pool.GetTxn(frontendCtx, 1, "", nil)
+	require.NoError(t, err)
+	_, err = pool.GetConn(mycontext.WithQueryOrigin(context.Background(), mycontext.MySQLReplicationQueryOrigin), 1)
+	require.NoError(t, err)
+	require.Len(t, origins, 3)
+	require.Equal(t, mycontext.FrontendQueryOrigin, origins[2])
+	require.NoError(t, tx.Rollback())
+	pool.CloseTxn(1)
+
+	// Once the transaction is gone, the next origin is observed normally.
+	_, err = pool.GetConn(mycontext.WithQueryOrigin(context.Background(), mycontext.MySQLReplicationQueryOrigin), 1)
+	require.NoError(t, err)
+	require.Equal(t, []mycontext.QueryOriginKind{
+		mycontext.FrontendQueryOrigin,
+		mycontext.FrontendQueryOrigin,
+		mycontext.FrontendQueryOrigin,
+		mycontext.MySQLReplicationQueryOrigin,
+	}, origins)
 }
 
 func TestCloseConnRollsBackTransaction(t *testing.T) {

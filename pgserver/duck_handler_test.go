@@ -6,11 +6,41 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/storage"
 	"github.com/apecloud/myduckserver/testutil"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStatementLogTextRedactsLegacyObjectStorageConfig(t *testing.T) {
+	config := &storage.ObjectStorageConfig{
+		Provider:        "s3",
+		Endpoint:        "https://s3.example.test:9443",
+		Region:          "us-east-1",
+		AccessKeyId:     "access-key-71",
+		SecretAccessKey: "secret-71",
+	}
+
+	backup := statementLogText(ConvertedStatement{
+		String:       "BACKUP DATABASE app TO 's3://bucket/app/'",
+		BackupConfig: &BackupConfig{StorageConfig: config},
+	})
+	restore := statementLogText(ConvertedStatement{
+		String:        "RESTORE DATABASE app FROM 's3://bucket/app/'",
+		RestoreConfig: &RestoreConfig{StorageConfig: config},
+	})
+
+	require.Equal(t, catalog.RedactedSensitiveSQL, backup)
+	require.Equal(t, catalog.RedactedSensitiveSQL, restore)
+	require.NotContains(t, backup, config.Endpoint)
+	require.NotContains(t, backup, config.AccessKeyId)
+	require.NotContains(t, backup, config.SecretAccessKey)
+	require.NotContains(t, restore, config.Endpoint)
+	require.NotContains(t, restore, config.AccessKeyId)
+	require.NotContains(t, restore, config.SecretAccessKey)
+}
 
 func TestNormalizePGWireValue(t *testing.T) {
 	value, err := normalizePGWireValue(nil)

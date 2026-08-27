@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/mycontext"
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -45,7 +46,8 @@ func (h *MyHandler) ConnectionClosed(c *mysql.Conn) {
 }
 
 func (h *MyHandler) ComInitDB(c *mysql.Conn, schemaName string) error {
-	_, err := h.provider.Pool().GetConnForSchema(context.Background(), c.ConnectionID, schemaName)
+	ctx := mycontext.WithFrontendQuery(context.Background())
+	_, err := h.provider.Pool().GetConnForSchema(ctx, c.ConnectionID, schemaName)
 	if err != nil {
 		return err
 	}
@@ -79,7 +81,11 @@ func (h *MyHandler) ComMultiQuery(
 	query string,
 	callback mysql.ResultSpoolFn,
 ) (rest string, returnErr error) {
-	audit := NewQueryAudit(c, "mysql", query)
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return query, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
+	audit := NewQueryAudit(c, "mysql", catalog.RedactSensitiveSQL(query))
 	defer func() {
 		audit.Complete(returnErr)
 	}()
@@ -121,7 +127,11 @@ func (h *MyHandler) ComQuery(
 	query string,
 	callback mysql.ResultSpoolFn,
 ) (returnErr error) {
-	audit := NewQueryAudit(c, "mysql", query)
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
+	audit := NewQueryAudit(c, "mysql", catalog.RedactSensitiveSQL(query))
 	defer func() {
 		audit.Complete(returnErr)
 	}()
@@ -160,7 +170,14 @@ func (h *MyHandler) ComStmtExecute(ctx context.Context, c *mysql.Conn, prepare *
 	if prepare != nil {
 		query = prepare.PrepareStmt
 	}
-	audit := NewQueryAudit(c, "mysql", query)
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
+	if returnErr = h.rejectReadOnly(ctx, c, query); returnErr != nil {
+		return returnErr
+	}
+	audit := NewQueryAudit(c, "mysql", catalog.RedactSensitiveSQL(query))
 	defer func() {
 		audit.Complete(returnErr)
 	}()
@@ -185,6 +202,10 @@ func (h *MyHandler) ComStmtExecute(ctx context.Context, c *mysql.Conn, prepare *
 }
 
 func (h *MyHandler) ComPrepare(ctx context.Context, c *mysql.Conn, query string, prepare *mysql.PrepareData) ([]*querypb.Field, error) {
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return nil, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
 	if err := h.rejectReadOnly(ctx, c, query); err != nil {
 		return nil, err
 	}
@@ -192,6 +213,10 @@ func (h *MyHandler) ComPrepare(ctx context.Context, c *mysql.Conn, query string,
 }
 
 func (h *MyHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query string, parsed sqlparser.Statement, prepare *mysql.PrepareData) (mysql.ParsedQuery, []*querypb.Field, error) {
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return nil, nil, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
 	if err := h.rejectReadOnly(ctx, c, query); err != nil {
 		return nil, nil, err
 	}
@@ -199,6 +224,10 @@ func (h *MyHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query s
 }
 
 func (h *MyHandler) ComBind(ctx context.Context, c *mysql.Conn, query string, parsedQuery mysql.ParsedQuery, prepare *mysql.PrepareData) (mysql.BoundQuery, []*querypb.Field, error) {
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return nil, nil, err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
 	if err := h.rejectReadOnly(ctx, c, query); err != nil {
 		return nil, nil, err
 	}
@@ -206,7 +235,11 @@ func (h *MyHandler) ComBind(ctx context.Context, c *mysql.Conn, query string, pa
 }
 
 func (h *MyHandler) ComExecuteBound(ctx context.Context, c *mysql.Conn, query string, boundQuery mysql.BoundQuery, callback mysql.ResultSpoolFn) (returnErr error) {
-	audit := NewQueryAudit(c, "mysql", query)
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
+	audit := NewQueryAudit(c, "mysql", catalog.RedactSensitiveSQL(query))
 	defer func() {
 		audit.Complete(returnErr)
 	}()
@@ -227,7 +260,11 @@ func (h *MyHandler) ComExecuteBound(ctx context.Context, c *mysql.Conn, query st
 }
 
 func (h *MyHandler) ComParsedQuery(ctx context.Context, c *mysql.Conn, query string, parsed sqlparser.Statement, callback mysql.ResultSpoolFn) (returnErr error) {
-	audit := NewQueryAudit(c, "mysql", query)
+	if err := catalog.RejectSensitiveSQL(query); err != nil {
+		return err
+	}
+	ctx = mycontext.WithFrontendQuery(ctx)
+	audit := NewQueryAudit(c, "mysql", catalog.RedactSensitiveSQL(query))
 	defer func() {
 		audit.Complete(returnErr)
 	}()

@@ -34,6 +34,8 @@ type ConnectionPool struct {
 	conns                 sync.Map // concurrent-safe map[uint32]*stdsql.Conn
 	txns                  sync.Map // concurrent-safe map[uint32]*stdsql.Tx
 	closedConns           sync.Map // connection IDs that completed their lifecycle
+	initializerMu         sync.RWMutex
+	connectionInitializer func(context.Context, *stdsql.Conn) error
 	registerMySQLUDFsOnce sync.Once
 	registerMySQLUDFsErr  error
 }
@@ -48,6 +50,32 @@ func NewConnectionPool(connector *duckdb.Connector, db *stdsql.DB, defaultCatalo
 
 func (p *ConnectionPool) Connector() *duckdb.Connector {
 	return p.connector
+}
+
+// SetConnectionInitializer installs a hook that runs whenever a logical
+// session acquires a connection outside an active session transaction. The
+// hook receives the acquisition context, including its query-origin
+// classification. Running it for both new and reused logical connections
+// prevents a connection that was previously used by one origin from carrying
+// session settings into another origin; GetTxn runs it before BeginTx and then
+// keeps transaction-scoped state stable until that transaction closes.
+func (p *ConnectionPool) SetConnectionInitializer(initializer func(context.Context, *stdsql.Conn) error) {
+	p.initializerMu.Lock()
+	p.connectionInitializer = initializer
+	p.initializerMu.Unlock()
+}
+
+func (p *ConnectionPool) initializeConnection(ctx context.Context, conn *stdsql.Conn) error {
+	p.initializerMu.RLock()
+	initializer := p.connectionInitializer
+	p.initializerMu.RUnlock()
+	if initializer == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return initializer(ctx, conn)
 }
 
 // CurrentSchema retrieves the current schema of the connection.
@@ -88,12 +116,21 @@ func (p *ConnectionPool) CurrentCatalog(id uint32) string {
 }
 
 func (p *ConnectionPool) GetConn(ctx context.Context, id uint32) (*stdsql.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var conn *stdsql.Conn
 	entry, ok := p.conns.Load(id)
 	if !ok {
 		c, err := p.DB.Conn(ctx)
 		if err != nil {
 			return nil, err
+		}
+		if _, transactionActive := p.txns.Load(id); !transactionActive {
+			if err := p.initializeConnection(ctx, c); err != nil {
+				_ = c.Close()
+				return nil, err
+			}
 		}
 		if err := p.registerMySQLUDFs(c); err != nil {
 			_ = c.Close()
@@ -104,6 +141,22 @@ func (p *ConnectionPool) GetConn(ctx context.Context, id uint32) (*stdsql.Conn, 
 		conn = c
 	} else {
 		conn = entry.(*stdsql.Conn)
+		// A session transaction owns this connection's transaction-scoped
+		// state. Re-running the initializer here would execute LOAD/CREATE
+		// SECRET inside that transaction and could alter or roll back with user
+		// work. GetTxn initializes before BeginTx; keep the state stable until
+		// the transaction is closed.
+		if _, transactionActive := p.txns.Load(id); !transactionActive {
+			if err := p.initializeConnection(ctx, conn); err != nil {
+				// Do not leave a failed or partially initialized connection available
+				// to a later request. CompareAndDelete avoids removing a replacement
+				// installed by a concurrent recovery path.
+				p.conns.CompareAndDelete(id, conn)
+				p.closedConns.Store(id, struct{}{})
+				_ = conn.Close()
+				return nil, err
+			}
+		}
 	}
 	return conn, nil
 }
@@ -127,18 +180,25 @@ func (p *ConnectionPool) registerMySQLUDFs(conn *stdsql.Conn) error {
 }
 
 func (p *ConnectionPool) GetConnForSchema(ctx context.Context, id uint32, schemaName string) (*stdsql.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	conn, err := p.GetConn(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
 	if schemaName != "" {
+		// Schema selection is session state, but it should retain the origin
+		// value while avoiding cancellation of a request that is already being
+		// serviced.
+		schemaCtx := context.WithoutCancel(ctx)
 		var currentSchema string
-		if err := conn.QueryRowContext(context.Background(), "SELECT CURRENT_SCHEMA").Scan(&currentSchema); err != nil {
+		if err := conn.QueryRowContext(schemaCtx, "SELECT CURRENT_SCHEMA").Scan(&currentSchema); err != nil {
 			logrus.WithError(err).Error("Failed to get current schema")
 			return nil, err
 		} else if currentSchema != schemaName {
-			if _, err := conn.ExecContext(context.Background(), "USE "+FullSchemaName(p.CurrentCatalog(id), schemaName)); err != nil {
+			if _, err := conn.ExecContext(schemaCtx, "USE "+FullSchemaName(p.CurrentCatalog(id), schemaName)); err != nil {
 				if IsDuckDBSetSchemaNotFoundError(err) {
 					return nil, sql.ErrDatabaseNotFound.New(schemaName)
 				}
@@ -184,6 +244,9 @@ func (p *ConnectionPool) CloseConn(id uint32) error {
 }
 
 func (p *ConnectionPool) GetTxn(ctx context.Context, id uint32, schemaName string, options *stdsql.TxOptions) (*stdsql.Tx, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var tx *stdsql.Tx
 	entry, ok := p.txns.Load(id)
 	if !ok {
@@ -242,6 +305,9 @@ func (p *ConnectionPool) Close() error {
 			lastErr = err
 		}
 	}
+	p.conns.Clear()
+	p.txns.Clear()
+	p.closedConns.Clear()
 	return errors.Join(lastErr, p.DB.Close())
 }
 
