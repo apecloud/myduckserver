@@ -83,9 +83,38 @@ func splitSQLStatements(query string) [][]sqlToken {
 		case r == '/' && i+1 < len(query) && query[i+1] == '*':
 			if i+2 < len(query) && query[i+2] == '!' {
 				// MySQL executable comments are parsed and executed by the
-				// server. Treat the whole form as sensitive rather than letting
-				// a versioned comment bypass the protocol gate.
-				current = append(current, sqlToken{text: "__executable_comment__"})
+				// server. Strip the optional version prefix and scan the embedded
+				// SQL in the same statement context. This lets compatibility
+				// clauses such as /*!32312 IF NOT EXISTS*/ pass while still
+				// rejecting a sensitive statement hidden inside the comment.
+				end := strings.Index(query[i+3:], "*/")
+				if end < 0 {
+					// An unterminated executable comment is malformed input. Keep
+					// the conservative rejection used by the protocol boundary.
+					current = append(current, sqlToken{text: "__executable_comment__"})
+					i = len(query)
+					continue
+				}
+				end += i + 3
+				body := query[i+3 : end]
+				body = stripMySQLExecutableVersion(body)
+				embeddedStatements := splitSQLStatements(body)
+				for n, embedded := range embeddedStatements {
+					if sensitiveStatement(embedded) {
+						// Keep a marker when the embedded statement itself is
+						// service-managed. The surrounding statement may begin with
+						// a harmless verb (for example SELECT), so checking only the
+						// combined token stream would otherwise hide this operation.
+						current = append(current, sqlToken{text: "__executable_comment__"})
+					} else {
+						current = append(current, embedded...)
+					}
+					if n+1 < len(embeddedStatements) {
+						flush()
+					}
+				}
+				i = end + 2
+				continue
 			}
 			i = skipBlockComment(query, i)
 		case r == '\'' || r == '"' || r == '`':
@@ -155,6 +184,20 @@ func skipBlockComment(query string, start int) int {
 		}
 	}
 	return len(query)
+}
+
+func stripMySQLExecutableVersion(body string) string {
+	body = strings.TrimLeftFunc(body, unicode.IsSpace)
+	if len(body) >= 5 {
+		version := body[:5]
+		for i := range version {
+			if version[i] < '0' || version[i] > '9' {
+				return body
+			}
+		}
+		body = body[5:]
+	}
+	return body
 }
 
 func scanQuoted(query string, start int, quote byte) (sqlToken, int) {
@@ -428,7 +471,7 @@ func sensitiveCreateStatement(tokens []sqlToken, words []string) bool {
 			continue
 		}
 		switch words[i] {
-		case "or", "replace", "temporary", "temp", "if", "not", "exists":
+		case "or", "replace", "temporary", "temp", "persistent", "if", "not", "exists":
 			continue
 		case "secret", "ducklake", "httpfs", "extension":
 			return true
