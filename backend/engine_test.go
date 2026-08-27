@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/stretchr/testify/require"
@@ -153,4 +154,37 @@ func TestMySQLParserRestoresDatabaseFiltersInMultiQuery(t *testing.T) {
 	_, index, err := parser.ParseOneWithOptions(context.Background(), query, sqlparser.ParserOptions{})
 	require.NoError(t, err)
 	require.Equal(t, strings.Index(query, " SELECT 1"), index)
+}
+
+func TestMySQLParserTableStorageOptions(t *testing.T) {
+	parser := &mysqlParser{Parser: sql.NewMysqlParser()}
+	for _, query := range []string{
+		"CREATE TABLE object_table (id INT) ENGINE=DUCKLAKE",
+		"CREATE TABLE local_table (id INT) ENGINE=InnoDB",
+	} {
+		stmt, _, _, err := parser.ParseWithOptions(context.Background(), query, ';', false, sqlparser.ParserOptions{})
+		require.NoError(t, err, query)
+		ddl, ok := stmt.(*sqlparser.DDL)
+		require.True(t, ok, query)
+		require.NotNil(t, ddl.TableSpec, query)
+		require.NotEmpty(t, ddl.TableSpec.TableOpts, query)
+		for _, option := range ddl.TableSpec.TableOpts {
+			t.Logf("%s => name=%q value=%q", query, option.Name, option.Value)
+		}
+	}
+}
+
+func TestMySQLParserRejectsConflictingTableStorageOptions(t *testing.T) {
+	parser := &mysqlParser{Parser: sql.NewMysqlParser()}
+	for _, test := range []struct {
+		query string
+		want  error
+	}{
+		{query: "CREATE TABLE duplicate_engine (id INT) ENGINE=DUCKLAKE ENGINE=DUCKLAKE", want: catalog.ErrTableStorageDuplicate},
+		{query: "CREATE TABLE conflicting_engine (id INT) ENGINE=DUCKLAKE ENGINE=LOCAL", want: catalog.ErrTableStorageConflict},
+	} {
+		_, _, _, err := parser.ParseWithOptions(context.Background(), test.query, ';', false, sqlparser.ParserOptions{})
+		require.Error(t, err, test.query)
+		require.ErrorIs(t, err, test.want, test.query)
+	}
 }
