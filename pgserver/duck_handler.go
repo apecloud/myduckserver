@@ -19,6 +19,7 @@ import (
 	stdsql "database/sql"
 	"database/sql/driver"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -440,6 +441,13 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 			fmt.Printf("error running query: %+v\n", err)
 		}
 		sqlCtx.GetLogger().WithError(err).Warn("error running query")
+		return err
+	}
+	err = cleanupPostgresRollbackOrphans(sqlCtx, parsed, h.GetCatalogProvider())
+	if err != nil {
+		if rowIter != nil {
+			err = errors.Join(err, rowIter.Close(sqlCtx))
+		}
 		return err
 	}
 	rowIter = backend.ApplyQueryRowLimit(sqlCtx, schema, rowIter)

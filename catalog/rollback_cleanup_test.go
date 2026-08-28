@@ -155,3 +155,35 @@ func TestCleanupDuckLakeOrphansNoopsForExtensionOnlyConfiguration(t *testing.T) 
 		mycontext.WithMaintenanceQuery(context.Background()), nil,
 	))
 }
+
+func TestCleanupDuckLakeOrphansRejectsActiveSessionTransaction(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	conn, err := db.Conn(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/tmp/task77/catalog.ducklake",
+		DataPath:     "/tmp/task77/data",
+	}}
+	session := &transactionTestSession{
+		Session: memory.NewSession(sql.NewBaseSession(), nil),
+		conn:    conn,
+		tx:      new(stdsql.Tx),
+	}
+	ctx := sql.NewContext(mycontext.WithMaintenanceQuery(context.Background()), sql.WithSession(session))
+	provider := &DatabaseProvider{duckLake: runtime, storage: db}
+
+	err = provider.CleanupDuckLakeOrphansOnConn(ctx, conn)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "inactive transaction")
+}
+
+func TestWithoutCancelContextRetainsSQLContext(t *testing.T) {
+	ctx := sql.NewContext(mycontext.WithFrontendQuery(context.Background()))
+	derived := withoutCancelContext(ctx)
+	require.IsType(t, (*sql.Context)(nil), derived)
+	require.Equal(t, mycontext.FrontendQueryOrigin, mycontext.QueryOrigin(derived))
+}

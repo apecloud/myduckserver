@@ -601,6 +601,27 @@ func (prov *DatabaseProvider) DuckLakeEnabled() bool {
 	return prov != nil && prov.duckLake != nil
 }
 
+// DuckLakeObjectStorageEnabled reports whether the service has both sides of
+// the DuckLake catalog configured. An enabled extension layer may intentionally
+// omit these paths, but it cannot produce or clean lake-table files.
+func (prov *DatabaseProvider) DuckLakeObjectStorageEnabled() bool {
+	return prov != nil && prov.duckLakeObjectStorageEnabled()
+}
+
+// withoutCancelContext removes request cancellation while retaining the
+// concrete *sql.Context type. Provider boundaries use the concrete type to
+// detect a session transaction and avoid issuing *sql.Conn work alongside an
+// active *sql.Tx.
+func withoutCancelContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	if sqlCtx, ok := ctx.(*sql.Context); ok && sqlCtx != nil {
+		return sqlCtx.WithContext(context.WithoutCancel(sqlCtx))
+	}
+	return context.WithoutCancel(ctx)
+}
+
 // EnsureDuckLakeConnection makes the service-owned lake available on an
 // already acquired physical connection. Object-table paths call this after
 // resolving persisted metadata; ordinary local and catalog operations do not
@@ -650,7 +671,7 @@ func (prov *DatabaseProvider) CleanupDuckLakeOrphans(ctx context.Context) error 
 	if prov.storage == nil {
 		return fmt.Errorf("ducklake storage is unavailable")
 	}
-	cleanupCtx := context.WithoutCancel(ctx)
+	cleanupCtx := withoutCancelContext(ctx)
 	conn, err := prov.storage.Conn(cleanupCtx)
 	if err != nil {
 		return fmt.Errorf("ducklake cleanup connection is unavailable")
@@ -673,7 +694,12 @@ func (prov *DatabaseProvider) CleanupDuckLakeOrphansOnConn(ctx context.Context, 
 	if conn == nil {
 		return fmt.Errorf("ducklake cleanup connection is unavailable")
 	}
-	cleanupCtx := context.WithoutCancel(ctx)
+	cleanupCtx := withoutCancelContext(ctx)
+	if sqlCtx, ok := cleanupCtx.(*sql.Context); ok && sqlCtx != nil {
+		if holder, holderOK := sqlCtx.Session.(adapter.ConnectionHolder); holderOK && holder.TryGetTxn() != nil {
+			return fmt.Errorf("ducklake orphan cleanup requires an inactive transaction")
+		}
+	}
 	if err := prov.EnsureDuckLakeConnection(cleanupCtx, conn); err != nil {
 		return fmt.Errorf("ducklake orphan cleanup setup failed")
 	}
