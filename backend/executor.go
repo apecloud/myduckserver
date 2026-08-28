@@ -178,9 +178,9 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 	// ResolvedTable is for `SELECT * FROM table` and `TABLE table`
 	// SubqueryAlias is for `SELECT * FROM view`
 	case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.TableAlias:
-		return b.executeQuery(ctx, node, conn)
+		return b.executeQuery(ctx, node, adapter.SQLExecutorForConn(ctx, conn))
 	case *plan.Distinct, *plan.OrderedDistinct:
-		return b.executeQuery(ctx, node, conn)
+		return b.executeQuery(ctx, node, adapter.SQLExecutorForConn(ctx, conn))
 	case *plan.TableCopier:
 		// We preserve the table schema in a best-effort manner.
 		// For simple `CREATE TABLE t AS SELECT * FROM t`,
@@ -189,17 +189,17 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 		if _, ok := node.Source.(*plan.ResolvedTable); ok {
 			return b.base.Build(ctx, root, r)
 		}
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, adapter.SQLExecutorForConn(ctx, conn))
 	case *plan.DeleteFrom:
 		if node.Returning != nil {
-			return b.executeQuery(ctx, node, conn)
+			return b.executeQuery(ctx, node, adapter.SQLExecutorForConn(ctx, conn))
 		}
 		node.Child = withMySQLOkResultSchema(node.Child)
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, adapter.SQLExecutorForConn(ctx, conn))
 	case sql.Expressioner:
-		return b.executeExpressioner(ctx, node, conn)
+		return b.executeExpressioner(ctx, node, adapter.SQLExecutorForConn(ctx, conn))
 	case *plan.Truncate:
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, adapter.SQLExecutorForConn(ctx, conn))
 	default:
 		return b.base.Build(ctx, n, r)
 	}
@@ -240,25 +240,25 @@ func isStandaloneVectorConversion(ctx *sql.Context, n sql.Node) bool {
 	return found
 }
 
-func (b *DuckBuilder) executeExpressioner(ctx *sql.Context, n sql.Expressioner, conn *stdsql.Conn) (sql.RowIter, error) {
+func (b *DuckBuilder) executeExpressioner(ctx *sql.Context, n sql.Expressioner, execer adapter.SQLExecutor) (sql.RowIter, error) {
 	node := n.(sql.Node)
 	switch n := n.(type) {
 	case *plan.InsertInto:
 		if n.Returning != nil {
-			return b.executeQuery(ctx, node, conn)
+			return b.executeQuery(ctx, node, execer)
 		}
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, execer)
 	case *plan.Update:
 		if n.Returning == nil {
 			n.Child = withMySQLOkResultSchema(n.Child)
 		}
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, execer)
 	default:
-		return b.executeQuery(ctx, node, conn)
+		return b.executeQuery(ctx, node, execer)
 	}
 }
 
-func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Conn) (sql.RowIter, error) {
+func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, execer adapter.SQLExecutor) (sql.RowIter, error) {
 	ctx.GetLogger().Trace("Executing Query...")
 
 	var (
@@ -293,7 +293,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	}
 
 	// Execute the DuckDB query
-	rows, err := conn.QueryContext(ctx.Context, duckSQL)
+	rows, err := execer.QueryContext(ctx.Context, duckSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +301,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	return NewSQLRowIter(rows, n.Schema(ctx))
 }
 
-func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn) (sql.RowIter, error) {
+func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, execer adapter.SQLExecutor) (sql.RowIter, error) {
 	// Translate the MySQL query to a DuckDB query
 	duckSQL, err := transpiler.TranslateWithSQLGlot(queryForTranslation(ctx))
 	if err != nil {
@@ -323,10 +323,10 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 	if _, ok := n.(*plan.TableCopier); ok {
 		// DuckDB returns the CTAS insert count as a one-row result. Its C API
 		// rows-changed value is defined only for INSERT, UPDATE, and DELETE.
-		err = conn.QueryRowContext(ctx.Context, duckSQL).Scan(&affected)
+		err = execer.QueryRowContext(ctx.Context, duckSQL).Scan(&affected)
 	} else {
 		var result stdsql.Result
-		result, err = conn.ExecContext(ctx.Context, duckSQL)
+		result, err = execer.ExecContext(ctx.Context, duckSQL)
 		if err == nil {
 			affected, err = result.RowsAffected()
 		}

@@ -22,6 +22,8 @@ type rowInserter struct {
 
 	once     sync.Once
 	conn     *stdsql.Conn
+	tx       *stdsql.Tx
+	execer   adapter.SQLExecutor
 	tmpTable string
 	stmt     *stdsql.Stmt
 	err      error
@@ -45,6 +47,8 @@ func (ri *rowInserter) init(ctx *sql.Context) {
 	if ri.err != nil {
 		return
 	}
+	ri.execer = adapter.SQLExecutorForConn(ctx, ri.conn)
+	ri.tx = adapter.TryGetTxn(ctx)
 	target := ConnectIdentifiersANSI(ri.db, ri.table)
 	if ri.provider != nil && ri.catalog != "" {
 		if physical, found, err := ri.provider.ObjectTableName(ctx, ri.catalog, ri.db, ri.table); err != nil {
@@ -64,7 +68,7 @@ func (ri *rowInserter) init(ctx *sql.Context) {
 		QuoteIdentifierANSI(ri.tmpTable),
 		target,
 	)
-	if _, ri.err = ri.conn.ExecContext(ctx, createTable); ri.err != nil {
+	if _, ri.err = ri.execer.ExecContext(ctx, createTable); ri.err != nil {
 		return
 	}
 
@@ -79,7 +83,7 @@ func (ri *rowInserter) init(ctx *sql.Context) {
 		insert.WriteString(", ?")
 	}
 	insert.WriteByte(')')
-	ri.stmt, ri.err = ri.conn.PrepareContext(ctx, insert.String())
+	ri.stmt, ri.err = ri.execer.PrepareContext(ctx, insert.String())
 	if ri.err != nil {
 		return
 	}
@@ -120,7 +124,7 @@ func (ri *rowInserter) Close(ctx *sql.Context) error {
 	ri.StatementBegin(ctx)
 	defer ri.clear(ctx)
 	if ri.err == nil {
-		_, ri.err = ri.conn.ExecContext(ctx, ri.flushSQL)
+		_, ri.err = ri.execer.ExecContext(ctx, ri.flushSQL)
 	}
 	return ri.err
 }
@@ -153,11 +157,37 @@ func (ri *rowInserter) Insert(ctx *sql.Context, row sql.Row) error {
 
 func (ri *rowInserter) clear(ctx *sql.Context) error {
 	if ri.stmt != nil {
-		ri.err = errors.Join(ri.err, ri.stmt.Close())
+		closeErr := ri.stmt.Close()
+		// A statement prepared on the session transaction reports ErrTxDone when
+		// GMS invokes cleanup after ROLLBACK. The transaction is already inactive
+		// in that case, so it is not a product failure and must not mask the
+		// rollback result.
+		if !errors.Is(closeErr, stdsql.ErrTxDone) {
+			ri.err = errors.Join(ri.err, closeErr)
+		}
+		ri.stmt = nil
 	}
 	if ri.conn != nil {
-		_, err := ri.conn.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main."+QuoteIdentifierANSI(ri.tmpTable))
-		ri.err = errors.Join(ri.err, err)
+		dropper := ri.execer
+		// Once the owning transaction has been rolled back, its executor is no
+		// longer usable. Reuse the same physical connection for cleanup rather
+		// than acquiring another pooled connection (which could block forever
+		// while the session still owns this one).
+		if ri.tx != nil {
+			current := adapter.TryGetTxn(ctx)
+			if current == nil || current != ri.tx {
+				dropper = ri.conn
+			}
+		}
+		if dropper != nil {
+			_, err := dropper.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main."+QuoteIdentifierANSI(ri.tmpTable))
+			if errors.Is(err, stdsql.ErrTxDone) && dropper != ri.conn {
+				// This is the narrow race where rollback happened after the
+				// transaction check above. Retry on the now-inactive connection.
+				_, err = ri.conn.ExecContext(ctx, "DROP TABLE IF EXISTS temp.main."+QuoteIdentifierANSI(ri.tmpTable))
+			}
+			ri.err = errors.Join(ri.err, err)
+		}
 	}
 	return ri.err
 }

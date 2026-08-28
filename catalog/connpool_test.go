@@ -187,6 +187,31 @@ func TestConnectionPoolInitializerSkipsActiveTransaction(t *testing.T) {
 	}, origins)
 }
 
+func TestGetConnForSchemaDoesNotSwitchActiveTransaction(t *testing.T) {
+	connector, err := duckdb.NewConnector("", nil)
+	require.NoError(t, err)
+	db := stdsql.OpenDB(connector)
+	pool := NewConnectionPool(connector, db, "memory")
+	t.Cleanup(func() {
+		require.NoError(t, pool.Close())
+		require.NoError(t, connector.Close())
+	})
+
+	conn, err := pool.GetConn(context.Background(), 77)
+	require.NoError(t, err)
+	tx, err := pool.GetTxn(context.Background(), 77, "", nil)
+	require.NoError(t, err)
+
+	// The requested schema does not exist. While the transaction owns the
+	// connection, GetConnForSchema must return it without issuing USE through
+	// the separate *sql.Conn surface.
+	got, err := pool.GetConnForSchema(context.Background(), 77, "schema_that_does_not_exist")
+	require.NoError(t, err)
+	require.Same(t, conn, got)
+	require.NoError(t, tx.Rollback())
+	pool.CloseTxn(77)
+}
+
 func TestCloseConnRollsBackTransaction(t *testing.T) {
 	connector, err := duckdb.NewConnector("", nil)
 	require.NoError(t, err)

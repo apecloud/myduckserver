@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -611,6 +612,17 @@ func (prov *DatabaseProvider) EnsureDuckLakeConnection(ctx context.Context, conn
 	if conn == nil {
 		return fmt.Errorf("ducklake storage connection is unavailable")
 	}
+	// A session transaction owns this physical connection. The pool initializer
+	// runs before BeginTx, so an active transaction is already initialized and
+	// attached; calling Conn.Raw here would race the transaction's driver calls
+	// (and can deadlock when the driver serializes access). Object callers use
+	// their SQLExecutor (*sql.Tx) for all statement work while the transaction
+	// is active.
+	if sqlCtx, ok := ctx.(*sql.Context); ok && sqlCtx != nil {
+		if _, holder := sqlCtx.Session.(adapter.ConnectionHolder); holder && adapter.TryGetTxn(sqlCtx) != nil {
+			return nil
+		}
+	}
 	return conn.Raw(func(driverConn any) error {
 		execer, ok := driverConn.(driver.ExecerContext)
 		if !ok {
@@ -619,6 +631,91 @@ func (prov *DatabaseProvider) EnsureDuckLakeConnection(ctx context.Context, conn
 		physicalConn, _ := driverConn.(driver.Conn)
 		return prov.duckLake.EnsureAttached(ctx, physicalConn, execer)
 	})
+}
+
+// duckLakeOrphanCleanupSQL is the product-owned cleanup form.  The table
+// function returns one path column; selecting that column keeps this call
+// stable across DuckLake extension revisions and, importantly, performs the
+// cleanup rather than the dry-run/reporting variant.
+const duckLakeOrphanCleanupSQL = `SELECT path
+FROM ducklake_delete_orphaned_files('__myduck_ducklake', cleanup_all => true)`
+
+// CleanupDuckLakeOrphans runs the product-owned orphan cleanup function on a
+// newly acquired service connection. It is a compatibility entry point for
+// maintenance callers that do not already hold a session connection.
+func (prov *DatabaseProvider) CleanupDuckLakeOrphans(ctx context.Context) error {
+	if prov == nil || prov.duckLake == nil || !prov.duckLakeObjectStorageEnabled() || !mycontext.IsDuckLakeEligibleQuery(ctx) {
+		return nil
+	}
+	if prov.storage == nil {
+		return fmt.Errorf("ducklake storage is unavailable")
+	}
+	cleanupCtx := context.WithoutCancel(ctx)
+	conn, err := prov.storage.Conn(cleanupCtx)
+	if err != nil {
+		return fmt.Errorf("ducklake cleanup connection is unavailable")
+	}
+	cleanupErr := prov.CleanupDuckLakeOrphansOnConn(cleanupCtx, conn)
+	if closeErr := conn.Close(); closeErr != nil && !errors.Is(closeErr, stdsql.ErrConnDone) {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("ducklake cleanup connection close failed"))
+	}
+	return cleanupErr
+}
+
+// CleanupDuckLakeOrphansOnConn performs orphan cleanup on the supplied
+// physical connection. Callers that own a session transaction must invoke it
+// only after that transaction has become inactive, and should pass the same
+// connection so cleanup cannot acquire a second pooled connection.
+func (prov *DatabaseProvider) CleanupDuckLakeOrphansOnConn(ctx context.Context, conn *stdsql.Conn) error {
+	if prov == nil || prov.duckLake == nil || !prov.duckLakeObjectStorageEnabled() || !mycontext.IsDuckLakeEligibleQuery(ctx) {
+		return nil
+	}
+	if conn == nil {
+		return fmt.Errorf("ducklake cleanup connection is unavailable")
+	}
+	cleanupCtx := context.WithoutCancel(ctx)
+	if err := prov.EnsureDuckLakeConnection(cleanupCtx, conn); err != nil {
+		return fmt.Errorf("ducklake orphan cleanup setup failed")
+	}
+	rows, err := conn.QueryContext(cleanupCtx, duckLakeOrphanCleanupSQL)
+	if err != nil {
+		return fmt.Errorf("ducklake orphan cleanup query failed")
+	}
+	var cleanupErr error
+	columns, columnsErr := rows.Columns()
+	if columnsErr != nil {
+		cleanupErr = fmt.Errorf("ducklake orphan cleanup result inspection failed")
+	} else {
+		values := make([]any, len(columns))
+		dest := make([]any, len(columns))
+		for i := range values {
+			dest[i] = &values[i]
+		}
+		for rows.Next() {
+			if err := rows.Scan(dest...); err != nil {
+				cleanupErr = fmt.Errorf("ducklake orphan cleanup result read failed")
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("ducklake orphan cleanup execution failed"))
+	}
+	if err := rows.Close(); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("ducklake orphan cleanup result close failed"))
+	}
+	return cleanupErr
+}
+
+// duckLakeObjectStorageEnabled reports whether the service has a complete
+// metadata/data pair. Extension-only configuration is valid for callers that
+// need the DuckDB extensions but has no lake catalog for orphan cleanup.
+func (prov *DatabaseProvider) duckLakeObjectStorageEnabled() bool {
+	if prov == nil || prov.duckLake == nil {
+		return false
+	}
+	return strings.TrimSpace(prov.duckLake.config.MetadataPath) != "" &&
+		strings.TrimSpace(prov.duckLake.config.DataPath) != ""
 }
 
 // LakeSchemaName returns the deterministic physical schema used for a logical
@@ -662,7 +759,11 @@ func (prov *DatabaseProvider) ObjectTableName(ctx *sql.Context, catalogName, sch
 	if strings.TrimSpace(catalogName) == "" || strings.TrimSpace(schemaName) == "" || strings.TrimSpace(tableName) == "" {
 		return "", false, nil
 	}
-	rows, err := adapter.QueryCatalog(ctx, `
+	execer, err := adapter.GetCatalogExecutor(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	rows, err := execer.QueryContext(ctx, `
 		SELECT comment
 		FROM duckdb_tables()
 		WHERE database_name = ? AND schema_name = ? AND table_name = ?
@@ -703,7 +804,11 @@ func (prov *DatabaseProvider) ObjectTables(ctx *sql.Context, catalogName string)
 	if prov == nil || prov.duckLake == nil {
 		return nil, nil
 	}
-	rows, err := adapter.QueryCatalog(ctx, `
+	execer, err := adapter.GetCatalogExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := execer.QueryContext(ctx, `
 		SELECT schema_name, table_name, comment
 		FROM duckdb_tables()
 		WHERE database_name = ?

@@ -642,7 +642,16 @@ func (t *Table) Truncate(ctx *sql.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	result, err := adapter.ExecCatalog(ctx, `TRUNCATE TABLE `+physical)
+	var result stdsql.Result
+	if t.objectStorage() {
+		execer, execErr := adapter.GetSQLExecutor(ctx)
+		if execErr != nil {
+			return 0, execErr
+		}
+		result, err = execer.ExecContext(ctx, `TRUNCATE TABLE `+physical)
+	} else {
+		result, err = adapter.ExecCatalog(ctx, `TRUNCATE TABLE `+physical)
+	}
 	if err != nil {
 		return 0, err
 	}

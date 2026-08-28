@@ -16,6 +16,7 @@ package backend
 import (
 	"context"
 	stdsql "database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 
 	adapter "github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/plan"
@@ -183,14 +185,39 @@ func (sess *Session) CommitTransaction(ctx *sql.Context, tx sql.Transaction) err
 func (sess *Session) Rollback(ctx *sql.Context, tx sql.Transaction) error {
 	sess.GetLogger().Trace("Rollback")
 	transaction := tx.(*Transaction)
+	var rollbackErr error
+	underlyingInactive := transaction.tx == nil
 	if transaction.tx != nil {
 		sess.GetLogger().Trace("RollbackDuckTransaction")
-		defer sess.CloseTxn()
-		if err := transaction.tx.Rollback(); err != nil {
-			return err
+		rollbackErr = transaction.tx.Rollback()
+		underlyingInactive = rollbackErr == nil || errors.Is(rollbackErr, stdsql.ErrTxDone) ||
+			strings.Contains(strings.ToLower(rollbackErr.Error()), "no transaction is active")
+		if underlyingInactive {
+			// Remove the mapping before any post-rollback work. This makes the
+			// session connection reusable and prevents cleanup from trying to acquire
+			// a second pooled connection while the old transaction is still mapped.
+			sess.CloseTxn()
 		}
 	}
-	return sess.Session.Rollback(ctx, &transaction.Transaction)
+
+	sessionErr := sess.Session.Rollback(ctx, &transaction.Transaction)
+	var cleanupErr error
+	if underlyingInactive && sess.db != nil && sess.db.DuckLakeEnabled() {
+		cleanupBase := context.Background()
+		if ctx != nil {
+			cleanupBase = context.WithoutCancel(ctx)
+		}
+		// Rollback cleanup is service-owned maintenance. Preserve replication
+		// origins so the provider's fail-closed eligibility check remains intact.
+		cleanupCtx := mycontext.WithMaintenanceQuery(cleanupBase)
+		conn, connErr := sess.GetConn(cleanupCtx)
+		if connErr != nil {
+			cleanupErr = connErr
+		} else {
+			cleanupErr = sess.db.CleanupDuckLakeOrphansOnConn(cleanupCtx, conn)
+		}
+	}
+	return errors.Join(rollbackErr, sessionErr, cleanupErr)
 }
 
 // PersistGlobal implements sql.PersistableSession.

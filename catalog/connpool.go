@@ -187,6 +187,13 @@ func (p *ConnectionPool) GetConnForSchema(ctx context.Context, id uint32, schema
 	if err != nil {
 		return nil, err
 	}
+	// A session transaction owns this connection and its transaction-scoped
+	// schema state. Do not issue CURRENT_SCHEMA/USE through *sql.Conn while a
+	// *sql.Tx may be executing on the same physical connection; GetTxn performs
+	// schema selection before BeginTx.
+	if _, transactionActive := p.txns.Load(id); transactionActive {
+		return conn, nil
+	}
 
 	if schemaName != "" {
 		// Schema selection is session state, but it should retain the origin

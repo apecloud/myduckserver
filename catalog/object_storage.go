@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"context"
 	stdsql "database/sql"
 	"fmt"
 	"strings"
@@ -35,15 +34,16 @@ func (d *Database) createObjectTable(ctx *sql.Context, name string, schema sql.P
 	if err := d.provider.EnsureDuckLakeConnection(ctx, conn); err != nil {
 		return err
 	}
+	execer := adapter.SQLExecutorForConn(ctx, conn)
 	physical := d.objectPhysicalTableName(name)
-	if err := d.ensureObjectSchema(ctx, conn); err != nil {
+	if err := d.ensureObjectSchema(ctx, execer); err != nil {
 		return err
 	}
 	ddl, err := objectCreateSQL(physical, schema)
 	if err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, ddl); err != nil {
+	if _, err := execer.ExecContext(ctx, ddl); err != nil {
 		if IsDuckDBTableAlreadyExistsError(err) {
 			return sql.ErrTableAlreadyExists.New(name)
 		}
@@ -54,7 +54,7 @@ func (d *Database) createObjectTable(ctx *sql.Context, name string, schema sql.P
 	// fails, remove the just-created lake relation so no unregistered files are
 	// left behind.
 	if err := d.createLocalTable(ctx, name, schema, sql.Collation_Default, comment, storage, false); err != nil {
-		_, _ = conn.ExecContext(ctx, "DROP TABLE IF EXISTS "+physical)
+		_, _ = execer.ExecContext(ctx, "DROP TABLE IF EXISTS "+physical)
 		return err
 	}
 	return nil
@@ -100,13 +100,11 @@ func objectCreateSQL(physical string, schema sql.PrimaryKeySchema) (string, erro
 	return "CREATE TABLE " + physical + " (" + strings.Join(columns, ", ") + ")", nil
 }
 
-func (d *Database) ensureObjectSchema(ctx *sql.Context, conn interface {
-	ExecContext(context.Context, string, ...interface{}) (stdsql.Result, error)
-}) error {
+func (d *Database) ensureObjectSchema(ctx *sql.Context, execer adapter.SQLExecutor) error {
 	// This interface is intentionally satisfied by *sql.Conn and keeps this
 	// helper independent from a concrete database/sql wrapper in tests.
 	schema := d.provider.LakeSchemaName(d.catalog, d.name)
-	_, err := conn.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+FullSchemaName(DuckLakeCatalogName, schema))
+	_, err := execer.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+FullSchemaName(DuckLakeCatalogName, schema))
 	if err != nil {
 		return fmt.Errorf("create DuckLake schema failed")
 	}
@@ -195,26 +193,30 @@ func (t *Table) addObjectColumn(ctx *sql.Context, column *sql.Column) error {
 	if err != nil {
 		return err
 	}
+	execer, err := adapter.GetSQLExecutor(ctx)
+	if err != nil {
+		return err
+	}
 	physicalSQL := "ALTER TABLE " + physical + " ADD COLUMN " + part
-	if _, err := adapter.Exec(ctx, physicalSQL); err != nil {
+	if _, err := execer.ExecContext(ctx, physicalSQL); err != nil {
 		return ErrDuckDB.New(err)
 	}
 	// Keep the shadow schema in lockstep; it is never used as the object table's
 	// data source but remains the durable GMS catalog representation.
 	shadowSQL := "ALTER TABLE " + t.shadowTableName() + " ADD COLUMN " + part
-	if _, err := adapter.Exec(ctx, shadowSQL); err != nil {
+	if _, err := execer.ExecContext(ctx, shadowSQL); err != nil {
 		return ErrDuckDB.New(err)
 	}
 	if !column.Nullable {
-		if _, err := adapter.Exec(ctx, "ALTER TABLE "+physical+" ALTER COLUMN "+QuoteIdentifierANSI(column.Name)+" SET NOT NULL"); err != nil {
+		if _, err := execer.ExecContext(ctx, "ALTER TABLE "+physical+" ALTER COLUMN "+QuoteIdentifierANSI(column.Name)+" SET NOT NULL"); err != nil {
 			return ErrDuckDB.New(err)
 		}
-		if _, err := adapter.Exec(ctx, "ALTER TABLE "+t.shadowTableName()+" ALTER COLUMN "+QuoteIdentifierANSI(column.Name)+" SET NOT NULL"); err != nil {
+		if _, err := execer.ExecContext(ctx, "ALTER TABLE "+t.shadowTableName()+" ALTER COLUMN "+QuoteIdentifierANSI(column.Name)+" SET NOT NULL"); err != nil {
 			return ErrDuckDB.New(err)
 		}
 	}
 	comment := NewCommentWithMeta(column.Comment, MySQLType{})
-	if _, err := adapter.Exec(ctx, "COMMENT ON COLUMN "+FullColumnName(t.db.catalog, t.db.name, t.name, column.Name)+" IS '"+comment.Encode()+"'"); err != nil {
+	if _, err := execer.ExecContext(ctx, "COMMENT ON COLUMN "+FullColumnName(t.db.catalog, t.db.name, t.name, column.Name)+" IS '"+comment.Encode()+"'"); err != nil {
 		return ErrDuckDB.New(err)
 	}
 	return t.withSchema(ctx)
@@ -225,10 +227,14 @@ func (t *Table) dropObjectColumn(ctx *sql.Context, columnName string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := adapter.Exec(ctx, "ALTER TABLE "+physical+" DROP COLUMN "+QuoteIdentifierANSI(columnName)); err != nil {
+	execer, err := adapter.GetSQLExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := execer.ExecContext(ctx, "ALTER TABLE "+physical+" DROP COLUMN "+QuoteIdentifierANSI(columnName)); err != nil {
 		return ErrDuckDB.New(err)
 	}
-	if _, err := adapter.Exec(ctx, "ALTER TABLE "+t.shadowTableName()+" DROP COLUMN "+QuoteIdentifierANSI(columnName)); err != nil {
+	if _, err := execer.ExecContext(ctx, "ALTER TABLE "+t.shadowTableName()+" DROP COLUMN "+QuoteIdentifierANSI(columnName)); err != nil {
 		return ErrDuckDB.New(err)
 	}
 	return t.withSchema(ctx)
@@ -253,6 +259,10 @@ func (t *Table) modifyObjectColumn(ctx *sql.Context, columnName string, column *
 		return err
 	}
 	physical, err := t.physicalTableName(ctx)
+	if err != nil {
+		return err
+	}
+	execer, err := adapter.GetSQLExecutor(ctx)
 	if err != nil {
 		return err
 	}
@@ -286,7 +296,7 @@ func (t *Table) modifyObjectColumn(ctx *sql.Context, columnName string, column *
 		return err
 	}
 	if len(physicalStatements) > 0 {
-		if _, err := adapter.Exec(ctx, strings.Join(physicalStatements, "; ")); err != nil {
+		if _, err := execer.ExecContext(ctx, strings.Join(physicalStatements, "; ")); err != nil {
 			return ErrDuckDB.New(err)
 		}
 	}
@@ -295,12 +305,12 @@ func (t *Table) modifyObjectColumn(ctx *sql.Context, columnName string, column *
 		return err
 	}
 	if len(shadowStatements) > 0 {
-		if _, err := adapter.Exec(ctx, strings.Join(shadowStatements, "; ")); err != nil {
+		if _, err := execer.ExecContext(ctx, strings.Join(shadowStatements, "; ")); err != nil {
 			return ErrDuckDB.New(err)
 		}
 	}
 	commentName := column.Name
-	if _, err := adapter.Exec(ctx, "COMMENT ON COLUMN "+FullColumnName(t.db.catalog, t.db.name, t.name, commentName)+" IS '"+NewCommentWithMeta(column.Comment, MySQLType{}).Encode()+"'"); err != nil {
+	if _, err := execer.ExecContext(ctx, "COMMENT ON COLUMN "+FullColumnName(t.db.catalog, t.db.name, t.name, commentName)+" IS '"+NewCommentWithMeta(column.Comment, MySQLType{}).Encode()+"'"); err != nil {
 		return ErrDuckDB.New(err)
 	}
 	return t.withSchema(ctx)
@@ -322,6 +332,7 @@ func (d *Database) materializeObjectTable(ctx *sql.Context, name string) error {
 	if err := d.provider.EnsureDuckLakeConnection(ctx, conn); err != nil {
 		return err
 	}
+	execer := adapter.SQLExecutorForConn(ctx, conn)
 	defs, err := d.localObjectColumns(ctx, name)
 	if err != nil {
 		return err
@@ -332,7 +343,7 @@ func (d *Database) materializeObjectTable(ctx *sql.Context, name string) error {
 	if err := d.rejectLocalObjectConstraints(ctx, name); err != nil {
 		return err
 	}
-	if err := d.ensureObjectSchema(ctx, conn); err != nil {
+	if err := d.ensureObjectSchema(ctx, execer); err != nil {
 		return err
 	}
 	physical := d.objectPhysicalTableName(name)
@@ -352,7 +363,7 @@ func (d *Database) materializeObjectTable(ctx *sql.Context, name string) error {
 		}
 		parts = append(parts, part)
 	}
-	if _, err := conn.ExecContext(ctx, "CREATE TABLE "+physical+" ("+strings.Join(parts, ", ")+")"); err != nil {
+	if _, err := execer.ExecContext(ctx, "CREATE TABLE "+physical+" ("+strings.Join(parts, ", ")+")"); err != nil {
 		if IsDuckDBTableAlreadyExistsError(err) {
 			return nil
 		}
@@ -368,7 +379,11 @@ func (d *Database) MaterializeObjectTable(ctx *sql.Context, name string) error {
 }
 
 func (d *Database) localObjectColumns(ctx *sql.Context, name string) ([]objectColumnDefinition, error) {
-	rows, err := adapter.QueryCatalog(ctx, `
+	execer, err := adapter.GetCatalogExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := execer.QueryContext(ctx, `
 		SELECT column_name, data_type, is_nullable, column_default
 		FROM duckdb_columns()
 		WHERE database_name = ? AND schema_name = ? AND table_name = ?
@@ -399,7 +414,11 @@ func (d *Database) localObjectColumns(ctx *sql.Context, name string) ([]objectCo
 }
 
 func (d *Database) rejectLocalObjectConstraints(ctx *sql.Context, name string) error {
-	rows, err := adapter.QueryCatalog(ctx, `
+	execer, err := adapter.GetCatalogExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := execer.QueryContext(ctx, `
 		SELECT constraint_type
 		FROM duckdb_constraints()
 		WHERE database_name = ? AND schema_name = ? AND table_name = ?

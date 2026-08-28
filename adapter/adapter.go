@@ -20,6 +20,17 @@ type ConnectionHolder interface {
 	CloseConn()
 }
 
+// SQLExecutor is the common database/sql surface used by statement execution.
+// Both *sql.Conn and *sql.Tx satisfy it. Keeping the interface here lets query
+// paths bind to an already active session transaction without giving up the
+// connection-specific setup needed by callers that acquire a *sql.Conn.
+type SQLExecutor interface {
+	ExecContext(context.Context, string, ...any) (stdsql.Result, error)
+	QueryContext(context.Context, string, ...any) (*stdsql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *stdsql.Row
+	PrepareContext(context.Context, string) (*stdsql.Stmt, error)
+}
+
 func GetConn(ctx *sql.Context) (*stdsql.Conn, error) {
 	return ctx.Session.(ConnectionHolder).GetConn(ctx)
 }
@@ -54,6 +65,36 @@ func GetCurrentSchema(ctx *sql.Context) string {
 
 func CloseTxn(ctx *sql.Context) {
 	ctx.Session.(ConnectionHolder).CloseTxn()
+}
+
+// SQLExecutorForConn returns the active session transaction when one exists;
+// otherwise it returns the already acquired connection. Callers that need
+// driver-connection operations (for example, DuckLake ATTACH) should continue
+// using the original *sql.Conn directly.
+func SQLExecutorForConn(ctx *sql.Context, conn *stdsql.Conn) SQLExecutor {
+	if tx := TryGetTxn(ctx); tx != nil {
+		return tx
+	}
+	return conn
+}
+
+// GetSQLExecutor acquires the normal session connection only when no active
+// transaction owns it. It is intended for statement helpers whose work must
+// participate in the session transaction when present.
+func GetSQLExecutor(ctx *sql.Context) (SQLExecutor, error) {
+	if tx := TryGetTxn(ctx); tx != nil {
+		return tx, nil
+	}
+	return GetConn(ctx)
+}
+
+// GetCatalogExecutor is the catalog equivalent of GetSQLExecutor. Metadata
+// reads and writes therefore observe the same transaction as object-table DML.
+func GetCatalogExecutor(ctx *sql.Context) (SQLExecutor, error) {
+	if tx := TryGetTxn(ctx); tx != nil {
+		return tx, nil
+	}
+	return GetCatalogConn(ctx)
 }
 
 func Query(ctx *sql.Context, query string, args ...any) (*stdsql.Rows, error) {
