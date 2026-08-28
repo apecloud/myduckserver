@@ -1,10 +1,15 @@
 package backend
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/apecloud/myduckserver/catalog"
+	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/plan"
+	"github.com/dolthub/go-mysql-server/sql/rowexec"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/stretchr/testify/require"
 )
@@ -66,4 +71,40 @@ func TestQueryForTranslationLeavesDoubleQuotedStringsWhenAnsiQuotesDisabled(t *t
 	query := `select "data" from auctions order by "ai" desc`
 	ctx = ctx.WithQuery(query)
 	require.Equal(t, query, queryForTranslation(ctx))
+}
+
+func TestStartTransactionBindsUnderlyingDuckDBTransactionBeforeGMSStart(t *testing.T) {
+	provider := catalog.NewInMemoryDBProvider()
+	t.Cleanup(func() { require.NoError(t, provider.Close()) })
+
+	session := NewSession(memory.NewSession(sql.NewBaseSession(), provider), provider)
+	ctx := sql.NewContext(context.Background(), sql.WithSession(session))
+
+	base := rowexec.NewBuilder(nil, sql.EngineOverrides{})
+	builder := &DuckBuilder{base: base}
+	iter, err := builder.Build(ctx, plan.NewStartTransaction(sql.ReadWrite), sql.Row{})
+	require.NoError(t, err)
+	require.NoError(t, iter.Close(ctx))
+	require.True(t, ctx.GetIgnoreAutoCommit())
+	require.NotNil(t, ctx.GetTransaction())
+	require.NotNil(t, session.TryGetTxn())
+
+	require.NoError(t, session.Rollback(ctx, ctx.GetTransaction()))
+	ctx.SetTransaction(nil)
+	ctx.SetIgnoreAutoCommit(false)
+}
+
+type startTransactionErrorBuilder struct{}
+
+func (startTransactionErrorBuilder) Build(*sql.Context, sql.Node, sql.Row) (sql.RowIter, error) {
+	return nil, errors.New("start transaction sentinel")
+}
+
+func TestStartTransactionRestoresIgnoreAutoCommitOnBuildError(t *testing.T) {
+	ctx := sql.NewEmptyContext()
+	builder := &DuckBuilder{base: startTransactionErrorBuilder{}}
+
+	_, err := builder.Build(ctx, plan.NewStartTransaction(sql.ReadWrite), sql.Row{})
+	require.EqualError(t, err, "start transaction sentinel")
+	require.False(t, ctx.GetIgnoreAutoCommit())
 }

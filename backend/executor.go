@@ -110,10 +110,21 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 		*plan.CreateIndex, *plan.DropIndex, *plan.AlterIndex, *plan.ShowIndexes,
 		*plan.ShowTables, *plan.ShowCreateTable, *plan.ShowColumns,
 		*plan.ShowBinlogs, *plan.ShowBinlogStatus, *plan.ShowWarnings,
-		*plan.StartTransaction, *plan.Commit, *plan.Rollback,
+		*plan.Commit, *plan.Rollback,
 		*plan.Set, *plan.ShowVariables,
 		*plan.AlterDefaultSet, *plan.AlterDefaultDrop:
 		return b.base.Build(ctx, root, r)
+	case *plan.StartTransaction:
+		// GMS sets IgnoreAutoCommit only after calling Session.StartTransaction.
+		// An explicit BEGIN must therefore opt in before delegating so the
+		// session can bind the transaction to DuckDB even when @@autocommit=1.
+		ignoreAutoCommit := ctx.GetIgnoreAutoCommit()
+		ctx.SetIgnoreAutoCommit(true)
+		iter, err := b.base.Build(ctx, root, r)
+		if err != nil {
+			ctx.SetIgnoreAutoCommit(ignoreAutoCommit)
+		}
+		return iter, err
 	case *plan.InsertInto:
 		insert := n.(*plan.InsertInto)
 
