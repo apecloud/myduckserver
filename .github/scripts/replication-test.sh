@@ -307,6 +307,11 @@ start_myduck REPLICA
 wait_for_myduck_setup
 
 if [[ "$SOURCE" == "dolt" ]]; then
+  # Dolt skips copy-instance snapshot, so CREATE DATABASE issued before
+  # START REPLICA never lands on the replica. Create the replica schema
+  # first, then emit a real CREATE DATABASE on the source after replication
+  # has started so table events have a destination.
+  myduck_mysql "CREATE DATABASE IF NOT EXISTS test;"
   create_source_data
 fi
 
