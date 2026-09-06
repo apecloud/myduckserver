@@ -121,4 +121,4 @@ COPY --chown=admin:admin --chmod=755 devtools/replica-setup-postgres ./replica-s
 RUN myduckserver --init
 
 EXPOSE 3306 5432
-ENTRYPOINT /home/admin/entrypoint.sh
+ENTRYPOINT ["/home/admin/entrypoint.sh"]
