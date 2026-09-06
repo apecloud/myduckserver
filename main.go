@@ -16,13 +16,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
+	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
@@ -43,6 +47,7 @@ import (
 	"github.com/dolthub/vitess/go/mysql"
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -76,6 +81,73 @@ var (
 	flightsqlHost = "localhost"
 	flightsqlPort = -1 // Disabled by default
 )
+
+var errServeLoopStopped = errors.New("serve loop stopped unexpectedly")
+
+type serveLoop struct {
+	name  string
+	serve func() error
+}
+
+type serveResult struct {
+	name string
+	err  error
+}
+
+func serveResultError(result serveResult, expected bool) error {
+	if result.err != nil {
+		return fmt.Errorf("%s serve loop: %w", result.name, result.err)
+	}
+	if !expected {
+		return fmt.Errorf("%w: %s", errServeLoopStopped, result.name)
+	}
+	return nil
+}
+
+func normalizeFlightServeError(err error) error {
+	if errors.Is(err, grpc.ErrServerStopped) {
+		return nil
+	}
+	return err
+}
+
+func runServerLifecycle(
+	shutdownSignals <-chan os.Signal,
+	loops []serveLoop,
+	stopProtocols func() error,
+	finalize func() error,
+) error {
+	if len(loops) == 0 {
+		return errors.Join(stopProtocols(), finalize())
+	}
+
+	results := make(chan serveResult, len(loops))
+	for _, loop := range loops {
+		loop := loop
+		go func() {
+			results <- serveResult{name: loop.name, err: loop.serve()}
+		}()
+	}
+
+	remaining := len(loops)
+	var lifecycleErr error
+	select {
+	case receivedSignal := <-shutdownSignals:
+		logrus.WithField("signal", receivedSignal).Infoln("Shutdown signal received")
+	case result := <-results:
+		remaining--
+		lifecycleErr = errors.Join(lifecycleErr, serveResultError(result, false))
+	}
+
+	lifecycleErr = errors.Join(lifecycleErr, stopProtocols())
+	for range remaining {
+		result := <-results
+		lifecycleErr = errors.Join(lifecycleErr, serveResultError(result, true))
+	}
+	logrus.Infoln("Protocol serve loops stopped")
+
+	return errors.Join(lifecycleErr, finalize())
+}
 
 func init() {
 	flag.BoolVar(&initMode, "init", initMode, "Initialize the program and exit. The necessary extensions will be installed.")
@@ -122,6 +194,12 @@ func main() {
 		fmt.Println(versionInfo())
 		return
 	}
+	var shutdownSignals chan os.Signal
+	if !initMode {
+		shutdownSignals = make(chan os.Signal, 1)
+		signal.Notify(shutdownSignals, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+		defer signal.Stop(shutdownSignals)
+	}
 
 	if replicaOptions.ReportPort == 0 {
 		replicaOptions.ReportPort = port
@@ -150,12 +228,33 @@ func main() {
 	if err != nil {
 		logrus.Fatalln("Failed to open the database:", err)
 	}
-	defer provider.Close()
+	closeProvider := sync.OnceValue(func() error {
+		logrus.Infoln("Closing database provider")
+		closeErr := provider.Close()
+		if closeErr != nil {
+			logrus.WithError(closeErr).Errorln("Failed to close database provider")
+			return closeErr
+		}
+		logrus.Infoln("Database provider closed")
+		return nil
+	})
+	defer func() { _ = closeProvider() }()
 
 	// Clear the pipes directory on startup.
 	backend.RemoveAllPipes(dataDirectory)
 
 	engine, builder := backend.NewEngine(provider)
+	finalize := sync.OnceValue(func() error {
+		logrus.Infoln("Closing SQL engine")
+		engineErr := engine.Close()
+		if engineErr != nil {
+			logrus.WithError(engineErr).Errorln("Failed to close SQL engine")
+		} else {
+			logrus.Infoln("SQL engine closed")
+		}
+		return errors.Join(engineErr, closeProvider())
+	})
+	defer func() { _ = finalize() }()
 	engine.Analyzer.Catalog.RegisterFunction(sql.NewContext(context.Background()), myfunc.ExtraBuiltIns...)
 	engine.Analyzer.Catalog.MySQLDb.SetPlugins(plugin.AuthPlugins)
 
@@ -186,10 +285,11 @@ func main() {
 		logrus.WithError(err).Fatalln("Failed to create MySQL-protocol server")
 	}
 
+	var postgresServer *pgserver.Server
 	if postgresPort > 0 {
 		var postgresConnID atomic.Uint32
 		postgresConnID.Store(1 << 31)
-		pgServer, err := pgserver.NewServer(
+		postgresServer, err = pgserver.NewServer(
 			provider,
 			address, postgresPort,
 			superuserPassword,
@@ -207,37 +307,67 @@ func main() {
 		}
 
 		// Check if there is a replication subscription and start replication if there is.
-		err = logrepl.UpdateSubscriptions(pgServer.NewInternalCtx())
+		err = logrepl.UpdateSubscriptions(postgresServer.NewInternalCtx())
 		if err != nil {
 			logrus.WithError(err).Warnln("Failed to update subscriptions")
 		}
 
 		// Load the configuration for the Postgres server.
 		pgconfig.Init()
-		go pgServer.Start()
 	}
 
+	var flightServer flight.Server
 	if flightsqlPort > 0 {
 		db := provider.Storage()
-		defer db.Close()
 
 		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db, provider.InitializeConnection)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		server := flight.NewServerWithMiddleware(nil)
-		server.RegisterFlightService(flightsql.NewFlightServer(srv))
-		server.Init(net.JoinHostPort(*&flightsqlHost, strconv.Itoa(*&flightsqlPort)))
-		server.SetShutdownOnSignals(os.Interrupt, os.Kill)
+		flightServer = flight.NewServerWithMiddleware(nil)
+		flightServer.RegisterFlightService(flightsql.NewFlightServer(srv))
+		flightServer.Init(net.JoinHostPort(*&flightsqlHost, strconv.Itoa(*&flightsqlPort)))
 
-		fmt.Println("Starting SQLite Flight SQL Server on", server.Addr(), "...")
-
-		go server.Serve()
+		fmt.Println("Starting SQLite Flight SQL Server on", flightServer.Addr(), "...")
 	}
 
-	if err = myServer.Start(); err != nil {
-		logrus.WithError(err).Fatalln("Failed to start MySQL-protocol server")
+	loops := []serveLoop{{name: "mysql", serve: myServer.Start}}
+	if postgresServer != nil {
+		loops = append(loops, serveLoop{
+			name: "postgres",
+			serve: func() error {
+				postgresServer.Start()
+				return nil
+			},
+		})
+	}
+	if flightServer != nil {
+		loops = append(loops, serveLoop{
+			name: "flight",
+			serve: func() error {
+				return normalizeFlightServeError(flightServer.Serve())
+			},
+		})
+	}
+
+	stopProtocols := sync.OnceValue(func() error {
+		logrus.Infoln("Stopping protocol servers")
+		var stopErr error
+		if postgresServer != nil {
+			postgresServer.Close()
+		}
+		if closeErr := myServer.Close(); closeErr != nil {
+			stopErr = errors.Join(stopErr, fmt.Errorf("close MySQL server: %w", closeErr))
+		}
+		if flightServer != nil {
+			flightServer.Shutdown()
+		}
+		return stopErr
+	})
+
+	if err = runServerLifecycle(shutdownSignals, loops, stopProtocols, finalize); err != nil {
+		logrus.WithError(err).Fatalln("Server stopped with an error")
 	}
 }
 
