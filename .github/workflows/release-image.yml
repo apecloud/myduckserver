@@ -8,6 +8,11 @@ on:
         description: Full 40-character application source commit SHA
         required: true
         type: string
+      source_branch:
+        description: Source branch whose history must contain source_sha (main or release/X.Y.Z)
+        required: false
+        default: main
+        type: string
       version:
         description: Immutable prerelease version (vX.Y.Z-dev.YYYYMMDD.N or vX.Y.Z-rc.N)
         required: true
@@ -28,28 +33,43 @@ jobs:
       contents: read
     outputs:
       digest: ${{ steps.build.outputs.digest }}
-      sha_tag: ${{ steps.metadata.outputs.sha_tag }}
+      sha_tag: ${{ steps.source-ref.outputs.sha_tag }}
       version: ${{ inputs.version }}
     steps:
+      - name: Checkout exact release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Validate release inputs
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "release workflow must be dispatched from the main branch" >&2
-            exit 1
-          fi
-          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "source_sha must be a lowercase, full 40-character commit SHA" >&2
-            exit 1
-          fi
-          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(dev\.[0-9]{8}\.[1-9][0-9]*|rc\.[1-9][0-9]*)$ ]]; then
-            echo "version must match vX.Y.Z-dev.YYYYMMDD.N or vX.Y.Z-rc.N" >&2
-            exit 1
-          fi
+          source release-tools/.github/scripts/release-source-validate.sh
+          release_source_validate_inputs "$GITHUB_REF" "$SOURCE_BRANCH" "$SOURCE_SHA" "$VERSION"
+
+      - name: Test source branch validation
+        shell: bash
+        run: bash release-tools/.github/scripts/release-source-validate-test.sh
+
+      - name: Fetch and resolve source branch
+        id: source-ref
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+        run: |
+          set -euo pipefail
+          source release-tools/.github/scripts/release-source-validate.sh
+          release_source_fetch release-tools "$SOURCE_BRANCH"
+          release_source_resolve "$SOURCE_BRANCH" "$SOURCE_SHA" release-tools "$GITHUB_OUTPUT"
 
       - name: Checkout exact application source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -57,14 +77,6 @@ jobs:
           ref: ${{ inputs.source_sha }}
           path: source
           fetch-depth: 0
-          persist-credentials: false
-
-      - name: Checkout exact release tooling
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          path: release-tools
-          fetch-depth: 1
           persist-credentials: false
 
       - name: Verify checkout and derive metadata
@@ -83,14 +95,6 @@ jobs:
           actual_workflow_sha="$(git -C release-tools rev-parse HEAD)"
           if [[ "$actual_workflow_sha" != "$WORKFLOW_SHA" ]]; then
             echo "checked out workflow commit $actual_workflow_sha, expected $WORKFLOW_SHA" >&2
-            exit 1
-          fi
-          if ! git -C source cat-file -e "$WORKFLOW_SHA^{commit}"; then
-            echo "workflow commit $WORKFLOW_SHA is missing from the checkout" >&2
-            exit 1
-          fi
-          if ! git -C source merge-base --is-ancestor "$SOURCE_SHA" "$WORKFLOW_SHA"; then
-            echo "source_sha must be reachable from main at workflow commit $WORKFLOW_SHA" >&2
             exit 1
           fi
           mapfile -t base_images < <(
@@ -156,7 +160,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ inputs.version }}
-          SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
+          SHA_TAG: ${{ steps.source-ref.outputs.sha_tag }}
         run: |
           set -euo pipefail
           source release-tools/.github/scripts/dockerhub-manifest.sh
@@ -185,7 +189,7 @@ jobs:
           sbom: false
           tags: |
             ${{ env.IMAGE }}:${{ inputs.version }}
-            ${{ env.IMAGE }}:${{ steps.metadata.outputs.sha_tag }}
+            ${{ env.IMAGE }}:${{ steps.source-ref.outputs.sha_tag }}
           labels: |
             org.opencontainers.image.source=${{ env.SOURCE_REPOSITORY }}
             org.opencontainers.image.version=${{ inputs.version }}
@@ -203,8 +207,10 @@ jobs:
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: ${{ steps.source-ref.outputs.source_branch }}
+          SOURCE_BRANCH_SHA: ${{ steps.source-ref.outputs.source_branch_sha }}
           VERSION: ${{ inputs.version }}
-          SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
+          SHA_TAG: ${{ steps.source-ref.outputs.sha_tag }}
           BUILD_TIME: ${{ steps.metadata.outputs.build_time }}
           BUILD_DIGEST: ${{ steps.build.outputs.digest }}
           WORKFLOW_SHA: ${{ github.sha }}
@@ -279,6 +285,8 @@ jobs:
           jq -n \
             --arg image "$IMAGE" \
             --arg source_sha "$SOURCE_SHA" \
+            --arg source_branch "$SOURCE_BRANCH" \
+            --arg source_branch_sha "$SOURCE_BRANCH_SHA" \
             --arg workflow_sha "$WORKFLOW_SHA" \
             --arg workflow_run_id "$GITHUB_RUN_ID" \
             --arg workflow_run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
@@ -295,6 +303,8 @@ jobs:
             '{
               image: $image,
               source_sha: $source_sha,
+              source_branch: $source_branch,
+              source_branch_sha: $source_branch_sha,
               workflow_sha: $workflow_sha,
               workflow_run_id: $workflow_run_id,
               workflow_run_url: $workflow_run_url,
@@ -321,6 +331,7 @@ jobs:
           {
             echo "## Published immutable image"
             echo
+            echo "- Source branch: \`$SOURCE_BRANCH\` at \`$SOURCE_BRANCH_SHA\`"
             echo "- Source: \`$SOURCE_SHA\`"
             echo "- Version tag: \`$IMAGE:$VERSION\`"
             echo "- Commit tag: \`$IMAGE:$SHA_TAG\`"

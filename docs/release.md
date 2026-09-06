@@ -34,17 +34,27 @@ secrets.
 Run the **Release Image** workflow from the `main` branch with:
 
 - `source_sha`: the full, lowercase, 40-character application commit SHA;
+- `source_branch`: `main` (default) or an explicit `release/X.Y.Z` branch;
 - `version`: a development or release-candidate version.
 
-The workflow checks out that exact SHA into an isolated directory, compares the
-actual checkout SHA byte for byte with the input, and verifies that it is an
-ancestor of the `main` commit from which the workflow was dispatched. The
-workflow definition may be newer than the application source, but the build
-context and Dockerfile both come from the requested application commit.
+The workflow always runs its tooling from the `main` commit that dispatched
+it. It resolves `source_branch` once to a fixed commit, verifies that
+`source_sha` is reachable from that resolved history, and records both the
+branch name and resolved commit in `release-metadata.json`. Arbitrary SHAs
+that are not on `main` or the named `release/X.Y.Z` branch are rejected.
+Unknown refs, incomplete names such as `release/0.2`, and other branch names
+are rejected.
+
+When `source_branch` is `release/X.Y.Z`, `version` must be a prerelease of
+that same `vX.Y.Z`. When `source_branch` is `main`, any allowed prerelease
+version may be used. The workflow definition may be newer than the
+application source, but the build context and Dockerfile both come from the
+requested application commit.
 
 One multi-architecture build publishes the version and commit tags. Both tags
 must resolve to the digest returned by the build. The workflow uploads
-`release-metadata.json` with the source and workflow SHAs, run ID and URL,
+`release-metadata.json` with the source SHA, source branch and resolved
+branch commit, workflow SHA, run ID and URL,
 immutable tags, top-level digest, per-platform digests, and build time.
 
 The application Dockerfile must pin both its builder and runtime images with a
@@ -93,19 +103,25 @@ Only an accepted immutable development build or release candidate may become
 stable. Run the **Promote Image** workflow from the `main` branch with:
 
 - the full source SHA;
+- `source_branch`: `main` (default) or the same `release/X.Y.Z` used to build;
 - the existing immutable development or release-candidate version;
 - the accepted `sha256:...` digest;
-- the explicit stable `vX.Y.Z` version (which may have a different prerelease
-  base when that product version change is intentional);
+- the explicit stable `vX.Y.Z` version;
 - the independent acceptance reference.
 
-The workflow verifies that the source commit is reachable from `main` and that
-both the prerelease tag and `sha-<commit>` tag point to the accepted digest. It
-then adds the stable version and `latest` to that digest with
+The workflow resolves `source_branch` once and verifies that the source
+commit is reachable from that history. It also verifies that both the
+prerelease tag and `sha-<commit>` tag point to the accepted digest. It then
+adds the stable version and `latest` to that digest with
 `docker buildx imagetools create`. It does not invoke a build. The workflow
 inspects both promoted tags afterward and uploads `promotion-metadata.json`,
-including the workflow run, per-platform digests, acceptance reference, and
-previous `latest` digest.
+including the source branch and resolved commit, workflow run, per-platform
+digests, acceptance reference, and previous `latest` digest.
+
+When promoting a `main` source, the stable version may have a different
+prerelease base if that product version change is intentional. When promoting
+a `release/X.Y.Z` source, both the prerelease version and stable version must
+correspond to that same `vX.Y.Z`.
 
 For example, after accepting `v0.1.0-rc.1`, promote its existing digest to
 `v0.1.0` and `latest`. For a development build that includes a deliberate
@@ -118,13 +134,15 @@ the stable tag records that this exact candidate passed release acceptance.
 
 Do not rebuild an old version and do not move its immutable tags. Re-run the
 **Promote Image** workflow using the previous stable version, its original
-prerelease tag, source SHA, digest, and acceptance reference. The workflow
-verifies all immutable references and moves only `latest` back to that digest.
+prerelease tag, source SHA, source branch, digest, and acceptance reference.
+The workflow verifies all immutable references and moves only `latest` back
+to that digest.
 
 Every release record must keep:
 
 - workflow run URL;
 - full application source SHA;
+- source branch and the commit it resolved to;
 - prerelease, source-commit, and stable tags as applicable;
 - multi-architecture digest;
 - builder and runtime top-level manifest digests;
