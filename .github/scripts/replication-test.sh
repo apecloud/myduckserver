@@ -126,7 +126,9 @@ case "$SOURCE" in
       --binlog-format=ROW >/dev/null
     ;;
   dolt)
-    SOURCE_DSN="mysql://replicator:replicator@${SOURCE_CONTAINER}:3306/test?skip-tables=test.skip"
+    # Do not put /test in the DSN: that database is created after replication
+    # starts so the replica sees a real CREATE DATABASE event.
+    SOURCE_DSN="mysql://replicator:replicator@${SOURCE_CONTAINER}:3306/?include-schemas=test&skip-tables=test.skip"
     DOLT_CONFIG_DIR=$(mktemp -d)
     cat >"$DOLT_CONFIG_DIR/config.json" <<'JSON'
 {
@@ -149,7 +151,6 @@ wait_for_source
 
 if [[ "$SOURCE" == "dolt" ]]; then
   source_sql "
-    CREATE DATABASE test;
     CREATE USER 'replicator'@'%' IDENTIFIED BY 'replicator';
     GRANT SELECT, RELOAD, REPLICATION CLIENT, REPLICATION SLAVE, SHOW VIEW, EVENT
       ON *.* TO 'replicator'@'%';"
@@ -245,6 +246,21 @@ myduck_rows() {
     -c "SELECT id || ':' || name FROM ${SCHEMA}.items ORDER BY id"
 }
 
+wait_for_replica_schema() {
+  local schema=$1
+  local attempt got
+  for attempt in {1..60}; do
+    got=$(myduck_scalar "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name='${schema}'" 2>/dev/null || true)
+    if [[ "$got" == 1 ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "replica schema ${schema} did not appear" >&2
+  docker logs "$MYDUCK_CONTAINER" || true
+  return 1
+}
+
 wait_for_count() {
   local expected=$1
   local attempt got
@@ -307,12 +323,16 @@ start_myduck REPLICA
 wait_for_myduck_setup
 
 if [[ "$SOURCE" == "dolt" ]]; then
-  # Dolt skips copy-instance snapshot, so CREATE DATABASE issued before
-  # START REPLICA never lands on the replica. Create the replica schema
-  # first, then emit a real CREATE DATABASE on the source after replication
-  # has started so table events have a destination.
-  myduck_mysql "CREATE DATABASE IF NOT EXISTS test;"
-  create_source_data
+  # Dolt skips copy-instance snapshot. Emit a real CREATE DATABASE on the
+  # source after START REPLICA, wait until the replica has the schema, then
+  # create tables. Do not CREATE DATABASE locally on the replica.
+  source_sql "CREATE DATABASE test;"
+  wait_for_replica_schema test
+  source_sql "
+    CREATE TABLE test.items (id INT PRIMARY KEY, name VARCHAR(50));
+    INSERT INTO test.items VALUES (1, 'test1'), (2, 'test2');
+    CREATE TABLE test.skip (id INT PRIMARY KEY, name VARCHAR(50));
+    INSERT INTO test.skip VALUES (1, 'abc'), (2, 'def');"
 fi
 
 wait_for_count 2
