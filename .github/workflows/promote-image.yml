@@ -8,6 +8,11 @@ on:
         description: Full 40-character source commit SHA of the accepted image
         required: true
         type: string
+      source_branch:
+        description: Source branch whose history must contain source_sha (main or release/X.Y.Z)
+        required: false
+        default: main
+        type: string
       source_version:
         description: Existing immutable dev or release-candidate tag
         required: true
@@ -51,6 +56,7 @@ jobs:
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
           SOURCE_VERSION: ${{ inputs.source_version }}
           SOURCE_DIGEST: ${{ inputs.source_digest }}
           STABLE_VERSION: ${{ inputs.stable_version }}
@@ -58,6 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           source .github/scripts/promote-image-validate.sh
+          source .github/scripts/release-source-validate.sh
           promote_image_validate \
             "$GITHUB_REF" \
             "$SOURCE_SHA" \
@@ -66,15 +73,24 @@ jobs:
             "$STABLE_VERSION" \
             "$ACCEPTANCE_REFERENCE" \
             "$GITHUB_OUTPUT"
+          release_source_validate_inputs \
+            "$GITHUB_REF" \
+            "$SOURCE_BRANCH" \
+            "$SOURCE_SHA" \
+            "$SOURCE_VERSION"
 
       - name: Test promotion input validation
         shell: bash
-        run: bash .github/scripts/promote-image-validate-test.sh
+        run: |
+          bash .github/scripts/promote-image-validate-test.sh
+          bash .github/scripts/release-source-validate-test.sh
 
-      - name: Verify source is reachable from main
+      - name: Fetch and resolve source branch
+        id: source-ref
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -83,14 +99,9 @@ jobs:
             echo "checked out workflow commit $actual_workflow_sha, expected $WORKFLOW_SHA" >&2
             exit 1
           fi
-          if ! git cat-file -e "$SOURCE_SHA^{commit}"; then
-            echo "source commit $SOURCE_SHA is missing from release history" >&2
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "$SOURCE_SHA" "$WORKFLOW_SHA"; then
-            echo "source_sha must be reachable from main at workflow commit $WORKFLOW_SHA" >&2
-            exit 1
-          fi
+          source .github/scripts/release-source-validate.sh
+          release_source_fetch . "$SOURCE_BRANCH"
+          release_source_resolve "$SOURCE_BRANCH" "$SOURCE_SHA" . "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -192,6 +203,8 @@ jobs:
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BRANCH: ${{ steps.source-ref.outputs.source_branch }}
+          SOURCE_BRANCH_SHA: ${{ steps.source-ref.outputs.source_branch_sha }}
           SOURCE_VERSION: ${{ inputs.source_version }}
           SOURCE_DIGEST: ${{ inputs.source_digest }}
           SHA_TAG: ${{ steps.metadata.outputs.sha_tag }}
@@ -246,6 +259,8 @@ jobs:
           jq -n \
             --arg image "$IMAGE" \
             --arg source_sha "$SOURCE_SHA" \
+            --arg source_branch "$SOURCE_BRANCH" \
+            --arg source_branch_sha "$SOURCE_BRANCH_SHA" \
             --arg workflow_sha "$WORKFLOW_SHA" \
             --arg workflow_run_id "$GITHUB_RUN_ID" \
             --arg workflow_run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
@@ -261,6 +276,8 @@ jobs:
             '{
               image: $image,
               source_sha: $source_sha,
+              source_branch: $source_branch,
+              source_branch_sha: $source_branch_sha,
               workflow_sha: $workflow_sha,
               workflow_run_id: $workflow_run_id,
               workflow_run_url: $workflow_run_url,
@@ -281,6 +298,7 @@ jobs:
             echo "## Promoted accepted image"
             echo
             echo "- Acceptance: $ACCEPTANCE_REFERENCE"
+            echo "- Source branch: \`$SOURCE_BRANCH\` at \`$SOURCE_BRANCH_SHA\`"
             echo "- Source: \`$SOURCE_SHA\`"
             echo "- Stable tag: \`$IMAGE:$STABLE_VERSION\`"
             echo "- Latest: \`$IMAGE:latest\`"
