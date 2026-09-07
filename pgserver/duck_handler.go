@@ -173,6 +173,11 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		return nil, nil, nil, err
 	}
 
+	prepareQuery, err := postgresCreateTableQueryForPrepare(query, parsed)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	var (
 		stmt       *duckdb.Stmt
 		stmtType   duckdb.StmtType
@@ -182,7 +187,7 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 	// But we know that the connection is a DuckDB connection and it is kept alive.
 	err = conn.Raw(func(driverConn interface{}) error {
 		dc := driverConn.(*duckdb.Conn)
-		s, err := dc.PrepareContext(sqlCtx, query)
+		s, err := dc.PrepareContext(sqlCtx, prepareQuery)
 		if err != nil {
 			return err
 		}
@@ -505,8 +510,37 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
 	//   Consequently, the following classification is not perfect.
 	switch parsed := parsed.(type) {
+	case *tree.CreateTable:
+		selection, createErr := setPostgresCreateTableStorage(ctx, parsed)
+		if createErr != nil {
+			err = createErr
+			break
+		}
+		if parsed.Persistence == tree.PersistenceTemporary && selection.IsObjectStorage() {
+			err = fmt.Errorf("%w: temporary tables cannot use object storage", catalog.ErrInvalidTableStorage)
+			break
+		}
+		executionQuery, _, createErr := postgresCreateTableExecutionQuery(query, parsed)
+		if createErr != nil {
+			err = createErr
+			break
+		}
+		result, err = adapter.Exec(ctx, executionQuery)
+		if err == nil {
+			err = persistPostgresCreateTableStorage(ctx, parsed, selection)
+		}
+		if err != nil {
+			break
+		}
+		affected, _ := result.RowsAffected()
+		insertId, _ := result.LastInsertId()
+		schema = types.OkResultSchema
+		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{
+			RowsAffected: uint64(affected),
+			InsertID:     uint64(insertId),
+		}))
 	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
-		*tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
+		*tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
 		*tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo, *tree.SetVar:
 		result, err = adapter.Exec(ctx, query)
 		if err != nil {
@@ -720,6 +754,37 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 			rows.Close()
 		}
 		return schema, iter, nil, err
+	}
+
+	// Prepared PostgreSQL DDL is executed through this bound-plan path rather
+	// than executeQuery. Keep CREATE TABLE's selector and metadata behavior
+	// identical to the simple-query path, and remove MyDuck-only WITH options
+	// before handing the statement to DuckDB.
+	if create, ok := parsed.(*tree.CreateTable); ok {
+		selection, createErr := setPostgresCreateTableStorage(ctx, create)
+		if createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		if create.Persistence == tree.PersistenceTemporary && selection.IsObjectStorage() {
+			return nil, nil, nil, fmt.Errorf("%w: temporary tables cannot use object storage", catalog.ErrInvalidTableStorage)
+		}
+		executionQuery, _, createErr := postgresCreateTableExecutionQuery(query, create)
+		if createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		result, createErr := adapter.ExecCatalog(ctx, executionQuery, vars...)
+		if createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		if createErr = persistPostgresCreateTableStorage(ctx, create, selection); createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		affected, _ := result.RowsAffected()
+		insertID, _ := result.LastInsertId()
+		return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{
+			RowsAffected: uint64(affected),
+			InsertID:     uint64(insertID),
+		})), nil, nil
 	}
 
 	switch stmtType {
