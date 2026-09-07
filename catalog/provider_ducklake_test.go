@@ -166,6 +166,48 @@ func TestAttachCatalogSkipsDuckLakeMetadataFile(t *testing.T) {
 	require.NoError(t, prov.AttachCatalog(info, false))
 }
 
+func TestAttachCatalogSkipsDuckLakeMetadataRelativeDataDir(t *testing.T) {
+	dir := t.TempDir()
+	meta := filepath.Join(dir, "ducklake.db")
+	require.NoError(t, os.WriteFile(meta, []byte("existing"), 0o600))
+	userConnector, err := duckdb.NewConnector(filepath.Join(dir, "myduck.db"), nil)
+	require.NoError(t, err)
+	require.NoError(t, userConnector.Close())
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(cwd)) })
+	require.NoError(t, os.Chdir(dir))
+	prov := &DatabaseProvider{
+		dataDir: ".",
+		duckLake: &duckLakeRuntime{config: configuration.DuckLakeConfig{
+			MetadataPath: meta,
+		}},
+	}
+	info, err := os.Stat("ducklake.db")
+	require.NoError(t, err)
+	require.True(t, prov.duckLakeMetadataFile(info.Name()))
+	require.False(t, prov.duckLakeMetadataFile("myduck.db"))
+
+	connector, err := duckdb.NewConnector("", nil)
+	require.NoError(t, err)
+	db := stdsql.OpenDB(connector)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+		require.NoError(t, connector.Close())
+	})
+	prov.storage = db
+	userDB, err := os.Stat("myduck.db")
+	require.NoError(t, err)
+	require.NoError(t, prov.AttachCatalog(userDB, false))
+	require.NoError(t, prov.AttachCatalog(info, false))
+
+	var attached int
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM duckdb_databases() WHERE database_name = 'myduck'").Scan(&attached))
+	require.Equal(t, 1, attached)
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM duckdb_databases() WHERE database_name = 'ducklake'").Scan(&attached))
+	require.Equal(t, 0, attached)
+}
+
 func TestDuckLakeAttachStatNonExistErrorDoesNotCreate(t *testing.T) {
 	orig := duckLakeStat
 	t.Cleanup(func() { duckLakeStat = orig })

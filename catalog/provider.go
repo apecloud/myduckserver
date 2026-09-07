@@ -525,6 +525,31 @@ func (prov *DatabaseProvider) HasCatalog(name string) bool {
 }
 
 // attachCatalogs attaches all the databases in the data directory
+func duckLakeSamePath(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	if errA == nil && errB == nil {
+		return os.SameFile(infoA, infoB)
+	}
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	if ev, err := filepath.EvalSymlinks(absA); err == nil {
+		absA = ev
+	}
+	if ev, err := filepath.EvalSymlinks(absB); err == nil {
+		absB = ev
+	}
+	return absA == absB
+}
+
 func (prov *DatabaseProvider) duckLakeMetadataFile(name string) bool {
 	if prov == nil || prov.duckLake == nil {
 		return false
@@ -533,7 +558,10 @@ func (prov *DatabaseProvider) duckLakeMetadataFile(name string) bool {
 	if meta == "" {
 		return false
 	}
-	return filepath.Clean(filepath.Join(prov.dataDir, name)) == filepath.Clean(meta)
+	// The image entrypoint cds into DATA_PATH and leaves --datadir at ".".
+	// Compare the same absolute file so "./ducklake.db" matches an absolute
+	// MYDUCK_DUCKLAKE_METADATA_PATH. Ordinary catalogs in dataDir are not skipped.
+	return duckLakeSamePath(filepath.Join(prov.dataDir, name), meta)
 }
 
 func (prov *DatabaseProvider) attachCatalogs() error {
