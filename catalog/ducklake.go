@@ -1841,8 +1841,10 @@ func (rt *duckLakeRuntime) attachLocked(ctx context.Context, key any, execer dri
 	}
 	// Both values have already passed configuration validation. SQL-literal
 	// quoting is still required because service paths can contain apostrophes.
-	// CREATE_IF_NOT_EXISTS is only for first attach. Reopening an existing
-	// local catalog with that option fails DuckDB ATTACH after restart.
+	// CREATE_IF_NOT_EXISTS is only for first attach when the catalog file is
+	// missing. An existing catalog ATTACHes with or without that option.
+	// Restart failed because attachCatalogs opened the metadata file as a
+	// regular DuckDB database before the ducklake: ATTACH.
 	missing, err := duckLakeCatalogMissing(metadata)
 	if err != nil {
 		return newDuckLakeInitError(duckLakeStageAttach, "", err)
@@ -1890,8 +1892,12 @@ func localDuckLakeCatalogPath() (string, error) {
 	return filepath.Join(dir, "ducklake-catalog.duckdb"), nil
 }
 
+// duckLakeStat is os.Stat in production. Tests replace it to inject Stat
+// failures that chmod 000 cannot produce when the process is root.
+var duckLakeStat = os.Stat
+
 func duckLakeCatalogMissing(path string) (bool, error) {
-	_, err := os.Stat(path)
+	_, err := duckLakeStat(path)
 	if err == nil {
 		return false, nil
 	}

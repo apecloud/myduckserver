@@ -167,19 +167,20 @@ func TestAttachCatalogSkipsDuckLakeMetadataFile(t *testing.T) {
 }
 
 func TestDuckLakeAttachStatNonExistErrorDoesNotCreate(t *testing.T) {
-	dir := t.TempDir()
-	blocked := filepath.Join(dir, "blocked")
-	require.NoError(t, os.Mkdir(blocked, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
-	metadata := filepath.Join(blocked, "catalog.ducklake")
+	orig := duckLakeStat
+	t.Cleanup(func() { duckLakeStat = orig })
+	duckLakeStat = func(string) (os.FileInfo, error) {
+		return nil, os.ErrPermission
+	}
 	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
-		MetadataPath: metadata,
+		MetadataPath: "/injected/catalog.ducklake",
 		DataPath:     "s3://test-bucket/data",
 	}}
 	execer := &recordingDuckLakeExecer{}
 
 	err := runtime.attachLocked(context.Background(), nil, execer)
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "reason=permission_denied")
 	require.Empty(t, execer.queries)
 }
 
