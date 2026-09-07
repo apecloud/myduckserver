@@ -151,6 +151,38 @@ func TestDuckLakeAttachOmitsCreateIfCatalogExists(t *testing.T) {
 	require.NotContains(t, execer.queries[0], "CREATE_IF_NOT_EXISTS")
 }
 
+func TestAttachCatalogSkipsDuckLakeMetadataFile(t *testing.T) {
+	dir := t.TempDir()
+	meta := filepath.Join(dir, "ducklake.db")
+	require.NoError(t, os.WriteFile(meta, []byte("existing"), 0o600))
+	prov := &DatabaseProvider{
+		dataDir: dir,
+		duckLake: &duckLakeRuntime{config: configuration.DuckLakeConfig{
+			MetadataPath: meta,
+		}},
+	}
+	info, err := os.Stat(meta)
+	require.NoError(t, err)
+	require.NoError(t, prov.AttachCatalog(info, false))
+}
+
+func TestDuckLakeAttachStatNonExistErrorDoesNotCreate(t *testing.T) {
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "blocked")
+	require.NoError(t, os.Mkdir(blocked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+	metadata := filepath.Join(blocked, "catalog.ducklake")
+	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: metadata,
+		DataPath:     "s3://test-bucket/data",
+	}}
+	execer := &recordingDuckLakeExecer{}
+
+	err := runtime.attachLocked(context.Background(), nil, execer)
+	require.Error(t, err)
+	require.Empty(t, execer.queries)
+}
+
 func TestDuckLakeAttachRejectsRemoteCatalogURI(t *testing.T) {
 	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
 		MetadataPath: "s3://test-bucket/catalog.ducklake",
