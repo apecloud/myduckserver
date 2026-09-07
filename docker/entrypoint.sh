@@ -354,6 +354,7 @@ run_replica_setup() {
 
 run_server_in_background() {
     local status
+    local _log_pipe_guard_wait
 
     cd "$DATA_PATH" || { echo "Error: Could not change directory to ${DATA_PATH}"; return 1; }
     rm -f "${LOG_PIPE}"
@@ -393,6 +394,23 @@ run_server_in_background() {
     tee -a "${LOG_PATH}/server.log" 9>&- < "${LOG_PIPE}" &
     LOGGER_PID=$!
     signal_children
+    # Closing FD 9 before tee opens the FIFO leaves myduckserver as the only
+    # writer with no reader, which is SIGPIPE (exit 141). Wait until tee has
+    # consumed at least one log byte, then drop the guard.
+    _log_pipe_guard_wait=0
+    while [[ ! -s "${LOG_PATH}/server.log" ]]; do
+        if [[ -n "${SERVER_PID}" ]] && ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+            break
+        fi
+        if [[ -n "${LOGGER_PID}" ]] && ! kill -0 "${LOGGER_PID}" 2>/dev/null; then
+            break
+        fi
+        _log_pipe_guard_wait=$((_log_pipe_guard_wait + 1))
+        if [[ "${_log_pipe_guard_wait}" -ge 200 ]]; then
+            break
+        fi
+        sleep 0.01
+    done
     close_log_pipe_guard
     if [[ -n "${SHUTDOWN_SIGNAL}" ]]; then
         complete_shutdown

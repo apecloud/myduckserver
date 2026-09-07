@@ -50,11 +50,13 @@ func TestEntrypointKeepsFIFOOpenAcrossChildLaunches(t *testing.T) {
 	guardOpen := strings.Index(launch, `exec 9<> "${LOG_PIPE}"`)
 	serverLaunch := strings.Index(launch, `myduckserver "${SERVER_OPTIONS[@]}" 9>&-`)
 	loggerLaunch := strings.Index(launch, `tee -a "${LOG_PATH}/server.log" 9>&-`)
+	logReady := strings.Index(launch, `[[ ! -s "${LOG_PATH}/server.log" ]]`)
 	guardClose := strings.Index(launch, "close_log_pipe_guard")
 	require.GreaterOrEqual(t, guardOpen, 0)
 	require.Greater(t, serverLaunch, guardOpen)
 	require.Greater(t, loggerLaunch, serverLaunch)
-	require.Greater(t, guardClose, loggerLaunch)
+	require.Greater(t, logReady, loggerLaunch)
+	require.Greater(t, guardClose, logReady)
 }
 
 func TestEntrypointPreservesLegacyInitBehavior(t *testing.T) {
