@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	stdsql "database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ import (
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
@@ -54,9 +56,43 @@ type ConnectionHandler struct {
 	backend            *pgproto3.Backend
 	pgTypeMap          *pgtype.Map
 	waitForSync        bool
+	// implicitTx is the physical transaction opened for a protocol message
+	// group when the client has not issued an explicit BEGIN. It is kept
+	// separate from txStatus: PostgreSQL advertises T while the group is open,
+	// but returns to I as soon as the group is committed or rolled back.
+	implicitTx *stdsql.Tx
+	// implicitTxCtx and implicitTxConn are the exact lifecycle identity captured
+	// when implicitTx was opened. They must be reused for finalization; creating
+	// a fresh context can observe a replacement pool binding.
+	implicitTxCtx      *sql.Context
+	implicitTxConn     *stdsql.Conn
+	implicitTxPromoted bool
+	// deferredCommandComplete is used only by the final statement of a simple
+	// query. Its command tag is held until the implicit transaction commit has
+	// succeeded, matching PostgreSQL's completion ordering on commit failure.
+	deferredCommandComplete bool
+	// pendingCommandCompletes are response tags whose statement has finished,
+	// but whose message-group transaction still needs to commit. COPY uses this
+	// queue in the extended protocol because the client may send Sync only after
+	// receiving all data frames. Keep a queue rather than a single slot so a
+	// pipelined group cannot silently lose an earlier COPY completion.
+	pendingCommandCompletes []*pgproto3.CommandComplete
+	// pendingProtocolMessages is the ordered form of the deferred response
+	// queue. Most statements only need a CommandComplete, but in-place handlers
+	// such as SET also emit ParameterStatus; keeping both messages in one queue
+	// preserves their wire order until an implicit simple-query commit succeeds.
+	pendingProtocolMessages []pgproto3.BackendMessage
+	// txStatus is the transaction state advertised by ReadyForQuery. It is
+	// deliberately kept at the protocol layer because PostgreSQL transaction
+	// control is handled outside GMS's transaction iterator.
+	txStatus ReadyForQueryTransactionIndicator
 	// copyFromStdinState is set when this connection is in the COPY FROM STDIN mode, meaning it is waiting on
 	// COPY DATA messages from the client to import data into tables.
 	copyFromStdinState *copyFromStdinState
+	// pendingCopyRelease keeps a successful extended-protocol COPY-IN lease
+	// alive from CopyDone through the following Sync, where the implicit
+	// transaction is committed. It is idempotent and nil outside that window.
+	pendingCopyRelease func()
 
 	server   *Server
 	readOnly bool
@@ -132,6 +168,7 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 		duckHandler:        duckHandler,
 		backend:            pgproto3.NewBackend(conn, conn),
 		pgTypeMap:          pgtype.NewMap(),
+		txStatus:           ReadyForQueryTransactionIndicator_Idle,
 
 		server:   server,
 		readOnly: readOnly,
@@ -144,13 +181,220 @@ func NewConnectionHandler(conn net.Conn, handler mysql.Handler, engine *gms.Engi
 	return &connectionHandler
 }
 
-func (h *ConnectionHandler) closeBackendConn() {
-	ctx, err := h.duckHandler.NewContext(context.Background(), h.mysqlConn, "")
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to create context for closing backend connection")
+// readyForQueryStatus returns a valid PostgreSQL transaction indicator. Keep
+// the zero value usable for tests and for any handler constructed without the
+// normal constructor.
+func (h *ConnectionHandler) readyForQueryStatus() ReadyForQueryTransactionIndicator {
+	switch h.txStatus {
+	case ReadyForQueryTransactionIndicator_Idle,
+		ReadyForQueryTransactionIndicator_TransactionBlock,
+		ReadyForQueryTransactionIndicator_FailedTransactionBlock:
+		return h.txStatus
+	default:
+		h.txStatus = ReadyForQueryTransactionIndicator_Idle
+		return h.txStatus
+	}
+}
+
+// markTransactionError records an error in an explicit transaction block.
+// Errors while idle do not create a transaction, and a failed block remains
+// failed until COMMIT or ROLLBACK finalizes it.
+func (h *ConnectionHandler) markTransactionError() {
+	// An implicit protocol scope is rolled back immediately by its owning
+	// message handler. Do not expose that transient scope as PostgreSQL's sticky
+	// failed explicit block.
+	if h.implicitTx != nil && !h.implicitTxPromoted {
 		return
 	}
-	adapter.CloseConn(ctx)
+	if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_TransactionBlock {
+		h.txStatus = ReadyForQueryTransactionIndicator_FailedTransactionBlock
+	}
+}
+
+// observeTransactionBinding reports whether the session still has a physical
+// transaction bound to this PostgreSQL connection.  A real handler can inspect
+// the pool through a fresh lifecycle context; minimal unit-test handlers do not
+// have a DuckHandler/session and are treated as having no observable binding.
+// The second return value is false when the production binding could not be
+// inspected, in which case callers must fail closed and retain a non-idle
+// protocol state.
+func (h *ConnectionHandler) observeTransactionBinding() (*stdsql.Tx, bool) {
+	if h == nil {
+		return nil, true
+	}
+	if h.implicitTx != nil {
+		if h.implicitTxCtx == nil {
+			return h.implicitTx, true
+		}
+		_, tx := adapter.TryGetTxnBindingForRelease(h.implicitTxCtx)
+		return tx, true
+	}
+	if h.duckHandler == nil || h.mysqlConn == nil {
+		return nil, true
+	}
+	ctx, err := h.newProtocolSQLContext("")
+	if err != nil || ctx == nil {
+		return nil, false
+	}
+	_, tx := adapter.TryGetTxnBindingForRelease(ctx)
+	return tx, true
+}
+
+// recordTransactionResult applies the protocol-visible state transition for a
+// statement. COMMIT and ROLLBACK both leave the session idle even when their
+// finalizer reports an error: the lifecycle code removes/evicts the physical
+// transaction on such errors, and a rollback cleanup error must not advertise
+// a transaction that has already been finalized.
+func (h *ConnectionHandler) recordTransactionResult(stmt tree.Statement, err error) {
+	switch stmt.(type) {
+	case *tree.RollbackTransaction, *tree.CommitTransaction:
+		bound, known := h.observeTransactionBinding()
+		if known && bound == nil {
+			// The transaction-control executor has finalized (or evicted) the
+			// physical binding. Clear the protocol-owned marker as well so a
+			// later boundary cannot attempt to finalize a stale transaction.
+			h.clearImplicitScope()
+			h.clearPortals()
+			h.txStatus = ReadyForQueryTransactionIndicator_Idle
+			return
+		}
+		// A failed explicit control, or a control that claimed success while
+		// leaving a transaction bound, must not advertise Idle. Keep an
+		// existing failed state; otherwise transition an active block to E.
+		if !known || bound != nil {
+			h.txStatus = ReadyForQueryTransactionIndicator_FailedTransactionBlock
+		}
+	case *tree.BeginTransaction:
+		if err == nil && h.readyForQueryStatus() != ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			h.txStatus = ReadyForQueryTransactionIndicator_TransactionBlock
+			return
+		}
+		// BEGIN issued while T is already active returns 25001 but keeps the
+		// original transaction block alive. Other BEGIN failures while idle also
+		// leave the connection idle; neither case creates PostgreSQL's failed E
+		// state.
+		return
+	default:
+		if err != nil {
+			h.markTransactionError()
+		}
+	}
+}
+
+func (h *ConnectionHandler) closeBackendConn() {
+	// A client can disconnect while COPY FROM STDIN is still being fed by a
+	// loader goroutine. Abort and wait for that loader before rolling back or
+	// closing its physical owner; otherwise it can continue inserting after the
+	// rollback (or race a reused connection).
+	if h.copyFromStdinState != nil {
+		if err := h.abortCopyFromStdinState(ErrCopyAborted); err != nil && h.logger != nil {
+			h.logger.WithError(err).Error("Failed to abort COPY while closing backend connection")
+		}
+	}
+	// An extended COPY may have completed its loader but is still waiting for
+	// Sync to commit the implicit transaction. Disconnecting at that boundary
+	// must release the deferred operation/snapshot lease as well.
+	h.releasePendingCopyLease()
+	if h.duckHandler == nil || h.mysqlConn == nil {
+		return
+	}
+
+	// Resolve the binding once and retain its complete identity. A delayed close
+	// from an old protocol handler must never roll back or close a replacement
+	// transaction that reused the same logical session (or even the same
+	// physical connection).
+	ctx, err := h.newProtocolSQLContext("")
+	if err != nil {
+		if h.logger != nil {
+			h.logger.WithError(err).Error("Failed to inspect PostgreSQL transaction on close")
+		}
+		return
+	}
+	if h.implicitTxCtx != nil {
+		ctx = h.implicitTxCtx
+	}
+	expectedConn, expectedTx := adapter.TryGetTxnBindingForRelease(ctx)
+	if h.implicitTx != nil {
+		expectedConn = h.implicitTxConn
+		expectedTx = h.implicitTx
+	}
+	if expectedConn == nil {
+		return
+	}
+	currentConn, currentTx := adapter.TryGetTxnBindingForRelease(ctx)
+	if currentConn != expectedConn || currentTx != expectedTx {
+		if h.logger != nil {
+			h.logger.Warn("Skipping PostgreSQL close after transaction binding replacement")
+		}
+		return
+	}
+
+	var provider postgresRollbackOrphanCleaner
+	if catalogProvider := h.duckHandler.GetCatalogProvider(); catalogProvider != nil {
+		provider = catalogProvider
+	}
+	if expectedTx != nil {
+		var rollbackErr error
+		if h.implicitTx != nil && h.implicitScopeActive() {
+			// Keep the existing implicit finalizer semantics (including protocol
+			// state transitions); the post-finalization identity check below
+			// prevents this teardown from closing a replacement binding.
+			rollbackErr = h.finalizeImplicitPostgresTransaction(false)
+		} else {
+			rollbackErr = rollbackPostgresBinding(ctx, expectedConn, expectedTx, provider)
+		}
+		if rollbackErr != nil && h.logger != nil {
+			h.logger.WithError(rollbackErr).Error("Failed to rollback PostgreSQL transaction on close")
+		}
+	}
+
+	// A successful rollback removes the old transaction mapping. Recheck both
+	// identities before closing; if a replacement appeared, leave it untouched.
+	currentConn, currentTx = adapter.TryGetTxnBindingForRelease(ctx)
+	if currentConn != expectedConn || currentTx != nil {
+		return
+	}
+	if closeErr := adapter.CloseConnIfBinding(ctx, expectedConn, nil); closeErr != nil && h.logger != nil {
+		h.logger.WithError(closeErr).Error("Failed to close backend connection")
+	}
+}
+
+// rollbackPostgresBinding is the close-path variant of the protocol rollback
+// helper. It carries the expected transaction through the adapter finalizer so
+// a replacement cannot be selected between inspection and rollback.
+func rollbackPostgresBinding(
+	ctx *sql.Context,
+	expectedConn *stdsql.Conn,
+	expectedTx *stdsql.Tx,
+	provider postgresRollbackOrphanCleaner,
+) error {
+	if expectedTx == nil {
+		return nil
+	}
+	currentConn, currentTx := adapter.TryGetTxnBindingForRelease(ctx)
+	if currentConn != expectedConn || currentTx != expectedTx {
+		return fmt.Errorf("postgres transaction binding changed before close rollback")
+	}
+	var cleanup func(*stdsql.Conn) error
+	releaseCleanup, reservationErr := beginPostgresRollbackCleanupReservationWithError(ctx, provider, expectedTx)
+	if reservationErr == nil {
+		defer releaseCleanup()
+	} else {
+		// Keep the physical rollback path usable after a poisoned-generation
+		// admission failure; maintenance is skipped and the error is joined below.
+		releaseCleanup = nil
+	}
+	if provider != nil && reservationErr == nil {
+		cleanup = func(conn *stdsql.Conn) error {
+			base := context.WithoutCancel(ctx)
+			base = catalog.WithRollbackCleanupOwner(base, conn)
+			base = catalog.WithDuckLakeCleanupLease(base)
+			cleanupCtx := ctx.WithContext(base)
+			return cleanupPostgresRollbackOrphans(cleanupCtx, &tree.RollbackTransaction{}, provider, conn)
+		}
+	}
+	_, err := adapter.FinalizeRollbackWithCleanup(ctx, expectedTx, cleanup)
+	return errors.Join(reservationErr, err)
 }
 
 // HandleConnection handles a connection's session, reading messages, executing queries, and sending responses.
@@ -184,8 +428,12 @@ func (h *ConnectionHandler) HandleConnection() {
 				fmt.Println(returnErr.Error())
 			}
 
-			h.duckHandler.ConnectionClosed(h.mysqlConn)
+			h.closePreparedObjects()
+			// Release any transaction/connection-owned state before removing the
+			// GMS session; rollback cleanup needs the session binding to remain
+			// addressable.
 			h.closeBackendConn()
+			h.duckHandler.ConnectionClosed(h.mysqlConn)
 			if err := h.Conn().Close(); err != nil {
 				fmt.Printf("Failed to properly close connection:\n%v\n", err)
 			}
@@ -393,12 +641,7 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 					eomErr = fmt.Errorf("panic: %v", r)
 				}
 
-				if !endOfMessages && h.waitForSync {
-					if syncErr := h.discardToSync(); syncErr != nil {
-						h.logger.Error(syncErr.Error())
-					}
-				}
-				h.endOfMessages(eomErr)
+				h.handleProtocolError(eomErr, !endOfMessages && h.waitForSync)
 			}
 		}()
 	}
@@ -416,12 +659,9 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 	var stop bool
 	stop, endOfMessages, err = h.handleMessage(msg)
 	if err != nil {
-		if !endOfMessages && h.waitForSync {
-			if syncErr := h.discardToSync(); syncErr != nil {
-				fmt.Println(syncErr.Error())
-			}
+		if syncErr := h.handleProtocolError(err, !endOfMessages && h.waitForSync); syncErr != nil {
+			return false, syncErr
 		}
-		h.endOfMessages(err)
 	} else if endOfMessages {
 		h.endOfMessages(nil)
 	}
@@ -435,11 +675,131 @@ func (h *ConnectionHandler) receiveMessage() (bool, error) {
 // and a READY FOR QUERY message should be sent back to the client, so it can send the next query.
 func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMessages bool, err error) {
 	logrus.Tracef("Handling message: %T", msg)
+	// COPY FROM STDIN switches the frontend into a dedicated sub-protocol.
+	// PostgreSQL explicitly ignores Flush and Sync while the copy is still
+	// active, accepts only CopyData/CopyDone/CopyFail, and treats every other
+	// message as a protocol error. A state carrying copyErr is already a
+	// terminal server-error sentinel; its messages are consumed by the normal
+	// recovery path instead of generating a second error.
+	if state := h.copyFromStdinState; state != nil {
+		switch msg.(type) {
+		case *pgproto3.Terminate, *pgproto3.CopyData, *pgproto3.CopyDone, *pgproto3.CopyFail:
+			// Handled by the switch below (Terminate may close the connection).
+		case *pgproto3.Flush:
+			if state.copyErr != nil && !h.waitForSync {
+				// Simple-query COPY already sent its ErrorResponse/ReadyForQuery;
+				// release the terminal sentinel before accepting a new exchange.
+				h.releaseCopyLease(state)
+				h.copyFromStdinState = nil
+			}
+			return false, false, nil
+		case *pgproto3.Sync:
+			if state.copyErr == nil {
+				// Sync is ignored during healthy COPY-in. In particular, do not
+				// clear waitForSync or finalize the implicit transaction yet.
+				return false, false, nil
+			}
+			if !h.waitForSync {
+				// A simple-query error has no discard-until-Sync phase. Clear the
+				// sentinel, then let the ordinary Sync branch provide its boundary.
+				h.releaseCopyLease(state)
+				h.copyFromStdinState = nil
+			}
+		default:
+			if state.copyErr != nil {
+				// Once COPY has reported an error, the extended protocol skips
+				// all messages until Sync. discardToSync normally owns this loop;
+				// retain the same behavior for direct handler calls as well.
+				if h.waitForSync {
+					return false, false, nil
+				}
+				// Simple-query COPY already returned to the normal command loop;
+				// release the sentinel and process this message as a new exchange.
+				h.releaseCopyLease(state)
+				h.copyFromStdinState = nil
+				break
+			}
+			protocolErr := &pgconn.PgError{
+				Severity: string(ErrorResponseSeverity_Error),
+				Code:     "08P01",
+				Message:  fmt.Sprintf("unexpected message type %T during COPY FROM STDIN", msg),
+			}
+			if h.waitForSync {
+				// Keep the terminal sentinel until discardToSync consumes the
+				// client's Sync, just as a server-side CopyData failure does.
+				err = h.abortCopyLoaderState(state, protocolErr)
+				h.releaseCopyLease(state)
+				return false, false, err
+			}
+			// Simple-query COPY has no Sync recovery boundary. Abort and clear
+			// the state before returning the ErrorResponse/Ready pair.
+			err = h.abortCopyFromStdinState(protocolErr)
+			h.releaseCopyLease(state)
+			return false, true, err
+		}
+	}
 	switch message := msg.(type) {
 	case *pgproto3.Terminate:
+		if state := h.copyFromStdinState; state != nil {
+			// Terminate closes the connection without another frontend boundary;
+			// drain the loader and release its retained lease before teardown.
+			_ = h.abortCopyFromStdinState(ErrCopyAborted)
+			h.releaseCopyLease(state)
+		}
 		return true, false, nil
 	case *pgproto3.Sync:
+		// A healthy COPY-in returns early above, because PostgreSQL ignores Sync
+		// until CopyDone/CopyFail terminates the sub-protocol. This branch only
+		// handles an ordinary Sync or a terminal server-error sentinel.
 		h.waitForSync = false
+		copyAborted := false
+		var syncErr error
+		if h.copyFromStdinState != nil {
+			// A server-side COPY error is reported before the client's Sync. In
+			// that case the state is only a terminal sentinel and must be cleared
+			// without emitting a second ErrorResponse/ReadyForQuery pair. An
+			// interrupted but otherwise successful COPY still needs normal abort
+			// reporting here.
+			copyAborted = true
+			state := h.copyFromStdinState
+			if state.copyErr != nil {
+				h.releaseCopyLease(state)
+				h.copyFromStdinState = nil
+			} else {
+				// Sync is the protocol boundary for an interrupted COPY, not a
+				// client COPY FAIL. Pass no synthetic cause so a clean loader abort
+				// remains a normal boundary; only an actual cleanup failure is
+				// surfaced to the client.
+				syncErr = h.abortCopyFromStdinState(nil)
+				h.releaseCopyLease(state)
+			}
+			// COPY cancellation is a statement failure for an explicit
+			// PostgreSQL block. An implicit message-group scope is rolled back
+			// below and remains protocol-idle, so markTransactionError leaves it
+			// alone in that case.
+			h.markTransactionError()
+			// Any earlier completions belong to the same message group. The
+			// rollback below invalidates them; do not report success for work that
+			// did not commit.
+			h.clearPendingCommandCompletes()
+		}
+		if h.implicitScopeActive() {
+			// A healthy COPY returns before reaching this branch because Sync is
+			// ignored until CopyDone. For an ordinary boundary (or a terminal
+			// server-error sentinel), finalize the implicit scope normally; the
+			// latter is already marked for rollback by the COPY error path.
+			finalizeErr := h.finalizeImplicitPostgresTransaction(!copyAborted)
+			if finalizeErr != nil {
+				syncErr = errors.Join(syncErr, finalizeErr)
+			}
+		}
+		h.releasePendingCopyLease()
+		if syncErr != nil {
+			return false, true, syncErr
+		}
+		if err := h.sendPendingCommandCompletes(); err != nil {
+			return false, true, err
+		}
 		return false, true, nil
 	case *pgproto3.Query:
 		endOfMessages, err = h.handleQuery(message)
@@ -452,6 +812,11 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 		return false, false, h.handleBind(message)
 	case *pgproto3.Execute:
 		return false, false, h.handleExecute(message)
+	case *pgproto3.Flush:
+		if h.backend == nil {
+			return false, false, nil
+		}
+		return false, false, h.backend.Flush()
 	case *pgproto3.Close:
 		if message.ObjectType == 'S' {
 			h.deletePreparedStatement(message.Name)
@@ -466,7 +831,10 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 	case *pgproto3.CopyFail:
 		return h.handleCopyFail(message)
 	default:
-		return false, true, fmt.Errorf(`unhandled message "%t"`, message)
+		// Unknown messages in an extended exchange are errors until the
+		// client's Sync. Returning endOfMessages=false makes receiveMessage
+		// send ErrorResponse, consume that Sync, and emit exactly one Ready.
+		return false, false, fmt.Errorf(`unhandled message "%t"`, message)
 	}
 }
 
@@ -474,12 +842,64 @@ func (h *ConnectionHandler) handleMessage(msg pgproto3.Message) (stop, endOfMess
 // expected as part of this query, in which case the server will send a READY FOR QUERY message back to the client so
 // that it can send its next query.
 func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages bool, err error) {
+	h.pendingCommandCompletes = nil
+	h.pendingProtocolMessages = nil
+	h.deferredCommandComplete = false
+	defer func() {
+		pending := h.takePendingProtocolMessages()
+		h.deferredCommandComplete = false
+		if err != nil {
+			err = h.finishImplicitPostgresError(err)
+			return
+		}
+		// A simple Query message is one implicit transaction scope. COPY FROM
+		// STDIN is the exception: its data arrives in later protocol messages,
+		// so handleCopyDone owns the eventual commit.
+		if endOfMessages && h.implicitScopeActive() {
+			err = h.finalizeImplicitPostgresTransaction(true)
+			if err != nil {
+				return
+			}
+		}
+		for _, response := range pending {
+			if err = h.send(response); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Sensitive SQL is normally rejected before any parser or shortcut. In a
+	// failed transaction, preserve PostgreSQL's 25P02 contract even for a
+	// sensitive payload, while still keeping the lexical security gate first.
+	if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock && catalog.IsSensitiveSQL(message.String) {
+		return true, postgresFailedTransactionError()
+	}
 	if err := catalog.RejectSensitiveSQL(message.String); err != nil {
 		return true, err
 	}
 
+	statements, err := h.convertQuery(message.String)
+	if err != nil {
+		// Once a transaction is failed, even a statement that cannot be
+		// converted must be ignored rather than reaching a shortcut or the
+		// executor. Preserve the protocol-level SQLSTATE in that state.
+		if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			return true, postgresFailedTransactionError()
+		}
+		return true, err
+	}
+	if err := h.rejectFailedQueryStatements(statements); err != nil {
+		return true, err
+	}
+	// COPY FROM STDIN switches the connection into a message-driven mode: the
+	// client must send CopyData/CopyDone before any later SQL can run. Reject a
+	// trailing batch up front so no statement executes ahead of the COPY data.
+	if err := rejectCopyFromStdinTrailingStatements(statements, message.String); err != nil {
+		return true, err
+	}
 	// usql use ";" to test if the connection is alive. If we don't handle it, this will return an error. So we need to
-	// manually handle it here.
+	// manually handle it here. Keep this shortcut after the failed-transaction
+	// gate and sensitive-SQL check so it cannot bypass protocol state handling.
 	if message.String == ";" {
 		err := h.send(makeCommandComplete("", 0))
 		if err != nil {
@@ -487,47 +907,91 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 		}
 		return true, nil
 	}
-
-	handled, err := h.handledPSQLCommands(message.String)
-	if handled || err != nil {
-		return true, err
+	if len(statements) == 0 {
+		return true, h.send(&pgproto3.EmptyQueryResponse{})
 	}
 
-	// TODO: Remove this once we support `SELECT * FROM function()` syntax
-	// Github issue: https://github.com/dolthub/doltgresql/issues/464
-	handled, err = h.handledWorkbenchCommands(message.String)
-	if handled || err != nil {
-		return true, err
-	}
+	// PSQL/workbench replacements are only safe after the transaction gate has
+	// classified the original SQL. In a failed block they must never execute a
+	// replacement SELECT behind the client's rejected command.
+	if h.readyForQueryStatus() != ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+		if len(statements) == 1 {
+			// These replacements call run directly, before the normal statement
+			// loop sets its final-statement marker. Keep their completion behind
+			// the implicit message-group commit as well.
+			h.deferredCommandComplete = true
+			handled, shortcutErr := h.handledPSQLCommands(message.String)
+			h.deferredCommandComplete = false
+			if handled || shortcutErr != nil {
+				return true, shortcutErr
+			}
 
-	statements, err := h.convertQuery(message.String)
-	if err != nil {
-		return true, err
+			// TODO: Remove this once we support `SELECT * FROM function()` syntax
+			// Github issue: https://github.com/dolthub/doltgresql/issues/464
+			h.deferredCommandComplete = true
+			handled, shortcutErr = h.handledWorkbenchCommands(message.String)
+			h.deferredCommandComplete = false
+			if handled || shortcutErr != nil {
+				return true, shortcutErr
+			}
+		}
 	}
 
 	// A query message destroys the unnamed statement and the unnamed portal
 	h.deletePreparedStatement("")
 	h.deletePortal("")
 
-	for _, statement := range statements {
+	var handled bool
+	lastStatement := -1
+	for i, statement := range statements {
+		if !isEmptyConvertedStatement(statement) {
+			lastStatement = i
+		}
+	}
+	for i, statement := range statements {
 		statement.IsExtendedQuery = false
-		if err := h.rejectReadOnly(statement); err != nil {
-			return true, err
+		if gateErr := h.rejectStatementIfTransactionFailed(statement); gateErr != nil {
+			return true, gateErr
+		}
+		if statement.AST == nil && strings.TrimSpace(statement.String) == "" {
+			if err := h.send(&pgproto3.EmptyQueryResponse{}); err != nil {
+				return true, err
+			}
+			endOfMessages = true
+			continue
+		}
+		if ensureErr := h.ensureImplicitPostgresTransaction(statement); ensureErr != nil {
+			return true, ensureErr
+		}
+		if statementErr := h.rejectReadOnly(statement); statementErr != nil {
+			h.recordTransactionResult(statement.AST, statementErr)
+			return true, statementErr
 		}
 		// Certain statement types get handled directly by the handler instead of being passed to the engine
-		handled, endOfMessages, err = h.handleStatementOutsideEngine(statement)
+		var statementErr error
+		// In-place handlers such as PostgreSQL compatibility SELECT rewrites may
+		// call run themselves. Carry the same final-command deferral into those
+		// paths so an implicit commit failure cannot follow an already-sent
+		// CommandComplete.
+		h.deferredCommandComplete = i == lastStatement
+		handled, endOfMessages, statementErr = h.handleStatementOutsideEngine(statement)
+		h.deferredCommandComplete = false
 		if handled {
-			if err != nil {
-				h.logger.Warnf("Failed to handle statement %s outside engine: %v", statementLogText(statement), err)
-				return true, err
+			h.recordTransactionResult(statement.AST, statementErr)
+			if statementErr != nil {
+				h.logger.Warnf("Failed to handle statement %s outside engine: %v", statementLogText(statement), statementErr)
+				return true, statementErr
 			}
 		} else {
-			if err != nil {
-				h.logger.Warnf("Failed to handle statement %s outside engine: %v", statementLogText(statement), err)
+			if statementErr != nil {
+				h.logger.Warnf("Failed to handle statement %s outside engine: %v", statementLogText(statement), statementErr)
 			}
-			endOfMessages, err = true, h.run(statement)
-			if err != nil {
-				return true, err
+			h.deferredCommandComplete = i == lastStatement
+			endOfMessages, statementErr = true, h.run(statement)
+			h.deferredCommandComplete = false
+			h.recordTransactionResult(statement.AST, statementErr)
+			if statementErr != nil {
+				return true, statementErr
 			}
 		}
 	}
@@ -540,6 +1004,12 @@ func (h *ConnectionHandler) handleQuery(message *pgproto3.Query) (endOfMessages 
 // if no more messages are expected for this query and server should send the client a READY FOR QUERY message,
 // and any error that occurred while handling the query.
 func (h *ConnectionHandler) handleStatementOutsideEngine(statement ConvertedStatement) (handled bool, endOfMessages bool, err error) {
+	if err := h.rejectStatementIfTransactionFailed(statement); err != nil {
+		return true, true, err
+	}
+	if err := h.ensureImplicitPostgresTransaction(statement); err != nil {
+		return true, true, err
+	}
 	switch stmt := statement.AST.(type) {
 	case *tree.Deallocate:
 		// TODO: handle ALL keyword
@@ -592,8 +1062,18 @@ func (h *ConnectionHandler) handleStatementOutsideEngine(statement ConvertedStat
 }
 
 // handleParse handles a parse message, returning any error that occurs
-func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
+func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) (err error) {
 	h.waitForSync = true
+	defer func() {
+		if err != nil {
+			err = h.finishImplicitPostgresError(err)
+		}
+	}()
+	// Keep the lexical sensitive-SQL gate ahead of parser/prepared-statement
+	// handling. A failed block still reports 25P02 for such a payload.
+	if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock && catalog.IsSensitiveSQL(message.Query) {
+		return postgresFailedTransactionError()
+	}
 	if err := catalog.RejectSensitiveSQL(message.Query); err != nil {
 		return err
 	}
@@ -601,12 +1081,24 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	// TODO: "Named prepared statements must be explicitly closed before they can be redefined by another Parse message, but this is not required for the unnamed statement"
 	statements, err := h.convertQuery(message.Query)
 	if err != nil {
+		if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			return postgresFailedTransactionError()
+		}
+		return err
+	}
+	if err := h.rejectFailedQueryStatements(statements); err != nil {
 		return err
 	}
 
 	// TODO(Noy): handle multiple statements
+	if len(statements) == 0 {
+		return fmt.Errorf("cannot prepare an empty statement list")
+	}
 	statement := statements[0]
 	statement.IsExtendedQuery = true
+	if err := h.rejectStatementIfTransactionFailed(statement); err != nil {
+		return err
+	}
 	if err := h.rejectReadOnly(statement); err != nil {
 		return err
 	}
@@ -617,6 +1109,9 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 		}
 		return h.send(&pgproto3.ParseComplete{})
 	}
+	if err := h.ensureImplicitPostgresTransaction(statement); err != nil {
+		return err
+	}
 
 	handledOutsideEngine, err := shouldQueryBeHandledInPlace(h, &statement)
 	if err != nil {
@@ -625,6 +1120,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	if handledOutsideEngine {
 		h.preparedStatements[message.Name] = PreparedStatementData{
 			Statement:    statement,
+			Prepared:     false,
 			ReturnFields: nil,
 			BindVarTypes: nil,
 			Stmt:         nil,
@@ -639,7 +1135,11 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	}
 
 	if !statement.PgParsable {
-		statement.Tag = GetStatementTag(stmt)
+		if stmt != nil {
+			statement.Tag = GetStatementTag(stmt)
+		} else {
+			statement.Tag = GuessStatementTag(statement.String)
+		}
 	}
 
 	// https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
@@ -661,6 +1161,7 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 	}
 	h.preparedStatements[message.Name] = PreparedStatementData{
 		Statement:    statement,
+		Prepared:     true,
 		ReturnFields: fields,
 		BindVarTypes: bindVarTypes,
 		Stmt:         stmt,
@@ -671,23 +1172,36 @@ func (h *ConnectionHandler) handleParse(message *pgproto3.Parse) error {
 }
 
 // handleDescribe handles a Describe message, returning any error that occurs
-func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
+func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) (err error) {
+	defer func() {
+		if err != nil {
+			err = h.finishImplicitPostgresError(err)
+		}
+	}()
 	var fields []pgproto3.FieldDescription
 	var bindvarTypes []uint32
 	var tag string
 	var returnsRows bool
+	var statement ConvertedStatement
 
 	h.waitForSync = true
 	if message.ObjectType == 'S' {
 		preparedStatementData, ok := h.preparedStatements[message.Name]
 		if !ok {
+			if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+				return postgresFailedTransactionError()
+			}
 			return fmt.Errorf("prepared statement %s does not exist", message.Name)
 		}
+		if err := h.rejectStatementIfTransactionFailed(preparedStatementData.Statement); err != nil {
+			return err
+		}
+		statement = preparedStatementData.Statement
 
 		// https://www.postgresql.org/docs/current/protocol-flow.html
 		// > Note that since Bind has not yet been issued, the formats to be used for returned columns are not yet known to the backend;
 		// > the format code fields in the RowDescription message will be zeroes in this case.
-		if preparedStatementData.Stmt != nil {
+		if preparedStatementData.Prepared {
 			fields = slices.Clone(preparedStatementData.ReturnFields)
 			for i := range fields {
 				fields[i].Format = 0
@@ -704,10 +1218,20 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 	} else {
 		portalData, ok := h.portals[message.Name]
 		if !ok {
+			if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+				return postgresFailedTransactionError()
+			}
 			return fmt.Errorf("portal %s does not exist", message.Name)
 		}
+		if err := h.rejectStatementIfTransactionFailed(portalData.Statement); err != nil {
+			return err
+		}
+		statement = portalData.Statement
 
-		if portalData.Stmt != nil {
+		// Prepared PostgreSQL portals retain SQL/metadata but no raw DuckDB
+		// statement. Use the explicit lifecycle marker rather than testing Stmt,
+		// so a portal Describe still returns fields for exec/cache_describe modes.
+		if portalData.Prepared {
 			fields = portalData.Fields
 			tag = portalData.Statement.Tag
 			returnsRows = statementReturnsRows(portalData.Statement)
@@ -717,6 +1241,9 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 			return nil
 		}
 	}
+	if err := h.ensureImplicitPostgresTransaction(statement); err != nil {
+		return err
+	}
 
 	if !returnsRows {
 		returnsRows = returnsRow(tag)
@@ -725,14 +1252,25 @@ func (h *ConnectionHandler) handleDescribe(message *pgproto3.Describe) error {
 }
 
 // handleBind handles a bind message, returning any error that occurs
-func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
+func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) (err error) {
 	h.waitForSync = true
+	defer func() {
+		if err != nil {
+			err = h.finishImplicitPostgresError(err)
+		}
+	}()
 
 	// TODO: a named portal object lasts till the end of the current transaction, unless explicitly destroyed
 	//  we need to destroy the named portal as a side effect of the transaction ending
 	preparedData, ok := h.preparedStatements[message.PreparedStatement]
 	if !ok {
+		if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			return postgresFailedTransactionError()
+		}
 		return fmt.Errorf("prepared statement %s does not exist", message.PreparedStatement)
+	}
+	if err := h.rejectStatementIfTransactionFailed(preparedData.Statement); err != nil {
+		return err
 	}
 	if err := catalog.RejectSensitiveSQL(preparedData.Statement.String); err != nil {
 		return err
@@ -742,9 +1280,12 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 			return err
 		}
 	}
+	if err := h.ensureImplicitPostgresTransaction(preparedData.Statement); err != nil {
+		return err
+	}
 	logrus.Tracef("binding portal %q to prepared statement %s", message.DestinationPortal, message.PreparedStatement)
 
-	if preparedData.Stmt == nil {
+	if !preparedData.Prepared {
 		h.portals[message.DestinationPortal] = PortalData{
 			Statement:    preparedData.Statement,
 			IsEmptyQuery: strings.TrimSpace(preparedData.Statement.String) == "",
@@ -776,6 +1317,7 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 
 	h.portals[message.DestinationPortal] = PortalData{
 		Statement:         preparedData.Statement,
+		Prepared:          preparedData.Prepared,
 		Fields:            fields,
 		ResultFormatCodes: message.ResultFormatCodes,
 		Stmt:              preparedData.Stmt,
@@ -786,16 +1328,30 @@ func (h *ConnectionHandler) handleBind(message *pgproto3.Bind) error {
 }
 
 // handleExecute handles an execute message, returning any error that occurs
-func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
+func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) (err error) {
 	h.waitForSync = true
+	var statement tree.Statement
+	defer func() {
+		if err != nil {
+			err = h.finishImplicitPostgresError(err)
+		}
+		h.recordTransactionResult(statement, err)
+	}()
 
 	// TODO: implement the RowMax
 	portalData, ok := h.portals[message.Portal]
 	if !ok {
+		if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			return postgresFailedTransactionError()
+		}
 		return fmt.Errorf("portal %s does not exist", message.Portal)
 	}
 
 	query := portalData.Statement
+	statement = query.AST
+	if err := h.rejectStatementIfTransactionFailed(query); err != nil {
+		return err
+	}
 	if err := catalog.RejectSensitiveSQL(query.String); err != nil {
 		return err
 	}
@@ -804,10 +1360,16 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 			return err
 		}
 	}
+	if err := h.ensureImplicitPostgresTransaction(query); err != nil {
+		return err
+	}
+	if err := h.sendNestedBeginWarning(query.AST); err != nil {
+		return err
+	}
 	logrus.Tracef("executing portal %s with statement %s and %d bound values", message.Portal, statementLogText(query), len(portalData.Vars))
 
 	if portalData.IsEmptyQuery {
-		err := h.send(&pgproto3.NoData{})
+		err = h.send(&pgproto3.NoData{})
 		if err != nil {
 			return fmt.Errorf("error sending NoData message: %w", err)
 		}
@@ -815,9 +1377,12 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	}
 
 	// Certain statement types get handled directly by the handler instead of being passed to the engine
-	if strings.ToUpper(query.Tag) != "SELECT" || portalData.Stmt == nil {
-		handled, _, err := h.handleStatementOutsideEngine(query)
-		if handled {
+	if strings.ToUpper(query.Tag) != "SELECT" || !portalData.Prepared {
+		handled, _, outsideErr := h.handleStatementOutsideEngine(query)
+		if outsideErr != nil {
+			err = outsideErr
+		}
+		if handled || outsideErr != nil {
 			return err
 		}
 	}
@@ -826,12 +1391,17 @@ func (h *ConnectionHandler) handleExecute(message *pgproto3.Execute) error {
 	rowsAffected := int32(0)
 
 	callback := h.spoolRowsCallback(query, &rowsAffected, true)
-	err := h.duckHandler.ComExecuteBound(frontendContext(context.Background()), h.mysqlConn, portalData, callback)
+	err = h.duckHandler.ComExecuteBound(h.protocolContext(), h.mysqlConn, portalData, callback)
 	if err != nil {
 		return err
 	}
 
-	return h.send(makeCommandComplete(query.Tag, rowsAffected))
+	commandComplete := makeCommandComplete(h.protocolCommandTag(query), rowsAffected)
+	if h.shouldDeferCommandComplete() {
+		h.queueCommandComplete(commandComplete)
+		return nil
+	}
+	return h.send(commandComplete)
 }
 
 func makeCommandComplete(tag string, rows int32) *pgproto3.CommandComplete {
@@ -853,44 +1423,235 @@ func makeCommandComplete(tag string, rows int32) *pgproto3.CommandComplete {
 // messages are expected, and the server should tell the client that it is ready for the next query, and |err| contains
 // any error that occurred while processing the COPY DATA message.
 func (h *ConnectionHandler) handleCopyData(message *pgproto3.CopyData) (stop bool, endOfMessages bool, err error) {
-	helper, messages, err := h.handleCopyDataHelper(message)
-	if err != nil {
-		h.copyFromStdinState.copyErr = err
+	stop, endOfMessages, err = h.handleCopyDataHelper(message)
+	if err == nil {
+		return stop, endOfMessages, nil
 	}
-	return helper, messages, err
+
+	// A COPY DATA failure aborts the loader immediately, but retains a terminal
+	// state sentinel until CopyDone/CopyFail (or Sync) arrives. pgx sends
+	// CopyDone after it observes a server-side ErrorResponse; clearing the state
+	// here would make that protocol message look like a second, invalid COPY.
+	// The loader is still fully drained before the error is reported, so no
+	// reader goroutine can continue inserting after the transaction rollback.
+	state := h.copyFromStdinState
+	err = h.abortCopyLoaderState(state, err)
+	// The loader is fully drained before releasing its lease. Release before
+	// implicit rollback cleanup: the provider cleanup barrier waits for active
+	// logical operations, so retaining this operation while rolling back would
+	// deadlock.
+	h.releaseCopyLease(state)
+	err = h.finishImplicitPostgresError(err)
+	return stop, h.copyErrorEndOfMessages(), err
 }
 
-// handleCopyDataHelper is a helper function that should only be invoked by handleCopyData. handleCopyData wraps this
-// function so that it can capture any returned error message and store it in the saved state.
+// copyOperationContext returns the context associated with a COPY operation.
+// Production COPY states retain their setup context; the empty-context
+// fallback keeps lifecycle cleanup safe for minimal handlers used in tests.
+func (h *ConnectionHandler) copyOperationContext(state *copyFromStdinState) (*sql.Context, error) {
+	if state != nil && state.ctx != nil {
+		return state.ctx, nil
+	}
+	if h != nil && h.duckHandler != nil {
+		return h.duckHandler.NewContext(frontendContext(context.Background()), h.mysqlConn, "")
+	}
+	return sql.NewEmptyContext(), nil
+}
+
+// copyErrorEndOfMessages preserves the extended-query protocol's Sync
+// discard path. A COPY error in an extended exchange must leave
+// waitForSync=true so receiveMessage consumes the pending Sync before sending
+// ReadyForQuery; simple-query and direct lifecycle calls can finish now.
+func (h *ConnectionHandler) copyErrorEndOfMessages() bool {
+	return h == nil || !h.waitForSync
+}
+
+func (h *ConnectionHandler) copySuccessEndOfMessages() bool {
+	return h == nil || !h.waitForSync
+}
+
+// releaseCopyLease closes the state-owned COPY snapshot and releases provider
+// operation admission when no physical transaction finalizer has registered a
+// callback. A registered operation lease intentionally remains held through
+// COMMIT/ROLLBACK; the backend Session invokes its callback from the exact
+// physical finalizer.
+func (h *ConnectionHandler) releaseCopyLease(state *copyFromStdinState) {
+	if state != nil {
+		state.binding.releaseTerminal()
+	}
+}
+
+// releaseCopyOperationFallback releases only operation admission for a COPY
+// whose physical transaction could not accept a finalization callback. A
+// registered operation lease belongs to the transaction's COMMIT/ROLLBACK
+// callback and must remain held until that callback runs.
+func (h *ConnectionHandler) releaseCopyOperationFallback(state *copyFromStdinState) {
+	if state == nil {
+		return
+	}
+	lease := state.binding.lease
+	if lease == nil || !lease.OperationDeferred() {
+		state.binding.releaseOperation()
+	}
+}
+
+func (h *ConnectionHandler) releasePendingCopyLease() {
+	if h == nil || h.pendingCopyRelease == nil {
+		return
+	}
+	release := h.pendingCopyRelease
+	h.pendingCopyRelease = nil
+	release()
+}
+
+func (h *ConnectionHandler) deferCopyLeaseUntilSync(state *copyFromStdinState) {
+	if h == nil || state == nil {
+		return
+	}
+	// This fallback is used only by legacy/test sessions that cannot register a
+	// physical post-finalization callback. Keep the operation half until Sync
+	// so a successful extended COPY commits before it is released; registered
+	// leases are released by the finalizer and do not need this slot.
+	if state.binding.lease == nil || state.binding.lease.OperationDeferred() {
+		return
+	}
+	release := state.binding.releaseOperation
+	if release == nil {
+		return
+	}
+	if h.pendingCopyRelease == nil {
+		h.pendingCopyRelease = release
+		return
+	}
+	// There should normally be only one active COPY exchange per handler, but
+	// compose releases defensively if a test or pipelined path supplies both.
+	previous := h.pendingCopyRelease
+	h.pendingCopyRelease = func() {
+		previous()
+		release()
+	}
+}
+
+// abortCopyLoaderState aborts and waits for an active COPY loader without
+// changing the handler's state pointer. Keeping the state is important after a
+// server-side CopyData failure: clients commonly send CopyDone after reading
+// ErrorResponse, and that terminal message must be consumed exactly once.
+// Repeated calls are idempotent, including for custom loaders whose Abort and
+// Wait methods are not themselves idempotent.
+func (h *ConnectionHandler) abortCopyLoaderState(state *copyFromStdinState, cause error) error {
+	if state == nil {
+		return cause
+	}
+	if state.copyAborted {
+		if state.copyErr != nil {
+			return state.copyErr
+		}
+		return cause
+	}
+	if cause == nil {
+		cause = state.copyErr
+	} else if state.copyErr != nil && !errors.Is(cause, state.copyErr) {
+		cause = errors.Join(state.copyErr, cause)
+	} else if state.copyErr != nil {
+		cause = state.copyErr
+	}
+
+	var abortErr error
+	if state.dataLoader != nil {
+		ctx := state.ctx
+		if ctx == nil {
+			ctx = sql.NewEmptyContext()
+		}
+		abortErr = state.dataLoader.Abort(ctx)
+		if waiter, ok := state.dataLoader.(interface{ Wait() }); ok {
+			waiter.Wait()
+		}
+	}
+	state.copyAborted = true
+	if abortErr != nil {
+		if cause == nil {
+			cause = abortErr
+		} else if !errors.Is(cause, abortErr) {
+			cause = errors.Join(cause, abortErr)
+		}
+	}
+	state.copyErr = cause
+	return cause
+}
+
+// abortCopyFromStdinState aborts and waits for the active COPY loader, then
+// clears the connection's COPY state on every return path. The original cause
+// is retained alongside any cleanup error so callers can report both.
+func (h *ConnectionHandler) abortCopyFromStdinState(cause error) error {
+	if h == nil {
+		return cause
+	}
+	state := h.copyFromStdinState
+	if state == nil {
+		return cause
+	}
+	err := h.abortCopyLoaderState(state, cause)
+	// The state is cleared immediately after the loader has been drained. This
+	// helper is used by protocol error/close paths that may proceed directly to
+	// rollback cleanup, so release before returning to avoid blocking that
+	// cleanup on our own operation admission lease.
+	h.releaseCopyLease(state)
+	h.copyFromStdinState = nil
+	return err
+}
+
+// handleCopyDataHelper is a helper function that should only be invoked by
+// handleCopyData. The wrapper owns aborting the loader; a failed COPY retains a
+// terminal sentinel until the protocol consumes CopyDone/CopyFail or Sync.
 func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (stop bool, endOfMessages bool, err error) {
-	if h.copyFromStdinState == nil {
+	state := h.copyFromStdinState
+	if state == nil {
+		if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			return false, h.copyErrorEndOfMessages(), postgresFailedTransactionError()
+		}
 		return false, true, fmt.Errorf("COPY DATA message received without a COPY FROM STDIN operation in progress")
+	}
+	// Once a prior chunk failed, ignore any additional data until the client
+	// sends its terminal CopyDone/CopyFail. Returning nil here avoids emitting a
+	// second error/Ready pair while preserving the sentinel for that terminal
+	// message.
+	if state.copyErr != nil {
+		return false, false, nil
+	}
+	if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+		return false, h.copyErrorEndOfMessages(), postgresFailedTransactionError()
 	}
 
 	// Grab a sql.Context.
-	sqlCtx, err := h.duckHandler.NewContext(frontendContext(context.Background()), h.mysqlConn, "")
+	sqlCtx, err := h.copyOperationContext(state)
 	if err != nil {
 		return false, false, err
 	}
+	if err := state.binding.validate(sqlCtx); err != nil {
+		return false, false, err
+	}
 
-	dataLoader := h.copyFromStdinState.dataLoader
+	dataLoader := state.dataLoader
 	if dataLoader == nil {
-		copyFrom := h.copyFromStdinState.copyFromStdinNode
+		copyFrom := state.copyFromStdinNode
 		if copyFrom == nil {
 			return false, false, fmt.Errorf("no COPY FROM STDIN node found")
 		}
-		table := h.copyFromStdinState.targetTable
+		table := state.targetTable
 		if table == nil {
 			return false, true, fmt.Errorf("no target table found")
 		}
-		rawOptions := h.copyFromStdinState.rawOptions
+		rawOptions := state.rawOptions
 
 		switch copyFrom.Options.CopyFormat {
 		case CopyFormatArrow:
-			dataLoader, err = NewArrowDataLoader(
+			if err := rejectArrowCopyBinding(sqlCtx, state.binding); err != nil {
+				return false, false, err
+			}
+			dataLoader, err = newArrowDataLoaderWithBinding(
 				sqlCtx, h.duckHandler,
 				copyFrom.Table.Schema(), table, copyFrom.Columns,
-				rawOptions,
+				rawOptions, state.binding,
 			)
 		case tree.CopyFormatText:
 			// Remove `\.` from the end of the message data, if it exists
@@ -902,11 +1663,11 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 			}
 			fallthrough
 		case tree.CopyFormatCSV:
-			dataLoader, err = NewCsvDataLoader(
+			dataLoader, err = newCsvDataLoaderWithBinding(
 				sqlCtx, h.duckHandler,
 				copyFrom.Table.Schema(), table, copyFrom.Columns,
 				&copyFrom.Options,
-				rawOptions,
+				rawOptions, state.binding,
 			)
 		case tree.CopyFormatBinary:
 			err = fmt.Errorf("BINARY format is not supported for COPY FROM")
@@ -918,14 +1679,21 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 			return false, false, err
 		}
 
+		// Publish the loader before Start so a setup failure can still be
+		// aborted by handleCopyData's common cleanup path.
+		state.dataLoader = dataLoader
+		if err := state.binding.validate(sqlCtx); err != nil {
+			return false, false, err
+		}
 		ready := dataLoader.Start()
 		if err, hasErr := <-ready; hasErr {
 			return false, false, err
 		}
-
-		h.copyFromStdinState.dataLoader = dataLoader
 	}
 
+	if err := state.binding.validate(sqlCtx); err != nil {
+		return false, false, err
+	}
 	if err = dataLoader.LoadChunk(sqlCtx, message.Data); err != nil {
 		return false, false, err
 	}
@@ -940,63 +1708,155 @@ func (h *ConnectionHandler) handleCopyDataHelper(message *pgproto3.CopyData) (st
 // |endOfMessages| is true if no more COPY DATA messages are expected, and the server should tell the client that it is
 // ready for the next query, and |err| contains any error that occurred while processing the COPY DATA message.
 func (h *ConnectionHandler) handleCopyDone(_ *pgproto3.CopyDone) (stop bool, endOfMessages bool, err error) {
-	if h.copyFromStdinState == nil {
+	defer func() {
+		if err != nil {
+			err = h.finishImplicitPostgresError(err)
+		}
+	}()
+
+	state := h.copyFromStdinState
+	if state == nil {
+		if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			err = h.abortCopyFromStdinState(postgresFailedTransactionError())
+			return false, h.copyErrorEndOfMessages(), err
+		}
 		return false, true,
 			fmt.Errorf("COPY DONE message received without a COPY FROM STDIN operation in progress")
 	}
 
-	// If there was a previous error returned from processing a CopyData message, then don't return an error here
-	// and don't send endOfMessage=true, since the CopyData error already sent endOfMessage=true. If we do send
-	// endOfMessage=true here, then the client gets confused about the unexpected/extra Idle message since the
-	// server has already reported it was idle in the last message after the returned error.
-	if h.copyFromStdinState.copyErr != nil {
+	// A previous COPY DATA failure may have been observed by the protocol
+	// layer before COPY DONE arrives. The loader was already aborted by
+	// handleCopyData; consume this terminal message and clear the sentinel
+	// without sending another ErrorResponse or ReadyForQuery. This is required
+	// for clients such as pgx, which send CopyDone after seeing the server error.
+	if state.copyErr != nil {
+		h.releaseCopyLease(state)
+		h.copyFromStdinState = nil
 		return false, false, nil
 	}
-
-	dataLoader := h.copyFromStdinState.dataLoader
-	if dataLoader == nil {
-		return false, true,
-			fmt.Errorf("no data loader found for COPY FROM STDIN operation")
+	if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+		err = h.abortCopyFromStdinState(postgresFailedTransactionError())
+		return false, h.copyErrorEndOfMessages(), err
 	}
 
-	sqlCtx, err := h.duckHandler.NewContext(frontendContext(context.Background()), h.mysqlConn, "")
+	dataLoader := state.dataLoader
+	if dataLoader == nil {
+		err = h.abortCopyFromStdinState(fmt.Errorf("no data loader found for COPY FROM STDIN operation"))
+		return false, h.copyErrorEndOfMessages(), err
+	}
+
+	sqlCtx, err := h.copyOperationContext(state)
 	if err != nil {
-		return false, false, err
+		err = h.abortCopyFromStdinState(err)
+		return false, h.copyErrorEndOfMessages(), err
+	}
+	if bindingErr := state.binding.validate(sqlCtx); bindingErr != nil {
+		err = h.abortCopyFromStdinState(bindingErr)
+		return false, h.copyErrorEndOfMessages(), err
 	}
 
 	loadDataResults, err := dataLoader.Finish(sqlCtx)
 	if err != nil {
-		return false, false, err
+		err = h.abortCopyLoaderState(state, err)
+		h.releaseCopyLease(state)
+		h.copyFromStdinState = nil
+		return false, h.copyErrorEndOfMessages(), err
+	}
+	// Finish has drained the loader and its child iterator. The pool snapshot is
+	// therefore no longer needed, but a registered provider operation lease may
+	// still be protecting the surrounding physical transaction until its
+	// finalizer. Keep those two lifetimes independent.
+	state.binding.releaseSnapshot()
+	if loadDataResults == nil {
+		err = h.abortCopyLoaderState(state, fmt.Errorf("COPY FROM STDIN returned no load results"))
+		h.releaseCopyOperationFallback(state)
+		h.copyFromStdinState = nil
+		return false, h.copyErrorEndOfMessages(), err
 	}
 
 	h.copyFromStdinState = nil
+	if h.implicitScopeActive() {
+		if h.waitForSync {
+			// Extended COPY sends its completion before Sync. Keep the physical
+			// transaction's operation admission until that Sync commits the
+			// implicit transaction. The snapshot was released immediately after
+			// Finish above.
+			h.deferCopyLeaseUntilSync(state)
+		} else {
+			finalizeErr := h.finalizeImplicitPostgresTransaction(true)
+			// A finalizer callback normally releases registered operation leases.
+			// Release again unconditionally so a finalization error that evicts the
+			// transaction cannot strand a lease; postgresCopyLease is idempotent.
+			state.binding.releaseOperation()
+			if finalizeErr != nil {
+				return false, true, finalizeErr
+			}
+		}
+	} else {
+		// Explicit transactions remain open after COPY DONE, but the COPY
+		// producer/loader has completed. Only an unregistered fallback operation
+		// lease can end now; a registered lease belongs to the later physical
+		// COMMIT/ROLLBACK callback.
+		h.releaseCopyOperationFallback(state)
+	}
+	commandComplete := &pgproto3.CommandComplete{
+		CommandTag: []byte(fmt.Sprintf("COPY %d", loadDataResults.RowsLoaded)),
+	}
+	if h.shouldDeferCopyCommandComplete() {
+		// A simple Query's final COPY is held until its implicit transaction
+		// commits. Extended COPY leaves this branch false so its tag preserves
+		// the protocol ordering relative to later pipelined messages.
+		h.queueCommandComplete(commandComplete)
+		return false, false, nil
+	}
 	// We send back endOfMessage=true, since the COPY DONE message ends the COPY DATA flow and the server is ready
 	// to accept the next query now.
-	return false, true, h.send(&pgproto3.CommandComplete{
-		CommandTag: []byte(fmt.Sprintf("COPY %d", loadDataResults.RowsLoaded)),
-	})
+	return false, h.copySuccessEndOfMessages(), h.send(commandComplete)
 }
 
 // handleCopyFail handles a COPY FAIL message by aborting the in-progress COPY DATA operation.  The |stop| response
 // parameter is true if the connection handler should shut down the connection, |endOfMessages| is true if no more
 // COPY DATA messages are expected, and the server should tell the client that it is ready for the next query, and
 // |err| contains any error that occurred while processing the COPY DATA message.
-func (h *ConnectionHandler) handleCopyFail(_ *pgproto3.CopyFail) (stop bool, endOfMessages bool, err error) {
-	if h.copyFromStdinState == nil {
+func (h *ConnectionHandler) handleCopyFail(message *pgproto3.CopyFail) (stop bool, endOfMessages bool, err error) {
+	defer func() {
+		if err != nil {
+			err = h.finishImplicitPostgresError(err)
+		}
+	}()
+
+	state := h.copyFromStdinState
+	if state == nil {
+		if h.readyForQueryStatus() == ReadyForQueryTransactionIndicator_FailedTransactionBlock {
+			return false, h.copyErrorEndOfMessages(), postgresFailedTransactionError()
+		}
 		return false, true,
 			fmt.Errorf("COPY FAIL message received without a COPY FROM STDIN operation in progress")
 	}
-
-	dataLoader := h.copyFromStdinState.dataLoader
-	if dataLoader == nil {
-		return false, true,
-			fmt.Errorf("no data loader found for COPY FROM STDIN operation")
+	// A server-side COPY error has already been reported and the loader has
+	// already been drained. CopyFail is then only the client's terminal
+	// acknowledgement; consume it and clear the sentinel without producing a
+	// duplicate response.
+	if state.copyErr != nil {
+		h.releaseCopyLease(state)
+		h.copyFromStdinState = nil
+		return false, false, nil
 	}
 
-	h.copyFromStdinState = nil
-	// We send back endOfMessage=true, since the COPY FAIL message ends the COPY DATA flow and the server is ready
-	// to accept the next query now.
-	return false, true, nil
+	// COPY FAIL is itself a failed command. Preserve the client's reason when
+	// present, while retaining ErrCopyAborted for callers that need to classify
+	// an intentional cancellation.
+	cause := state.copyErr
+	if cause == nil {
+		cause = ErrCopyAborted
+	}
+	if message != nil && message.Message != "" {
+		cause = fmt.Errorf("%w: %s", cause, message.Message)
+	}
+	err = h.abortCopyFromStdinState(cause)
+	// We send back endOfMessage=true for a simple exchange; an extended query
+	// keeps waitForSync set so receiveMessage can discard the pending Sync.
+	return false, h.copyErrorEndOfMessages(), err
 }
 
 func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedStatements map[string]PreparedStatementData, query ConvertedStatement, conn net.Conn) error {
@@ -1006,7 +1866,7 @@ func (h *ConnectionHandler) deallocatePreparedStatement(name string, preparedSta
 	}
 	h.deletePreparedStatement(name)
 
-	return h.send(&pgproto3.CommandComplete{
+	return h.sendOrQueueProtocolMessage(&pgproto3.CommandComplete{
 		CommandTag: []byte(query.Tag),
 	})
 }
@@ -1015,7 +1875,13 @@ func (h *ConnectionHandler) deletePreparedStatement(name string) {
 	ps, ok := h.preparedStatements[name]
 	if ok {
 		delete(h.preparedStatements, name)
-		if ps.Closed.CompareAndSwap(false, true) {
+		if ps.Closed == nil {
+			if ps.Stmt != nil {
+				_ = ps.Stmt.Close()
+			}
+			return
+		}
+		if ps.Closed.CompareAndSwap(false, true) && ps.Stmt != nil {
 			ps.Stmt.Close()
 		}
 	}
@@ -1025,9 +1891,37 @@ func (h *ConnectionHandler) deletePortal(name string) {
 	p, ok := h.portals[name]
 	if ok {
 		delete(h.portals, name)
-		if p.Closed.CompareAndSwap(false, true) {
+		if p.Closed == nil {
+			if p.Stmt != nil {
+				_ = p.Stmt.Close()
+			}
+			return
+		}
+		if p.Closed.CompareAndSwap(false, true) && p.Stmt != nil {
 			p.Stmt.Close()
 		}
+	}
+}
+
+// clearPortals releases portals whose lifetime is bounded by the transaction
+// that created them. Prepared statement metadata is retained separately and
+// can be rebound in a later protocol cycle.
+func (h *ConnectionHandler) clearPortals() {
+	for name := range h.portals {
+		h.deletePortal(name)
+	}
+}
+
+// closePreparedObjects releases any transient raw statements left by legacy
+// or test handlers before the protocol connection is torn down. Current
+// PostgreSQL prepared plans retain SQL/metadata only, but keeping teardown
+// identity-safe makes connection replacement harmless for older entries.
+func (h *ConnectionHandler) closePreparedObjects() {
+	for name := range h.preparedStatements {
+		h.deletePreparedStatement(name)
+	}
+	for name := range h.portals {
+		h.deletePortal(name)
 	}
 }
 
@@ -1054,6 +1948,12 @@ func (h *ConnectionHandler) convertBindParameters(types []uint32, formatCodes []
 
 // run runs the given statement and sends a CommandComplete message to the client
 func (h *ConnectionHandler) run(statement ConvertedStatement) error {
+	if err := h.rejectStatementIfTransactionFailed(statement); err != nil {
+		return err
+	}
+	if err := h.ensureImplicitPostgresTransaction(statement); err != nil {
+		return err
+	}
 	if err := catalog.RejectSensitiveSQL(statement.String); err != nil {
 		return err
 	}
@@ -1061,6 +1961,9 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 		if err := catalog.RejectSensitiveSQL(auditQuery); err != nil {
 			return err
 		}
+	}
+	if err := h.sendNestedBeginWarning(statement.AST); err != nil {
+		return err
 	}
 	h.logger.Tracef("running statement %s", statementLogText(statement))
 
@@ -1099,7 +2002,7 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 
 	callback := h.spoolRowsCallback(statement, &rowsAffected, false)
 	if err := h.duckHandler.ComQuery(
-		frontendContext(context.Background()),
+		h.protocolContext(),
 		h.mysqlConn,
 		statement.String,
 		statement.QueryForAudit(),
@@ -1109,7 +2012,12 @@ func (h *ConnectionHandler) run(statement ConvertedStatement) error {
 		return fmt.Errorf("fallback statement execution failed: %w", err)
 	}
 
-	return h.send(makeCommandComplete(statement.Tag, rowsAffected))
+	commandComplete := makeCommandComplete(h.protocolCommandTag(statement), rowsAffected)
+	if h.shouldDeferCommandComplete() {
+		h.queueCommandComplete(commandComplete)
+		return nil
+	}
+	return h.send(commandComplete)
 }
 
 func (h *ConnectionHandler) rejectReadOnly(statement ConvertedStatement) error {
@@ -1170,6 +2078,23 @@ func (h *ConnectionHandler) spoolRowsCallback(statement ConvertedStatement, rows
 
 		return nil
 	}
+}
+
+// sendNestedBeginWarning mirrors PostgreSQL's behavior for BEGIN issued while
+// an explicit transaction block is already active: it is a successful no-op,
+// but emits a WARNING with SQLSTATE 25001 before the command completion.
+func (h *ConnectionHandler) sendNestedBeginWarning(statement tree.Statement) error {
+	if h == nil || h.readyForQueryStatus() != ReadyForQueryTransactionIndicator_TransactionBlock {
+		return nil
+	}
+	if _, ok := statement.(*tree.BeginTransaction); !ok {
+		return nil
+	}
+	return h.send(&pgproto3.NoticeResponse{
+		Severity: string(ErrorResponseSeverity_Warning),
+		Code:     "25001",
+		Message:  "there is already a transaction in progress",
+	})
 }
 
 // sendDescribeResponse sends a response message for a Describe message
@@ -1309,17 +2234,156 @@ func (h *ConnectionHandler) handledWorkbenchCommands(statement string) (bool, er
 	return false, nil
 }
 
+// sendReadyForQuery emits the protocol boundary after a message group. Keep
+// this separate from endOfMessages so extended-query errors can send their
+// ErrorResponse first, consume the client's Sync, and only then advertise the
+// final transaction state.
+func (h *ConnectionHandler) sendReadyForQuery() error {
+	return h.send(&pgproto3.ReadyForQuery{
+		TxStatus: byte(h.readyForQueryStatus()),
+	})
+}
+
+func (h *ConnectionHandler) queueCommandComplete(commandComplete *pgproto3.CommandComplete) {
+	if h == nil || commandComplete == nil {
+		return
+	}
+	h.pendingCommandCompletes = append(h.pendingCommandCompletes, commandComplete)
+	h.pendingProtocolMessages = append(h.pendingProtocolMessages, commandComplete)
+}
+
+// queueProtocolMessage appends an in-place response to the same ordered queue
+// used by deferred CommandComplete messages. It is intentionally private to
+// the protocol handler: callers must still decide whether a message is safe to
+// emit immediately or should be held behind an implicit commit.
+func (h *ConnectionHandler) queueProtocolMessage(message pgproto3.BackendMessage) {
+	if h == nil || message == nil {
+		return
+	}
+	h.pendingProtocolMessages = append(h.pendingProtocolMessages, message)
+}
+
+// sendOrQueueProtocolMessage keeps direct protocol handlers from advertising
+// success before the final implicit simple-query transaction has committed.
+// Extended Execute paths leave deferredCommandComplete false and retain their
+// normal response timing.
+func (h *ConnectionHandler) sendOrQueueProtocolMessage(message pgproto3.BackendMessage) error {
+	if h == nil || message == nil {
+		return nil
+	}
+	if h.shouldDeferCommandComplete() {
+		h.queueProtocolMessage(message)
+		return nil
+	}
+	return h.send(message)
+}
+
+// takePendingProtocolMessages returns the ordered queue and clears both the
+// unified queue and the legacy command-complete mirror. The fallback conversion
+// keeps direct unit tests that seed pendingCommandCompletes working.
+func (h *ConnectionHandler) takePendingProtocolMessages() []pgproto3.BackendMessage {
+	if h == nil {
+		return nil
+	}
+	if len(h.pendingProtocolMessages) == 0 && len(h.pendingCommandCompletes) > 0 {
+		pending := make([]pgproto3.BackendMessage, 0, len(h.pendingCommandCompletes))
+		for _, commandComplete := range h.pendingCommandCompletes {
+			if commandComplete != nil {
+				pending = append(pending, commandComplete)
+			}
+		}
+		h.pendingCommandCompletes = nil
+		return pending
+	}
+	pending := h.pendingProtocolMessages
+	h.pendingProtocolMessages = nil
+	h.pendingCommandCompletes = nil
+	return pending
+}
+
+func (h *ConnectionHandler) takePendingCommandCompletes() []*pgproto3.CommandComplete {
+	if h == nil || len(h.pendingCommandCompletes) == 0 {
+		return nil
+	}
+	pending := h.pendingCommandCompletes
+	h.pendingCommandCompletes = nil
+	return pending
+}
+
+func (h *ConnectionHandler) clearPendingCommandCompletes() {
+	if h != nil {
+		h.pendingCommandCompletes = nil
+		h.pendingProtocolMessages = nil
+	}
+}
+
+func (h *ConnectionHandler) shouldDeferCommandComplete() bool {
+	// Ordinary extended Execute messages must expose their completion as soon
+	// as the statement finishes. The client may be waiting on that tag before it
+	// sends or consumes the next pipelined Execute. Only a simple-query's final
+	// statement marks deferredCommandComplete; COPY uses the specialized helper
+	// below because its completion is produced by a later protocol message.
+	return h != nil && h.deferredCommandComplete
+}
+
+// shouldDeferCopyCommandComplete preserves the simple-query final-statement
+// deferral used to keep a completion tag behind an implicit commit. Extended
+// COPY must not be deferred: PostgreSQL sends CommandComplete immediately
+// after CopyDone, before any later pipelined Parse/Bind/Execute or Sync. COPY
+// FROM/TO can finish in a later handler, but the simple-query marker remains
+// authoritative for the protocol mode that opened it.
+func (h *ConnectionHandler) shouldDeferCopyCommandComplete() bool {
+	return h != nil && h.deferredCommandComplete
+}
+
+// sendPendingCommandCompletes emits delayed tags only after the surrounding
+// extended-query transaction has finalized successfully. Callers clear the
+// queue on any finalization error, so a failed group cannot report success.
+func (h *ConnectionHandler) sendPendingCommandCompletes() error {
+	for _, response := range h.takePendingProtocolMessages() {
+		if err := h.send(response); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// handleProtocolError applies the transaction error policy and completes an
+// extended protocol exchange. PostgreSQL sends ErrorResponse immediately and
+// ignores messages until Sync; waiting for Sync before sending the error can
+// deadlock clients that send Sync only after observing the error.
+func (h *ConnectionHandler) handleProtocolError(err error, waitForSync bool) error {
+	if err == nil {
+		return nil
+	}
+	err = h.finishImplicitPostgresError(err)
+	// Any delayed completion belongs to the failed message group and must not
+	// be emitted after its ErrorResponse/ReadyForQuery boundary.
+	h.clearPendingCommandCompletes()
+	if waitForSync && h.waitForSync {
+		h.sendError(err)
+		if syncErr := h.discardToSync(); syncErr != nil {
+			return syncErr
+		}
+		return h.sendReadyForQuery()
+	}
+	h.endOfMessages(err)
+	return nil
+}
+
 // endOfMessages should be called from HandleConnection or a function within HandleConnection. This represents the end
 // of the message slice, which may occur naturally (all relevant response messages have been sent) or on error. Once
 // endOfMessages has been called, no further messages should be sent, and the connection loop should wait for the next
 // query. A nil error should be provided if this is being called naturally.
 func (h *ConnectionHandler) endOfMessages(err error) {
 	if err != nil {
+		// Keep the transaction indicator in sync before sending the error and
+		// trailing ReadyForQuery. This also covers parse/bind/protocol errors
+		// that do not have a ConvertedStatement available at this layer.
+		h.markTransactionError()
 		h.sendError(err)
 	}
-	if sendErr := h.send(&pgproto3.ReadyForQuery{
-		TxStatus: byte(ReadyForQueryTransactionIndicator_Idle),
-	}); sendErr != nil {
+	if sendErr := h.sendReadyForQuery(); sendErr != nil {
 		// We panic here for the same reason as above.
 		panic(sendErr)
 	}
@@ -1328,10 +2392,22 @@ func (h *ConnectionHandler) endOfMessages(err error) {
 // sendError sends the given error to the client. This should generally never be called directly.
 func (h *ConnectionHandler) sendError(err error) {
 	fmt.Println(err.Error())
+	severity := string(ErrorResponseSeverity_Error)
+	code := "XX000" // internal_error for now
+	message := err.Error()
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		severity = pgErr.Severity
+		if severity == "" {
+			severity = string(ErrorResponseSeverity_Error)
+		}
+		code = pgErr.Code
+		message = pgErr.Message
+	}
 	if sendErr := h.send(&pgproto3.ErrorResponse{
-		Severity: string(ErrorResponseSeverity_Error),
-		Code:     "XX000", // internal_error for now
-		Message:  err.Error(),
+		Severity: severity,
+		Code:     code,
+		Message:  message,
 	}); sendErr != nil {
 		// If we're unable to send anything to the connection, then there's something wrong with the connection and
 		// we should terminate it. This will be caught in HandleConnection's defer block.
@@ -1417,9 +2493,24 @@ func (h *ConnectionHandler) convertQuery(query string, modifiers ...QueryModifie
 
 // discardAll handles the DISCARD ALL command
 func (h *ConnectionHandler) discardAll(query ConvertedStatement) error {
+	// DISCARD ALL resets the physical session. PostgreSQL forbids it while a
+	// transaction block is active; closing the pooled connection here would
+	// otherwise roll back (or replace) the transaction while leaving the wire
+	// status at T. The same guard covers an implicit simple-query scope and a
+	// promoted BEGIN scope.
+	if h != nil {
+		status := h.readyForQueryStatus()
+		if h.implicitTx != nil || status == ReadyForQueryTransactionIndicator_TransactionBlock {
+			return &pgconn.PgError{
+				Severity: "ERROR",
+				Code:     "25001",
+				Message:  "DISCARD ALL cannot run inside a transaction block",
+			}
+		}
+	}
 	h.closeBackendConn()
 
-	return h.send(&pgproto3.CommandComplete{
+	return h.sendOrQueueProtocolMessage(&pgproto3.CommandComplete{
 		CommandTag: []byte(query.Tag),
 	})
 }
@@ -1431,6 +2522,9 @@ func (h *ConnectionHandler) handleCopyFromStdinQuery(
 	query ConvertedStatement, copyFrom *tree.CopyFrom,
 	rawOptions string, // For non-PG-parseable COPY FROM
 ) error {
+	if err := h.rejectStatementIfTransactionFailed(query); err != nil {
+		return err
+	}
 	if err := catalog.RejectSensitiveSQL(query.String); err != nil {
 		return err
 	}
@@ -1444,16 +2538,34 @@ func (h *ConnectionHandler) handleCopyFromStdinQuery(
 		return err
 	}
 	sqlCtx.SetLogger(sqlCtx.GetLogger().WithField("query", catalog.RedactSensitiveSQL(query.QueryForAudit())))
+	if copyFrom.Options.CopyFormat == CopyFormatArrow {
+		if err := rejectArrowCopyGMSInTransaction(sqlCtx); err != nil {
+			return err
+		}
+	}
 
 	table, err := ValidateCopyFrom(copyFrom, sqlCtx)
 	if err != nil {
 		return err
 	}
+	binding, err := capturePostgresCopyBindingWithHandler(sqlCtx, h.duckHandler, copyFrom)
+	if err != nil {
+		return err
+	}
+	if copyFrom.Options.CopyFormat == CopyFormatArrow {
+		if err := rejectArrowCopyBinding(sqlCtx, binding); err != nil {
+			binding.releaseLease()
+			return err
+		}
+	}
 
 	h.copyFromStdinState = &copyFromStdinState{
-		copyFromStdinNode: copyFrom,
-		targetTable:       table,
-		rawOptions:        rawOptions,
+		ctx:                  sqlCtx,
+		copyFromStdinNode:    copyFrom,
+		targetTable:          table,
+		rawOptions:           rawOptions,
+		binding:              binding,
+		deferCommandComplete: h.deferredCommandComplete,
 	}
 
 	var format byte
@@ -1464,21 +2576,113 @@ func (h *ConnectionHandler) handleCopyFromStdinQuery(
 		format = 1 // binary format
 	}
 
-	return h.send(&pgproto3.CopyInResponse{
+	if err := h.send(&pgproto3.CopyInResponse{
 		OverallFormat: format,
-	})
+	}); err != nil {
+		// The client never entered COPY mode, so no later terminal message can
+		// release this retained snapshot. Release it on the setup failure and
+		// clear the state before returning the wire error.
+		binding.releaseLease()
+		h.copyFromStdinState = nil
+		return err
+	}
+	return nil
 }
 
 // DiscardToSync discards all messages in the buffer until a Sync has been reached. If a Sync was never sent, then this
 // may cause the connection to lock until the client send a Sync, as their request structure was malformed.
+//
+// A receive failure is terminal for the current exchange. It cannot be treated
+// like a normal loop return: an active COPY loader may still own a worker and a
+// pool snapshot, while an implicit protocol transaction may still need its
+// rollback callback to release the operation lease. Keep the receive error as
+// the primary cause, but finish all local lifecycle work before returning it.
+func (h *ConnectionHandler) cleanupDiscardToSyncReceiveError(receiveErr error) error {
+	if h == nil {
+		return receiveErr
+	}
+
+	// There will be no later Sync after EOF/decode failure. Clear this marker
+	// up front so a teardown/recovery caller cannot leave the handler in a stale
+	// extended-exchange state.
+	h.waitForSync = false
+	state := h.copyFromStdinState
+	var cleanupErr error
+	if state != nil {
+		// Passing a nil cause keeps a successful abort from manufacturing a
+		// second error; Abort/Wait errors are still returned by the helper.
+		cleanupErr = h.abortCopyFromStdinState(nil)
+	}
+
+	// Completions from the interrupted group must never be emitted after its
+	// receive boundary. A completed extended COPY can also have a lease held
+	// until Sync; release it before entering rollback so cleanup cannot wait on
+	// its own operation admission.
+	h.clearPendingCommandCompletes()
+	h.releasePendingCopyLease()
+
+	var rollbackErr error
+	if h.implicitScopeActive() {
+		rollbackErr = h.finalizeImplicitPostgresTransaction(false)
+		// A registered physical callback normally releases this half during the
+		// finalizer. Keep the defensive idempotent release used by CopyDone so a
+		// failed/evicted finalizer cannot strand the lease.
+		if state != nil {
+			state.binding.releaseOperation()
+		}
+	} else {
+		// Explicit transaction blocks remain owned by their physical finalizer;
+		// record the protocol failure without claiming that the transaction was
+		// rolled back here.
+		h.markTransactionError()
+	}
+
+	return errors.Join(receiveErr, cleanupErr, rollbackErr)
+}
+
 func (h *ConnectionHandler) discardToSync() error {
 	for {
 		message, err := h.backend.Receive()
 		if err != nil {
-			return err
+			return h.cleanupDiscardToSyncReceiveError(err)
 		}
 
-		if _, ok := message.(*pgproto3.Sync); ok {
+		switch message.(type) {
+		case *pgproto3.CopyDone, *pgproto3.CopyFail:
+			// COPY errors are sent before the client terminal message. Consume
+			// that message while discarding the extended exchange, then let Sync
+			// provide the single ReadyForQuery boundary.
+			if state := h.copyFromStdinState; state != nil && state.copyErr != nil {
+				h.releaseCopyLease(state)
+				h.copyFromStdinState = nil
+			}
+		case *pgproto3.Sync:
+			h.waitForSync = false
+			var syncErr error
+			if state := h.copyFromStdinState; state != nil {
+				if state.copyErr != nil {
+					// A terminal COPY sentinel is already aborted and only needs
+					// to be released at the protocol boundary.
+					h.releaseCopyLease(state)
+					h.copyFromStdinState = nil
+				} else {
+					syncErr = h.abortCopyFromStdinState(nil)
+				}
+				h.markTransactionError()
+				h.clearPendingCommandCompletes()
+			}
+			// Error paths normally roll back before entering this loop. Keep the
+			// boundary self-contained for callers that invoke discardToSync
+			// directly or for a panic recovered outside a statement handler.
+			if h.implicitScopeActive() {
+				if rollbackErr := h.finalizeImplicitPostgresTransaction(false); rollbackErr != nil {
+					syncErr = errors.Join(syncErr, rollbackErr)
+				}
+			}
+			h.releasePendingCopyLease()
+			if syncErr != nil {
+				return syncErr
+			}
 			return nil
 		}
 	}
@@ -1500,7 +2704,21 @@ func returnsRow(tag string) bool {
 	}
 }
 
+// copyToStdoutCancellationError preserves a concrete error recorded by the
+// asynchronous COPY reader/producer when it cancels the protocol context.
+// Keeping this selection in one place prevents the stale setup error from
+// masking the failure that actually reached the client-facing path.
+func copyToStdoutCancellationError(ctxErr error, globalErr *atomic.Pointer[error]) error {
+	if errPtr := globalErr.Load(); errPtr != nil {
+		return errors.Join(ctxErr, *errPtr)
+	}
+	return ctxErr
+}
+
 func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo *tree.CopyTo, subquery string, format tree.CopyFormat, rawOptions string) error {
+	if err := h.rejectStatementIfTransactionFailed(query); err != nil {
+		return err
+	}
 	if err := catalog.RejectSensitiveSQL(query.String); err != nil {
 		return err
 	}
@@ -1514,6 +2732,11 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 		return err
 	}
 	ctx.SetLogger(ctx.GetLogger().WithField("query", catalog.RedactSensitiveSQL(query.QueryForAudit())))
+	if format == CopyFormatArrow {
+		if err := rejectArrowCopyGMSInTransaction(ctx); err != nil {
+			return err
+		}
+	}
 
 	// Create cancelable context
 	childCtx, cancel := context.WithCancel(ctx)
@@ -1687,10 +2910,10 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 	select {
 	case <-ctx.Done(): // Context is canceled
 		<-done
-		if errPtr := globalErr.Load(); errPtr != nil {
-			return errors.Join(ctx.Err(), err)
-		}
-		return ctx.Err()
+		// The reader/producer goroutine may have canceled the context after
+		// recording a concrete COPY or wire error. Preserve that error rather
+		// than returning the stale setup error from writer.Start.
+		return copyToStdoutCancellationError(ctx.Err(), &globalErr)
 	case result := <-ch:
 		if blocked.Load() {
 			// If the pipe is still opened for reading but the writer has exited,
@@ -1720,8 +2943,13 @@ func (h *ConnectionHandler) handleCopyToStdout(query ConvertedStatement, copyTo 
 
 		// Send CommandComplete with the number of rows copied
 		ctx.GetLogger().Debugf("sending CommandComplete to the client")
-		return h.send(&pgproto3.CommandComplete{
+		commandComplete := &pgproto3.CommandComplete{
 			CommandTag: []byte(fmt.Sprintf("COPY %d", result.RowCount)),
-		})
+		}
+		if h.shouldDeferCopyCommandComplete() {
+			h.queueCommandComplete(commandComplete)
+			return nil
+		}
+		return h.send(commandComplete)
 	}
 }

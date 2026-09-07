@@ -28,6 +28,7 @@ import (
 	"github.com/apecloud/myduckserver/binlog"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/delta"
+	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/apecloud/myduckserver/pgtypes"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
@@ -220,6 +221,15 @@ func (state *replicationState) reset(ctx *sql.Context, slotName string, lsn pglo
 // StartReplication starts the replication process for the given slot name. This function blocks until replication is
 // stopped via the Stop method, or an error occurs.
 func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName string) error {
+	if sqlCtx == nil {
+		return fmt.Errorf("replication context is nil")
+	}
+	// Replication is a long-lived service operation. Keep it independent from
+	// the request that created or enabled the subscription, and explicitly mark
+	// its origin so rollback/finalization paths can never be mistaken for a
+	// frontend transaction that is eligible for DuckLake orphan cleanup.
+	replicationBase := mycontext.WithQueryOrigin(context.WithoutCancel(sqlCtx), mycontext.PostgresReplicationQueryOrigin)
+	sqlCtx = sqlCtx.WithContext(replicationBase)
 	sqlCtx.SetLogger(r.logger)
 	standbyMessageTimeout := 10 * time.Second
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
@@ -450,13 +460,12 @@ func (r *LogicalReplicator) StartReplication(sqlCtx *sql.Context, slotName strin
 }
 
 func (r *LogicalReplicator) rollback(ctx *sql.Context) error {
-	defer adapter.CloseTxn(ctx)
-	txn := adapter.TryGetTxn(ctx)
+	_, txn := adapter.TryGetTxnBindingForRelease(ctx)
 	if txn == nil {
 		return nil
 	}
-	err := txn.Rollback()
-	if err != nil && !strings.Contains(err.Error(), "no transaction is active") {
+	_, _, err := adapter.FinalizeRollback(ctx, txn)
+	if err != nil && !adapter.IsTransactionInactiveError(err) {
 		r.logger.Debugf("Failed to roll back transaction: %v", err)
 		return err
 	}
@@ -700,13 +709,29 @@ func (r *LogicalReplicator) processMessage(
 
 	switch logicalMsg := logicalMsg.(type) {
 	case *pglogrepl.RelationMessageV2:
-		_, exists := state.relations[logicalMsg.RelationID]
-		if exists {
+		previous, exists := state.relations[logicalMsg.RelationID]
+		// PostgreSQL repeats a relation message at the start of every
+		// transaction, even when the schema did not change.  Only flush an
+		// existing batch when the relation metadata actually changed.
+		// Committing an empty transaction here would close the transaction
+		// opened by the preceding BeginMessage; the following row messages
+		// would then be buffered without a physical transaction and could
+		// never advance the replication LSN.
+		if exists && relationMessageChanged(previous, logicalMsg) && state.ongoingBatchTxn && state.dirtyTxn {
 			// This means schema changes have occurred, so we need to
 			// commit any buffered ongoing batch transactions.
 			err := r.commitOngoingTxn(state, delta.DDLStmtFlushReason)
 			if err != nil {
 				return false, err
+			}
+			// The Relation message is emitted inside the source transaction.
+			// Re-open the local transaction after flushing a previous batch so
+			// row messages that follow this relation remain transactional.
+			if state.processMessages {
+				if _, err := adapter.GetCatalogTxn(state.replicaCtx, nil); err != nil {
+					return false, err
+				}
+				state.ongoingBatchTxn = true
 			}
 		}
 
@@ -866,12 +891,22 @@ func (r *LogicalReplicator) processMessage(
 
 		r.logger.Debugf("Truncate message: xid %d\n", logicalMsg.Xid)
 
-		// Flush the delta buffer first
-		r.flushDeltaBuffer(state, nil, nil, delta.DMLStmtFlushReason)
+		// Flush the delta buffer first. A truncate can arrive after row changes
+		// have been buffered in the current transaction, so use one lifecycle
+		// snapshot for the physical connection/transaction and surface any flush
+		// failure instead of continuing with a partially applied stream.
+		conn, tx, release, err := adapter.GetCatalogTxnExecutionSnapshotWithLease(state.replicaCtx, nil)
+		if err != nil {
+			return false, err
+		}
+		defer release()
+		if err := r.flushDeltaBuffer(state, conn, tx, delta.DMLStmtFlushReason); err != nil {
+			return false, err
+		}
 
 		// Truncate the tables
 		for _, relationID := range logicalMsg.RelationIDs {
-			if err := r.truncate(state, relationID); err != nil {
+			if err := r.truncate(state, tx, relationID); err != nil {
 				return false, err
 			}
 		}
@@ -901,6 +936,40 @@ func (r *LogicalReplicator) processMessage(
 	}
 
 	return false, nil
+}
+
+// relationMessageChanged reports whether a Relation message describes a
+// different relation schema. PostgreSQL sends an otherwise identical Relation
+// message at the start of each transaction, so treating every repeated message
+// as a DDL boundary would prematurely commit the local transaction.
+func relationMessageChanged(previous, current *pglogrepl.RelationMessageV2) bool {
+	if previous == nil || current == nil {
+		return true
+	}
+	if previous.RelationID != current.RelationID ||
+		previous.Namespace != current.Namespace ||
+		previous.RelationName != current.RelationName ||
+		previous.ReplicaIdentity != current.ReplicaIdentity ||
+		previous.ColumnNum != current.ColumnNum ||
+		len(previous.Columns) != len(current.Columns) {
+		return true
+	}
+	for i, oldColumn := range previous.Columns {
+		newColumn := current.Columns[i]
+		if oldColumn == nil || newColumn == nil {
+			if oldColumn != newColumn {
+				return true
+			}
+			continue
+		}
+		if oldColumn.Flags != newColumn.Flags ||
+			oldColumn.Name != newColumn.Name ||
+			oldColumn.DataType != newColumn.DataType ||
+			oldColumn.TypeModifier != newColumn.TypeModifier {
+			return true
+		}
+	}
+	return false
 }
 
 // whereClause returns a WHERE clause string with the contents of the builder if it's non-empty, or the empty
@@ -981,19 +1050,36 @@ func (r *LogicalReplicator) commitOngoingTxnIfClean(state *replicationState, rea
 	return nil
 }
 
-// commitOngoingTxn commits the current transaction
-func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReason delta.FlushReason) error {
-	conn, err := adapter.GetCatalogConn(state.replicaCtx)
+// commitOngoingTxn commits the current transaction.
+func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReason delta.FlushReason) (err error) {
+	// Acquire the physical connection and transaction from one lifecycle
+	// snapshot. A separate GetCatalogConn followed by TryGetTxn can pair a
+	// transaction with a replacement connection while a session is being
+	// finalized or recreated.
+	_, conn, tx, release, err := adapter.GetCatalogExecutionSnapshotWithLease(state.replicaCtx)
 	if err != nil {
 		return err
 	}
-	tx := adapter.TryGetTxn(state.replicaCtx)
+	defer release()
 	if tx == nil {
 		return nil
 	}
 
-	defer tx.Rollback()
-	defer adapter.CloseTxn(state.replicaCtx)
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		_, _, rollbackErr := adapter.FinalizeRollback(state.replicaCtx, tx)
+		if rollbackErr != nil && !adapter.IsTransactionInactiveError(rollbackErr) {
+			rollbackErr = fmt.Errorf("failed to roll back replication transaction: %w", rollbackErr)
+			if err == nil {
+				err = rollbackErr
+			} else {
+				err = errors.Join(err, rollbackErr)
+			}
+		}
+	}()
 
 	// Flush the delta buffer if too large
 	err = r.flushDeltaBuffer(state, conn, tx, flushReason)
@@ -1002,14 +1088,15 @@ func (r *LogicalReplicator) commitOngoingTxn(state *replicationState, flushReaso
 	}
 
 	r.logger.Debugf("Writing LSN %s\n", state.lastCommitLSN)
-	if err = UpdateSubscriptionLsn(state.replicaCtx, state.lastCommitLSN.String(), r.subscription); err != nil {
+	if err = UpdateSubscriptionLsnInTxn(state.replicaCtx, tx, state.lastCommitLSN.String(), r.subscription); err != nil {
 		return err
 	}
 
 	// Commit the transaction
-	if err := tx.Commit(); err != nil {
+	if err = adapter.FinalizeCommit(state.replicaCtx, tx); err != nil {
 		return err
 	}
+	committed = true
 
 	// Reset transaction state
 	state.ongoingBatchTxn = false
@@ -1105,14 +1192,14 @@ func (r *LogicalReplicator) append(state *replicationState, relationID uint32, t
 	return nil
 }
 
-func (r *LogicalReplicator) truncate(state *replicationState, relationID uint32) error {
+func (r *LogicalReplicator) truncate(state *replicationState, tx *stdsql.Tx, relationID uint32) error {
 	rel, ok := state.relations[relationID]
 	if !ok {
 		return fmt.Errorf("unknown relation ID %d", relationID)
 	}
 
 	r.logger.Debugf("Truncating table %s.%s\n", rel.Namespace, rel.RelationName)
-	_, err := adapter.ExecInTxn(state.replicaCtx, `TRUNCATE `+catalog.ConnectIdentifiersANSI(rel.Namespace, rel.RelationName))
+	_, err := tx.ExecContext(state.replicaCtx, `TRUNCATE `+catalog.ConnectIdentifiersANSI(rel.Namespace, rel.RelationName))
 	return err
 }
 

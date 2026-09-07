@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	stdsql "database/sql"
 	"errors"
 	"fmt"
 
@@ -41,8 +42,34 @@ type MyHandler struct {
 }
 
 func (h *MyHandler) ConnectionClosed(c *mysql.Conn) {
-	h.provider.Pool().CloseConn(c.ConnectionID)
-	h.Handler.ConnectionClosed(c)
+	var expectedConn *stdsql.Conn
+	var expectedTx *stdsql.Tx
+	if h != nil && h.provider != nil && h.provider.Pool() != nil && c != nil {
+		expectedConn, expectedTx = h.provider.Pool().GetTxnBindingForRelease(c.ConnectionID)
+	}
+	// Let GMS remove the session first. Its LifecycleAwareSession callback
+	// (SessionEnd) must still see the generic pool connection while it rolls back
+	// a logical autocommit transaction and performs any same-connection cleanup;
+	// closing the pool entry first could make that cleanup acquire and strand a
+	// replacement connection. The final pool close then retires the exact entry.
+	if h != nil && h.Handler != nil {
+		h.Handler.ConnectionClosed(c)
+	}
+	if h != nil && h.provider != nil && h.provider.Pool() != nil && c != nil && expectedConn != nil {
+		pool := h.provider.Pool()
+		if expectedTx != nil {
+			// First honor the complete pair. If SessionEnd already removed the old
+			// transaction, the nil-transaction binding close below may retire the
+			// generic connection, but only if it is still idle and identical.
+			_ = pool.CloseConnIfBinding(c.ConnectionID, expectedConn, expectedTx)
+			_ = pool.CloseConnIfBinding(c.ConnectionID, expectedConn, nil)
+		} else {
+			// The nil transaction is part of the identity check. A replacement
+			// transaction admitted after the initial snapshot therefore blocks this
+			// close instead of being rolled back by an unconditional connection close.
+			_ = pool.CloseConnIfBinding(c.ConnectionID, expectedConn, nil)
+		}
+	}
 }
 
 func (h *MyHandler) ComInitDB(c *mysql.Conn, schemaName string) error {

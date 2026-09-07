@@ -14,6 +14,7 @@ import (
 	"github.com/apecloud/myduckserver/pgserver/pgconfig"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
@@ -107,13 +108,14 @@ func (h *ConnectionHandler) setPgSessionVar(name string, value any, useDefault b
 	if err != nil {
 		return false, fmt.Errorf("error: %s variable was not found, err: %w", name, err)
 	}
-	// Sent CommandComplete message
-	err = h.send(makeCommandComplete(tag, 0))
+	// Keep both responses behind a final implicit simple-query commit. Sending
+	// either one directly could expose a successful SET/RESET before a prior
+	// statement's transaction fails during the protocol boundary.
+	err = h.sendOrQueueProtocolMessage(makeCommandComplete(tag, 0))
 	if err != nil {
 		return true, err
 	}
-	// Sent ParameterStatus message
-	if err := h.send(&pgproto3.ParameterStatus{
+	if err := h.sendOrQueueProtocolMessage(&pgproto3.ParameterStatus{
 		Name:  name,
 		Value: fmt.Sprintf("%v", v),
 	}); err != nil {
@@ -329,13 +331,14 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 					Tag:            "SELECT",
 				})
 			}
-			// TODO(sean): Implement SHOW ALL
-			_ = h.send(&pgproto3.ErrorResponse{
-				Severity: string(ErrorResponseSeverity_Error),
+			// TODO(sean): Implement SHOW ALL. Return the error to the protocol
+			// layer so an active transaction enters PostgreSQL's failed state;
+			// sending it here would make the handler report a false success.
+			return true, &pgconn.PgError{
+				Severity: "ERROR",
 				Code:     "0A000",
 				Message:  "Statement 'SHOW ALL' is not supported yet.",
-			})
-			return true, nil
+			}
 		},
 	},
 	"SET": {
@@ -434,13 +437,13 @@ var inPlaceHandlers = map[string]InPlaceHandler{
 			if !resetVar.ResetAll {
 				return h.setPgSessionVar(key, nil, true, "RESET")
 			}
-			// TODO(sean): Implement RESET ALL
-			_ = h.send(&pgproto3.ErrorResponse{
-				Severity: string(ErrorResponseSeverity_Error),
+			// TODO(sean): Implement RESET ALL. Return the error to the protocol
+			// layer so the transaction state transition is not lost.
+			return true, &pgconn.PgError{
+				Severity: "ERROR",
 				Code:     "0A000",
 				Message:  "Statement 'RESET ALL' is not supported yet.",
-			})
-			return true, nil
+			}
 		},
 	},
 }

@@ -72,6 +72,25 @@ func TestInsertReturningWireProtocols(t *testing.T) {
 			4, "postgres prepared")
 	})
 
+	t.Run("postgres prepared rollback", func(t *testing.T) {
+		conn, err := pgx.Connect(ctx, pgURL)
+		require.NoError(t, err)
+		defer conn.Close(ctx)
+
+		tx, err := conn.Begin(ctx)
+		require.NoError(t, err)
+		_, err = tx.Prepare(ctx, "returning_wire_tx_prepared", "INSERT INTO returning_wire.returning_rows VALUES ($1, $2) RETURNING id, name")
+		require.NoError(t, err)
+		requireReturningWireRow(t,
+			tx.QueryRow(ctx, "returning_wire_tx_prepared", int32(5), "postgres prepared rollback"),
+			5, "postgres prepared rollback")
+		require.NoError(t, tx.Rollback(ctx))
+
+		var count int
+		require.NoError(t, conn.QueryRow(ctx, "SELECT count(*) FROM returning_wire.returning_rows").Scan(&count))
+		require.Equal(t, 3, count)
+	})
+
 	var count int
 	err = testEnv.MyDuckServer.QueryRow("SELECT count(*) FROM returning_rows").Scan(&count)
 	require.NoError(t, err)

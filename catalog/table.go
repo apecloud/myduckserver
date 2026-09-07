@@ -32,6 +32,26 @@ type ExtraTableInfo struct {
 	Replicated bool
 	Sequence   string
 	Checks     []sql.CheckDefinition
+	// Storage records the table's durable storage class. An empty value is
+	// treated as local for metadata written before table-level storage
+	// selection existed; newly-created tables always write the explicit value.
+	Storage TableStorageKind `json:"storage,omitempty"`
+}
+
+// StorageKind returns the effective storage class for this metadata. Missing
+// storage metadata is the backwards-compatible local-table behavior.
+func (info ExtraTableInfo) StorageKind() TableStorageKind {
+	if info.Storage == TableStorageObject {
+		return TableStorageObject
+	}
+	return TableStorageLocal
+}
+
+func (info *ExtraTableInfo) normalizeStorage() {
+	if info == nil {
+		return
+	}
+	info.Storage = info.StorageKind()
 }
 
 type ColumnInfo struct {
@@ -75,6 +95,10 @@ func NewTable(db *Database, name string, hasPrimaryKey bool) *Table {
 }
 
 func (t *Table) withComment(comment *Comment[ExtraTableInfo]) *Table {
+	if comment == nil {
+		comment = NewComment[ExtraTableInfo]("")
+	}
+	comment.Meta.normalizeStorage()
 	t.comment = comment
 	return t
 }
@@ -84,7 +108,18 @@ func (t *Table) withSchema(ctx *sql.Context) error {
 	if err != nil {
 		return err
 	}
+	return t.applySchema(schema)
+}
 
+func (t *Table) withSchemaWithExecutor(ctx *sql.Context, execer adapter.SQLExecutor) error {
+	schema, err := getPKSchemaWithExecutor(ctx, execer, t.db.catalog, t.db.name, t.name)
+	if err != nil {
+		return err
+	}
+	return t.applySchema(schema)
+}
+
+func (t *Table) applySchema(schema sql.PrimaryKeySchema) error {
 	t.schema = schema
 
 	// https://github.com/apecloud/myduckserver/issues/272
@@ -100,7 +135,12 @@ func (t *Table) withSchema(ctx *sql.Context) error {
 }
 
 func (t *Table) ExtraTableInfo() ExtraTableInfo {
-	return t.comment.Meta
+	if t.comment == nil {
+		return ExtraTableInfo{Storage: TableStorageLocal}
+	}
+	info := t.comment.Meta
+	info.normalizeStorage()
+	return info
 }
 
 func (t *Table) HasPrimaryKey() bool {
@@ -135,8 +175,17 @@ func (t *Table) Schema(_ *sql.Context) sql.Schema {
 // RowCount implements sql.StatisticsTable.
 func (t *Table) RowCount(ctx *sql.Context) (uint64, bool, error) {
 	var n uint64
-	q := `SELECT COUNT(*) FROM ` + FullTableName(t.db.catalog, t.db.name, t.name)
-	if err := adapter.QueryRowCatalog(ctx, q).Scan(&n); err != nil {
+	execer, conn, _, release, err := adapter.GetExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer release()
+	physical, err := t.physicalTableNameWithExecutor(ctx, execer, conn)
+	if err != nil {
+		return 0, false, err
+	}
+	q := `SELECT COUNT(*) FROM ` + physical
+	if err := execer.QueryRowContext(ctx, q).Scan(&n); err != nil {
 		return 0, false, ErrDuckDB.New(err)
 	}
 	return n, true, nil
@@ -177,9 +226,18 @@ func (t *Table) DataLength(ctx *sql.Context) (uint64, error) {
 }
 
 func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) (sql.PrimaryKeySchema, error) {
+	execer, _, _, release, err := adapter.GetCatalogExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return sql.PrimaryKeySchema{}, err
+	}
+	defer release()
+	return getPKSchemaWithExecutor(ctx, execer, catalogName, dbName, tableName)
+}
+
+func getPKSchemaWithExecutor(ctx *sql.Context, execer adapter.SQLExecutor, catalogName, dbName, tableName string) (sql.PrimaryKeySchema, error) {
 	var schema sql.Schema
 
-	columns, err := queryColumns(ctx, catalogName, dbName, tableName)
+	columns, err := queryColumnsWithExecutor(ctx, execer, catalogName, dbName, tableName)
 	if err != nil {
 		return sql.PrimaryKeySchema{}, ErrDuckDB.New(err)
 	}
@@ -230,7 +288,7 @@ func getPKSchema(ctx *sql.Context, catalogName, dbName, tableName string) (sql.P
 	}
 
 	// Add primary key columns to the schema
-	primaryKeyOrdinals := getPrimaryKeyOrdinals(ctx, catalogName, dbName, tableName)
+	primaryKeyOrdinals := getPrimaryKeyOrdinalsWithExecutor(ctx, execer, catalogName, dbName, tableName)
 	setPrimaryKeyColumns(schema, primaryKeyOrdinals)
 
 	return sql.NewPrimaryKeySchema(schema, primaryKeyOrdinals...), nil
@@ -253,7 +311,16 @@ func (t *Table) PrimaryKeySchema(_ *sql.Context) sql.PrimaryKeySchema {
 }
 
 func getPrimaryKeyOrdinals(ctx *sql.Context, catalogName, dbName, tableName string) []int {
-	rows, err := adapter.QueryCatalog(ctx, `
+	execer, _, _, release, err := adapter.GetCatalogExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		panic(ErrDuckDB.New(err))
+	}
+	defer release()
+	return getPrimaryKeyOrdinalsWithExecutor(ctx, execer, catalogName, dbName, tableName)
+}
+
+func getPrimaryKeyOrdinalsWithExecutor(ctx *sql.Context, execer adapter.SQLExecutor, catalogName, dbName, tableName string) []int {
+	rows, err := execer.QueryContext(ctx, `
 		SELECT constraint_column_indexes FROM duckdb_constraints() WHERE ((database_name = ? AND schema_name = ? AND table_name = ?) OR (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)) AND constraint_type = 'PRIMARY KEY' LIMIT 1
 	`, catalogName, dbName, tableName, tableName)
 	if err != nil {
@@ -287,6 +354,9 @@ func getCreateSequence(temporary bool, sequenceName string) (createStmt, fullNam
 func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.ColumnOrder) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return t.addObjectColumn(ctx, column)
+	}
 
 	// TODO: Column order is ignored as DuckDB does not support it.
 
@@ -375,6 +445,9 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 func (t *Table) DropColumn(ctx *sql.Context, columnName string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return t.dropObjectColumn(ctx, columnName)
+	}
 
 	// Check if the column is AUTO_INCREMENT
 	autoIncrement := false
@@ -413,6 +486,9 @@ func (t *Table) DropColumn(ctx *sql.Context, columnName string) error {
 func (t *Table) ModifyColumn(ctx *sql.Context, columnName string, column *sql.Column, order *sql.ColumnOrder) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return t.modifyObjectColumn(ctx, columnName, column)
+	}
 
 	typ, err := DuckdbDataType(column.Type)
 	if err != nil {
@@ -580,10 +656,12 @@ func (t *Table) Updater(ctx *sql.Context) sql.RowUpdater {
 // Inserter implements sql.InsertableTable.
 func (t *Table) Inserter(*sql.Context) sql.RowInserter {
 	return &rowInserter{
-		db:     t.db.Name(),
-		table:  t.name,
-		schema: t.schema.Schema,
-		hasPK:  t.hasPrimaryKey,
+		catalog:  t.db.catalog,
+		db:       t.db.Name(),
+		table:    t.name,
+		schema:   t.schema.Schema,
+		hasPK:    t.hasPrimaryKey,
+		provider: t.db.provider,
 	}
 }
 
@@ -594,7 +672,16 @@ func (t *Table) Deleter(*sql.Context) sql.RowDeleter {
 
 // Truncate implements sql.TruncateableTable.
 func (t *Table) Truncate(ctx *sql.Context) (int, error) {
-	result, err := adapter.ExecCatalog(ctx, `TRUNCATE TABLE `+FullTableName(t.db.catalog, t.db.name, t.name))
+	execer, conn, _, release, err := adapter.GetExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	physical, err := t.physicalTableNameWithExecutor(ctx, execer, conn)
+	if err != nil {
+		return 0, err
+	}
+	result, err := execer.ExecContext(ctx, `TRUNCATE TABLE `+physical)
 	if err != nil {
 		return 0, err
 	}
@@ -606,11 +693,13 @@ func (t *Table) Truncate(ctx *sql.Context) (int, error) {
 func (t *Table) Replacer(*sql.Context) sql.RowReplacer {
 	hasKey := len(t.schema.PkOrdinals) > 0 || !sql.IsKeyless(t.schema.Schema)
 	return &rowInserter{
-		db:      t.db.Name(),
-		table:   t.name,
-		schema:  t.schema.Schema,
-		hasPK:   t.hasPrimaryKey,
-		replace: hasKey,
+		catalog:  t.db.catalog,
+		db:       t.db.Name(),
+		table:    t.name,
+		schema:   t.schema.Schema,
+		hasPK:    t.hasPrimaryKey,
+		provider: t.db.provider,
+		replace:  hasKey,
 	}
 }
 
@@ -619,6 +708,9 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 	// Lock the table to ensure thread-safety during index creation
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support indexes", ErrInvalidTableStorage)
+	}
 
 	// https://github.com/apecloud/myduckserver/issues/272
 	if isIndexCreationDisabled(ctx) {
@@ -694,6 +786,9 @@ func (t *Table) CreateIndex(ctx *sql.Context, indexDef sql.IndexDef) error {
 func (t *Table) DropIndex(ctx *sql.Context, indexName string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support indexes", ErrInvalidTableStorage)
+	}
 
 	// Construct the SQL statement for dropping the index
 	// DuckDB requires switching context to the schema by USE statement
@@ -720,9 +815,27 @@ func (t *Table) RenameIndex(ctx *sql.Context, fromIndexName string, toIndexName 
 func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	if t.objectStorage() {
+		return nil, nil
+	}
+
+	execer, _, _, release, err := adapter.GetCatalogExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return nil, ErrDuckDB.New(err)
+	}
+	defer release()
+
+	columnsInfo, err := queryColumnsWithExecutor(ctx, execer, t.db.catalog, t.db.name, t.name)
+	if err != nil {
+		return nil, ErrDuckDB.New(err)
+	}
+	columnsInfoMap := make(map[string]*ColumnInfo)
+	for _, columnInfo := range columnsInfo {
+		columnsInfoMap[columnInfo.ColumnName] = columnInfo
+	}
 
 	// Query to get the indexes for the table
-	rows, err := adapter.QueryCatalog(ctx, `SELECT index_name, is_unique, comment, sql FROM duckdb_indexes() WHERE (database_name = ? AND schema_name = ? AND table_name = ?) or (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)`,
+	rows, err := execer.QueryContext(ctx, `SELECT index_name, is_unique, comment, sql FROM duckdb_indexes() WHERE (database_name = ? AND schema_name = ? AND table_name = ?) or (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)`,
 		t.db.catalog, t.db.name, t.name, t.name)
 	if err != nil {
 		return nil, ErrDuckDB.New(err)
@@ -739,16 +852,6 @@ func (t *Table) GetIndexes(ctx *sql.Context) ([]sql.Index, error) {
 			pkExprs[i] = expression.NewGetFieldWithTable(ord, 0, sch[ord].Type, t.db.name, t.name, sch[ord].Name, sch[ord].Nullable)
 		}
 		indexes = append(indexes, NewIndex(t.db.name, t.name, "PRIMARY", true, NewComment[IndexMeta](""), pkExprs))
-	}
-
-	columnsInfo, err := queryColumns(ctx, t.db.catalog, t.db.name, t.name)
-	columnsInfoMap := make(map[string]*ColumnInfo)
-	for _, columnInfo := range columnsInfo {
-		columnsInfoMap[columnInfo.ColumnName] = columnInfo
-	}
-
-	if err != nil {
-		return nil, ErrDuckDB.New(err)
 	}
 
 	for rows.Next() {
@@ -817,7 +920,16 @@ func (t *Table) ModifyComment(ctx *sql.Context, text string) error {
 }
 
 func queryColumns(ctx *sql.Context, catalogName, schemaName, tableName string) ([]*ColumnInfo, error) {
-	rows, err := adapter.QueryCatalog(ctx, `
+	execer, _, _, release, err := adapter.GetCatalogExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return queryColumnsWithExecutor(ctx, execer, catalogName, schemaName, tableName)
+}
+
+func queryColumnsWithExecutor(ctx *sql.Context, execer adapter.SQLExecutor, catalogName, schemaName, tableName string) ([]*ColumnInfo, error) {
+	rows, err := execer.QueryContext(ctx, `
 		SELECT column_name, column_index, data_type, is_nullable, column_default, comment, numeric_precision, numeric_scale
 		FROM duckdb_columns()
 		WHERE (database_name = ? AND schema_name = ? AND table_name = ?) OR (database_name = 'temp' AND schema_name = 'main' AND table_name = ?)
@@ -1059,6 +1171,9 @@ func (t *Table) GetChecks(ctx *sql.Context) ([]sql.CheckDefinition, error) {
 func (t *Table) CreateCheck(ctx *sql.Context, check *sql.CheckDefinition) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support CHECK constraints", ErrInvalidTableStorage)
+	}
 
 	// TODO(fan): Implement this once DuckDB supports modifying check constraints.
 	// https://duckdb.org/docs/sql/statements/alter_table.html#add--drop-constraint
@@ -1073,6 +1188,9 @@ func (t *Table) CreateCheck(ctx *sql.Context, check *sql.CheckDefinition) error 
 func (t *Table) DropCheck(ctx *sql.Context, checkName string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.objectStorage() {
+		return fmt.Errorf("%w: object tables do not support CHECK constraints", ErrInvalidTableStorage)
+	}
 
 	checks := make([]sql.CheckDefinition, 0, max(len(t.comment.Meta.Checks)-1, 0))
 	found := false

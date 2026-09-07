@@ -19,11 +19,13 @@ import (
 	stdsql "database/sql"
 	"database/sql/driver"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
 	"runtime/trace"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/mycontext"
 	"github.com/apecloud/myduckserver/pgtypes"
+	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/parser"
 	"github.com/cockroachdb/cockroachdb-parser/pkg/sql/sem/tree"
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
@@ -120,6 +123,12 @@ func (h *DuckHandler) ComBind(ctx context.Context, c *mysql.Conn, prepared Prepa
 		}
 	}
 
+	// PostgreSQL prepared statements retain only SQL and metadata between Parse
+	// and Execute. The raw DuckDB statement used during Parse is closed before
+	// returning, so binding is validated at Execute on the active executor.
+	if prepared.Stmt == nil {
+		return prepared.ReturnFields, nil
+	}
 	err := prepared.Stmt.Bind(vars)
 	if err != nil {
 		return nil, err
@@ -168,47 +177,74 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		return nil, nil, nil, err
 	}
 
-	conn, err := adapter.GetConn(sqlCtx)
+	// Transaction control is executed by the protocol handler rather than
+	// DuckDB's prepared-statement machinery. Keeping it unprepared also avoids
+	// probing a second connection while a session transaction is active.
+	switch parsed.(type) {
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction:
+		return nil, nil, nil, nil
+	}
+
+	// Admit the operation before retaining the executor/physical owner snapshot.
+	// The release is deferred because all metadata probes and result-row schema
+	// reads complete before Parse returns.
+	execer, conn, tx, release, err := h.getPostgresExecutionSnapshotLease(sqlCtx, parsed)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer release()
+
+	prepareQuery, err := postgresCreateTableQueryForPrepare(query, parsed)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Resolve object-table relations against the same lifecycle snapshot used
+	// for raw preparation and metadata probing. The physical relation can be
+	// visible only after the session's DuckLake connection is initialized; doing
+	// this before the probe keeps prepared INSERT ... RETURNING metadata aligned
+	// with the relation executed later by the bound plan.
+	prepareQuery, err = h.rewritePostgresObjectRelationsWithSnapshot(sqlCtx, prepareQuery, execer, conn)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	var (
-		stmt       *duckdb.Stmt
 		stmtType   duckdb.StmtType
 		paramTypes []duckdb.Type
 	)
-	// This is a bit of a hack to get DuckDB's underlying prepared statement.
-	// But we know that the connection is a DuckDB connection and it is kept alive.
-	err = conn.Raw(func(driverConn interface{}) error {
-		dc := driverConn.(*duckdb.Conn)
-		s, err := dc.PrepareContext(sqlCtx, query)
-		if err != nil {
-			return err
-		}
-		n := s.NumInput()
-		stmt = s.(*duckdb.Stmt)
-		stmtType, err = stmt.StatementType()
-		if err != nil {
-			return err
-		}
-		paramTypes = make([]duckdb.Type, n)
-		for i := 0; i < n; i++ {
-			paramTypes[i], err = stmt.ParamType(i + 1) // 1-based index
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	if tx != nil {
+		// Parse runs after the protocol has opened the implicit transaction. A
+		// Conn.Raw probe here would issue driver calls beside that *sql.Tx and
+		// can observe a different transaction state (or deadlock the driver).
+		// Use the parsed AST/tag and a parser/lexical placeholder count instead;
+		// unknown parameter OIDs are represented by TYPE_INVALID below.
+		stmtType = postgresDuckDBStatementType(parsed, prepareQuery)
+		paramTypes = make([]duckdb.Type, postgresPlaceholderCount(query))
+	} else {
+		// There is no transaction owner, so a short-lived raw probe is safe and
+		// preserves DuckDB's exact statement/parameter type information. The
+		// retained snapshot itself prevents a transaction or replacement
+		// connection from appearing while the probe is in flight.
+		stmtType, paramTypes, err = prepareDuckDBStatementMetadata(sqlCtx, conn, prepareQuery)
+	}
 	if err != nil {
 		logrus.WithField("query", catalog.RedactSensitiveSQL(query)).Errorf("unable to prepare query: %s", err.Error())
 		return nil, nil, nil, err
 	}
-
 	paramOIDs := make([]uint32, len(paramTypes))
 	for i, t := range paramTypes {
 		paramOIDs[i] = pgtypes.DuckdbTypeToPostgresOID[t]
+		// A transaction-safe Parse path cannot call DuckDB's raw
+		// PrepareContext beside the active *sql.Tx, so an untyped
+		// placeholder has no driver-derived OID. PostgreSQL's protocol uses
+		// OID zero to mean "unspecified"; pgx then selects an encoder from
+		// the concrete Go value (rather than rejecting it as UnknownOID or
+		// assuming the value is a string). The server-side bind decoder
+		// intentionally converts that wire value to text before DuckDB's
+		// statement-context coercion.
+		if paramOIDs[i] == pgtype.UnknownOID {
+			paramOIDs[i] = 0
+		}
 	}
 
 	var (
@@ -216,13 +252,17 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		rows   *stdsql.Rows
 	)
 	if insert, ok := postgresInsertReturningRows(parsed); ok {
-		schema, schemaErr := inferPostgresInsertReturningSchema(sqlCtx, insert)
+		metadataQuery := postgresInsertReturningSchemaQuery(insert)
+		metadataQuery, routeErr := h.rewritePostgresObjectRelationsWithSnapshot(sqlCtx, metadataQuery, execer, conn)
+		if routeErr != nil {
+			return nil, nil, nil, routeErr
+		}
+		schema, schemaErr := inferPostgresInsertReturningSchema(sqlCtx, metadataQuery, execer)
 		if schemaErr != nil {
-			defer stmt.Close()
 			return nil, nil, nil, schemaErr
 		}
 		fields = schemaToFieldDescriptions(sqlCtx, schema, nil, ExtendedQueryMode)
-		return stmt, paramOIDs, fields, nil
+		return nil, paramOIDs, fields, nil
 	}
 	switch stmtType {
 	case duckdb.STATEMENT_TYPE_SELECT,
@@ -232,14 +272,18 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		duckdb.STATEMENT_TYPE_EXPLAIN:
 
 		// Execute the query with all NULL values as parameters to get the result types.
-		query := query
+		// Use the rewritten preparation query for both the LIMIT 0 probe and
+		// the later Execute path. Object-table relations only exist under
+		// their durable DuckLake name; probing the original logical relation
+		// would fail during Parse even though Execute correctly routes it.
+		query := prepareQuery
 		if stmtType == duckdb.STATEMENT_TYPE_SELECT ||
 			stmtType == duckdb.STATEMENT_TYPE_RELATION {
 			// Add LIMIT 0 to avoid executing the actual query.
 			query = "SELECT * FROM (" + sql.RemoveSpaceAndDelimiter(query, ';') + ") LIMIT 0"
 		}
 		params := make([]any, len(paramTypes)) // all nil
-		rows, err = conn.QueryContext(sqlCtx, query, params...)
+		rows, err = execer.QueryContext(sqlCtx, query, params...)
 		if err != nil {
 			break
 		}
@@ -260,11 +304,10 @@ func (h *DuckHandler) ComPrepareParsed(ctx context.Context, c *mysql.Conn, query
 		}
 	}
 	if err != nil {
-		defer stmt.Close()
 		return nil, nil, nil, err
 	}
 
-	return stmt, paramOIDs, fields, nil
+	return nil, paramOIDs, fields, nil
 }
 
 // ComQuery implements the Handler interface.
@@ -292,6 +335,178 @@ func (h *DuckHandler) rejectReadOnly(statement ConvertedStatement) error {
 		return nil
 	}
 	return h.connectionHandler.rejectReadOnly(statement)
+}
+
+// isPostgresTransactionControl identifies statements whose lifecycle is owned
+// by the protocol transaction handler. They must not acquire a DuckLake
+// operation or execution snapshot: COMMIT/ROLLBACK in particular must remain
+// able to recover a failed transaction while the ordinary execution path is
+// unavailable.
+func isPostgresTransactionControl(statement tree.Statement) bool {
+	switch statement.(type) {
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction:
+		return true
+	default:
+		return false
+	}
+}
+
+// postgresDuckLakeOperationProvider is the legacy admission surface retained
+// for older provider/test doubles. Production providers also implement the
+// owner-aware extension below.
+type postgresDuckLakeOperationProvider interface {
+	BeginDuckLakeOperation(context.Context) func()
+}
+
+type postgresDuckLakeOperationOwnerProvider interface {
+	BeginDuckLakeOperationForOwner(context.Context, any) func()
+}
+
+// Error-bearing admission surfaces are implemented by the production
+// provider. Legacy provider/test doubles continue to use the closure-only
+// interfaces above; those adapters cannot report a poisoned generation.
+type postgresDuckLakeOperationProviderWithError interface {
+	BeginDuckLakeOperationWithError(context.Context) (func(), error)
+}
+
+type postgresDuckLakeOperationOwnerProviderWithError interface {
+	BeginDuckLakeOperationForOwnerWithError(context.Context, any) (func(), error)
+}
+
+// beginPostgresDuckLakeOperationForProvider admits one frontend statement
+// before it captures a pool execution snapshot. Passing the physical owner is
+// important for PostgreSQL: its protocol transaction controls keep a raw
+// *database/sql.Tx in the pool/handler rather than a GMS sql.Transaction, so
+// the legacy context-derived owner would be anonymous and rollback cleanup
+// would wait on its own operation lease.
+func beginPostgresDuckLakeOperationForProvider(
+	ctx *sql.Context,
+	statement tree.Statement,
+	provider postgresDuckLakeOperationProvider,
+	owner any,
+) func() {
+	release, _ := beginPostgresDuckLakeOperationForProviderWithError(ctx, statement, provider, owner)
+	return release
+}
+
+func beginPostgresDuckLakeOperationForProviderWithError(
+	ctx *sql.Context,
+	statement tree.Statement,
+	provider postgresDuckLakeOperationProvider,
+	owner any,
+) (func(), error) {
+	if ctx == nil || isPostgresTransactionControl(statement) ||
+		mycontext.QueryOrigin(ctx) != mycontext.FrontendQueryOrigin || provider == nil {
+		return func() {}, nil
+	}
+	if ownerProvider, ok := provider.(postgresDuckLakeOperationOwnerProviderWithError); ok {
+		return ownerProvider.BeginDuckLakeOperationForOwnerWithError(ctx, owner)
+	}
+	if providerWithError, ok := provider.(postgresDuckLakeOperationProviderWithError); ok {
+		return providerWithError.BeginDuckLakeOperationWithError(ctx)
+	}
+	if ownerProvider, ok := provider.(postgresDuckLakeOperationOwnerProvider); ok {
+		return ownerProvider.BeginDuckLakeOperationForOwner(ctx, owner), nil
+	}
+	return provider.BeginDuckLakeOperation(ctx), nil
+}
+
+// postgresDuckLakeOperationOwner resolves the same physical transaction
+// identity that PostgreSQL rollback finalization will pass to the provider
+// barrier. The handler's implicit marker is preferred because it is already
+// captured for the current protocol scope; the atomic session binding covers
+// explicit transactions and minimal handler contexts. A GMS logical
+// transaction remains a final fallback for test/session doubles that do not
+// expose a physical binding.
+func postgresDuckLakeOperationOwner(ctx *sql.Context, handler *DuckHandler) any {
+	if handler != nil && handler.connectionHandler != nil && handler.connectionHandler.implicitTx != nil {
+		return handler.connectionHandler.implicitTx
+	}
+	if ctx == nil || ctx.Session == nil {
+		return nil
+	}
+	if _, ok := ctx.Session.(adapter.ConnectionHolder); ok {
+		if _, tx := adapter.TryGetTxnBinding(ctx); tx != nil {
+			return tx
+		}
+	}
+	return ctx.GetTransaction()
+}
+
+// beginPostgresDuckLakeOperationForOwner is the explicit-owner entry point for
+// asynchronous protocol paths that already captured a transaction identity.
+// Keeping it separate lets COPY/extended callers pass their retained physical
+// owner without re-reading a mutable session binding.
+func (h *DuckHandler) beginPostgresDuckLakeOperationForOwner(
+	ctx *sql.Context,
+	statement tree.Statement,
+	owner any,
+) func() {
+	release, _ := h.beginPostgresDuckLakeOperationForOwnerWithError(ctx, statement, owner)
+	return release
+}
+
+func (h *DuckHandler) beginPostgresDuckLakeOperationForOwnerWithError(
+	ctx *sql.Context,
+	statement tree.Statement,
+	owner any,
+) (func(), error) {
+	if h == nil || h.e == nil {
+		return func() {}, nil
+	}
+	provider := h.GetCatalogProvider()
+	return beginPostgresDuckLakeOperationForProviderWithError(ctx, statement, provider, owner)
+}
+
+// beginPostgresDuckLakeOperation admits one frontend statement before it
+// captures a pool execution snapshot. The provider itself fail-closes for
+// replication/maintenance origins and disabled storage; the explicit origin
+// check here keeps protocol code from ever registering those paths as logical
+// frontend work.
+func (h *DuckHandler) beginPostgresDuckLakeOperation(ctx *sql.Context, statement tree.Statement) func() {
+	return h.beginPostgresDuckLakeOperationForOwner(ctx, statement, postgresDuckLakeOperationOwner(ctx, h))
+}
+
+func (h *DuckHandler) beginPostgresDuckLakeOperationWithError(ctx *sql.Context, statement tree.Statement) (func(), error) {
+	return h.beginPostgresDuckLakeOperationForOwnerWithError(ctx, statement, postgresDuckLakeOperationOwner(ctx, h))
+}
+
+// combinePostgresExecutionReleases closes a retained execution snapshot before
+// releasing the logical-operation admission. Keeping the pool generation alive
+// until the child iterator is closed is the important ordering guarantee; the
+// once guard also covers legacy holders whose callbacks are not idempotent.
+func combinePostgresExecutionReleases(snapshotRelease, operationRelease func()) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if snapshotRelease != nil {
+				snapshotRelease()
+			}
+			if operationRelease != nil {
+				operationRelease()
+			}
+		})
+	}
+}
+
+// getPostgresExecutionSnapshotLease admits a frontend operation before taking
+// the retained pool snapshot. Callers that return an iterator transfer the
+// returned release callback to backend.WrapRowIterWithRelease; metadata-only
+// callers defer it locally.
+func (h *DuckHandler) getPostgresExecutionSnapshotLease(
+	ctx *sql.Context,
+	statement tree.Statement,
+) (adapter.SQLExecutor, *stdsql.Conn, *stdsql.Tx, func(), error) {
+	operationRelease, admissionErr := h.beginPostgresDuckLakeOperationWithError(ctx, statement)
+	if admissionErr != nil {
+		return nil, nil, nil, func() {}, admissionErr
+	}
+	execer, conn, tx, snapshotRelease, err := adapter.GetExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		operationRelease()
+		return nil, nil, tx, func() {}, err
+	}
+	return execer, conn, tx, combinePostgresExecutionReleases(snapshotRelease, operationRelease), nil
 }
 
 // ComResetConnection implements the Handler interface.
@@ -347,23 +562,280 @@ func (h *DuckHandler) getStatementTag(mysqlConn *mysql.Conn, query string) (stri
 	if err != nil {
 		return "", err
 	}
-	conn, err := adapter.GetConn(sqlCtx)
+	_, conn, tx, release, err := h.getPostgresExecutionSnapshotLease(sqlCtx, nil)
 	if err != nil {
 		return "", err
 	}
+	defer release()
+	if tx != nil {
+		// Statement-tag lookup is called after the protocol has opened its
+		// implicit transaction. Do not prepare through Conn.Raw beside that
+		// transaction; the lexical tag is sufficient for CommandComplete.
+		return GuessStatementTag(query), nil
+	}
 	var tag string
-	err = conn.Raw(func(driverConn any) error {
-		c := driverConn.(*duckdb.Conn)
-		s, err := c.PrepareContext(sqlCtx, query)
-		if err != nil {
-			return err
+	stmtType, _, prepareErr := prepareDuckDBStatementMetadata(sqlCtx, conn, query)
+	if prepareErr == nil {
+		tag = duckDBStatementTag(stmtType)
+	}
+	err = prepareErr
+	return tag, err
+}
+
+// assertPostgresExecutionSnapshot verifies that a metadata probe did not race
+// a transaction or connection replacement. The check is intentionally
+// fail-closed: reacquiring a different connection would make the caller lose
+// the transaction/physical-owner affinity it captured at the start.
+func assertPostgresExecutionSnapshot(ctx *sql.Context, expectedConn *stdsql.Conn, expectedTx *stdsql.Tx) error {
+	if ctx == nil || expectedConn == nil {
+		return fmt.Errorf("PostgreSQL execution snapshot is unavailable")
+	}
+	_, actualConn, actualTx, err := adapter.GetExecutionSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if actualConn != expectedConn || actualTx != expectedTx {
+		return fmt.Errorf("PostgreSQL execution snapshot changed during metadata probe")
+	}
+	return nil
+}
+
+// prepareDuckDBStatementMetadata performs the driver-specific probe used only
+// when no session transaction is active. The returned statement is always
+// closed before the function returns; callers retain no raw driver state
+// across protocol messages.
+func prepareDuckDBStatementMetadata(ctx context.Context, conn *stdsql.Conn, query string) (stmtType duckdb.StmtType, paramTypes []duckdb.Type, err error) {
+	if conn == nil {
+		return duckdb.STATEMENT_TYPE_INVALID, nil, fmt.Errorf("DuckDB execution connection is unavailable")
+	}
+	err = conn.Raw(func(driverConn any) (callbackErr error) {
+		dc, ok := driverConn.(*duckdb.Conn)
+		if !ok {
+			return fmt.Errorf("prepared PostgreSQL statement connection has unexpected driver type")
 		}
-		defer s.Close()
-		stmt := s.(*duckdb.Stmt)
-		tag = GetStatementTag(stmt)
+		driverStmt, prepareErr := dc.PrepareContext(ctx, query)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		defer func() {
+			callbackErr = errors.Join(callbackErr, driverStmt.Close())
+		}()
+		stmt, ok := driverStmt.(*duckdb.Stmt)
+		if !ok {
+			return fmt.Errorf("prepared PostgreSQL statement has unexpected driver statement type")
+		}
+		stmtType, prepareErr = stmt.StatementType()
+		if prepareErr != nil {
+			return prepareErr
+		}
+		paramTypes = make([]duckdb.Type, driverStmt.NumInput())
+		for i := range paramTypes {
+			paramTypes[i], prepareErr = stmt.ParamType(i + 1) // 1-based index
+			if prepareErr != nil {
+				return prepareErr
+			}
+		}
 		return nil
 	})
-	return tag, err
+	return stmtType, paramTypes, err
+}
+
+// postgresDuckDBStatementType classifies a statement without touching a raw
+// driver connection. Parsing the SQL again, when possible, distinguishes a
+// real WITH/INSERT (or other CTE statement) from the synthetic SELECT AST used
+// for DuckDB-only syntax. The supplied AST remains the fallback for rewritten
+// SQL that the PostgreSQL parser cannot consume a second time.
+func postgresDuckDBStatementType(parsed tree.Statement, query string) duckdb.StmtType {
+	parseQuery := sql.RemoveSpaceAndDelimiter(query, ';')
+	if parseQuery != "" {
+		if reparsed, parseErr := parser.ParseOne(parseQuery); parseErr == nil && reparsed.AST != nil {
+			parsed = reparsed.AST
+		}
+	}
+	if parsed != nil {
+		if stmtType := duckDBStatementTypeForTag(parsed.StatementTag()); stmtType != duckdb.STATEMENT_TYPE_INVALID {
+			return stmtType
+		}
+	}
+	return duckDBStatementTypeForTag(GuessStatementTag(query))
+}
+
+func duckDBStatementTypeForTag(tag string) duckdb.StmtType {
+	tag = strings.ToUpper(strings.TrimSpace(tag))
+	switch {
+	case tag == "SELECT", tag == "SHOW", tag == "VALUES", tag == "WITH", tag == "FROM", strings.HasPrefix(tag, "SHOW "):
+		return duckdb.STATEMENT_TYPE_SELECT
+	case tag == "CALL", strings.HasPrefix(tag, "CALL "):
+		return duckdb.STATEMENT_TYPE_CALL
+	case tag == "PRAGMA", strings.HasPrefix(tag, "PRAGMA "):
+		return duckdb.STATEMENT_TYPE_PRAGMA
+	case tag == "EXPLAIN", strings.HasPrefix(tag, "EXPLAIN "):
+		return duckdb.STATEMENT_TYPE_EXPLAIN
+	case tag == "INSERT", strings.HasPrefix(tag, "INSERT "):
+		return duckdb.STATEMENT_TYPE_INSERT
+	case tag == "UPDATE", strings.HasPrefix(tag, "UPDATE "):
+		return duckdb.STATEMENT_TYPE_UPDATE
+	case tag == "DELETE", strings.HasPrefix(tag, "DELETE "):
+		return duckdb.STATEMENT_TYPE_DELETE
+	case tag == "COPY", strings.HasPrefix(tag, "COPY "):
+		return duckdb.STATEMENT_TYPE_COPY
+	case tag == "ALTER", strings.HasPrefix(tag, "ALTER "):
+		return duckdb.STATEMENT_TYPE_ALTER
+	case tag == "CREATE", strings.HasPrefix(tag, "CREATE "):
+		return duckdb.STATEMENT_TYPE_CREATE
+	case tag == "DROP", strings.HasPrefix(tag, "DROP "):
+		return duckdb.STATEMENT_TYPE_DROP
+	case tag == "PREPARE", strings.HasPrefix(tag, "PREPARE "):
+		return duckdb.STATEMENT_TYPE_PREPARE
+	case tag == "EXECUTE", strings.HasPrefix(tag, "EXECUTE "):
+		return duckdb.STATEMENT_TYPE_EXECUTE
+	case tag == "ATTACH", strings.HasPrefix(tag, "ATTACH "):
+		return duckdb.STATEMENT_TYPE_ATTACH
+	case tag == "DETACH", strings.HasPrefix(tag, "DETACH "):
+		return duckdb.STATEMENT_TYPE_DETACH
+	case tag == "TRANSACTION", tag == "BEGIN", tag == "COMMIT", tag == "ROLLBACK":
+		return duckdb.STATEMENT_TYPE_TRANSACTION
+	case tag == "ANALYZE", strings.HasPrefix(tag, "ANALYZE "):
+		return duckdb.STATEMENT_TYPE_ANALYZE
+	case tag == "SET", strings.HasPrefix(tag, "SET "):
+		return duckdb.STATEMENT_TYPE_SET
+	case tag == "LOAD", strings.HasPrefix(tag, "LOAD "):
+		return duckdb.STATEMENT_TYPE_LOAD
+	case tag == "EXPORT", strings.HasPrefix(tag, "EXPORT "):
+		return duckdb.STATEMENT_TYPE_EXPORT
+	default:
+		return duckdb.STATEMENT_TYPE_INVALID
+	}
+}
+
+func duckDBStatementTag(stmtType duckdb.StmtType) string {
+	switch stmtType {
+	case duckdb.STATEMENT_TYPE_SELECT, duckdb.STATEMENT_TYPE_RELATION:
+		return "SELECT"
+	case duckdb.STATEMENT_TYPE_INSERT:
+		return "INSERT"
+	case duckdb.STATEMENT_TYPE_UPDATE:
+		return "UPDATE"
+	case duckdb.STATEMENT_TYPE_DELETE:
+		return "DELETE"
+	case duckdb.STATEMENT_TYPE_CALL:
+		return "CALL"
+	case duckdb.STATEMENT_TYPE_PRAGMA:
+		return "PRAGMA"
+	case duckdb.STATEMENT_TYPE_COPY:
+		return "COPY"
+	case duckdb.STATEMENT_TYPE_ALTER:
+		return "ALTER"
+	case duckdb.STATEMENT_TYPE_CREATE, duckdb.STATEMENT_TYPE_CREATE_FUNC:
+		return "CREATE"
+	case duckdb.STATEMENT_TYPE_DROP:
+		return "DROP"
+	case duckdb.STATEMENT_TYPE_PREPARE:
+		return "PREPARE"
+	case duckdb.STATEMENT_TYPE_EXECUTE:
+		return "EXECUTE"
+	case duckdb.STATEMENT_TYPE_ATTACH:
+		return "ATTACH"
+	case duckdb.STATEMENT_TYPE_DETACH:
+		return "DETACH"
+	case duckdb.STATEMENT_TYPE_TRANSACTION:
+		return "TRANSACTION"
+	case duckdb.STATEMENT_TYPE_ANALYZE:
+		return "ANALYZE"
+	case duckdb.STATEMENT_TYPE_EXPLAIN:
+		return "EXPLAIN"
+	case duckdb.STATEMENT_TYPE_SET:
+		return "SET"
+	case duckdb.STATEMENT_TYPE_VARIABLE_SET:
+		return "SET VARIABLE"
+	case duckdb.STATEMENT_TYPE_EXPORT:
+		return "EXPORT"
+	case duckdb.STATEMENT_TYPE_LOAD:
+		return "LOAD"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// postgresPlaceholderCount returns PostgreSQL's highest placeholder index. A
+// parser result is authoritative for valid PostgreSQL syntax; the lexical
+// fallback covers DuckDB-only statements that are intentionally represented by
+// a synthetic AST during protocol parsing.
+func postgresPlaceholderCount(query string) int {
+	parseQuery := sql.RemoveSpaceAndDelimiter(query, ';')
+	if parseQuery != "" {
+		if parsed, parseErr := parser.ParseOne(parseQuery); parseErr == nil {
+			return parsed.NumPlaceholders
+		}
+	}
+	return lexicalPostgresPlaceholderCount(query)
+}
+
+func lexicalPostgresPlaceholderCount(query string) int {
+	maxIndex, questionCount := 0, 0
+	for i := 0; i < len(query); {
+		switch query[i] {
+		case '\'', '"', '`':
+			quote := query[i]
+			i++
+			for i < len(query) {
+				if query[i] == '\\' && quote != '`' && i+1 < len(query) {
+					i += 2
+					continue
+				}
+				if query[i] == quote {
+					if i+1 < len(query) && query[i+1] == quote {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		case '-':
+			if i+1 < len(query) && query[i+1] == '-' {
+				i += 2
+				for i < len(query) && query[i] != '\n' {
+					i++
+				}
+				continue
+			}
+		case '/':
+			if i+1 < len(query) && query[i+1] == '*' {
+				if end := strings.Index(query[i+2:], "*/"); end >= 0 {
+					i += end + 4
+				} else {
+					return maxIndex
+				}
+				continue
+			}
+		case '$':
+			if i+1 < len(query) && query[i+1] >= '0' && query[i+1] <= '9' {
+				j := i + 1
+				for j < len(query) && query[j] >= '0' && query[j] <= '9' {
+					j++
+				}
+				var index int
+				for k := i + 1; k < j; k++ {
+					index = index*10 + int(query[k]-'0')
+				}
+				if index > maxIndex {
+					maxIndex = index
+				}
+				i = j
+				continue
+			}
+		case '?':
+			questionCount++
+		}
+		i++
+	}
+	if questionCount > maxIndex {
+		return questionCount
+	}
+	return maxIndex
 }
 
 var queryLoggingRegex = regexp.MustCompile(`[\r\n\t ]+`)
@@ -437,12 +909,31 @@ func (h *DuckHandler) doQuery(ctx context.Context, c *mysql.Conn, query string, 
 		sqlCtx.GetLogger().WithError(err).Warn("error running query")
 		return err
 	}
+	// Normalize the iterator boundary even for transaction-control and
+	// replication paths that intentionally carry no execution lease. The
+	// wrapper makes Close idempotent when a result helper already closed the
+	// child, and guarantees any retained snapshot lease is released before the
+	// session schema is inspected below.
+	rowIter = backend.WrapRowIterWithRelease(rowIter, nil)
+	defer func() {
+		if rowIter != nil {
+			closeErr := rowIter.Close(sqlCtx)
+			err = errors.Join(err, closeErr)
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+		// CurrentSchemaOfUnderlyingConn re-enters the session/pool lifecycle
+		// lock. It must run only after the iterator wrapper has closed its child
+		// and released the retained execution snapshot.
+		if isPostgresTransactionControl(parsed) {
+			return
+		}
+		if session, ok := sqlCtx.Session.(*backend.Session); ok && session != nil {
+			if currentSchema := session.CurrentSchemaOfUnderlyingConn(); len(currentSchema) > 0 {
+				sqlCtx.SetCurrentDatabase(currentSchema)
+			}
+		}
+	}()
 	rowIter = backend.ApplyQueryRowLimit(sqlCtx, schema, rowIter)
-
-	// If the query is "USE <database>", we need to update the current database in the session.
-	if currentSchema := sqlCtx.Session.(*backend.Session).CurrentSchemaOfUnderlyingConn(); len(currentSchema) > 0 {
-		sqlCtx.SetCurrentDatabase(currentSchema)
-	}
 
 	// create result before goroutines to avoid |ctx| racing
 	var r *Result
@@ -486,7 +977,7 @@ type QueryExecutor func(ctx *sql.Context, query string, parsed tree.Statement, s
 
 // executeQuery is a QueryExecutor that calls QueryWithBindings on the given engine using the given query and parsed
 // statement, which may be nil.
-func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.Statement, _ *duckdb.Stmt, _ []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
+func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.Statement, _ *duckdb.Stmt, _ []any) (schema sql.Schema, iter sql.RowIter, qFlags *sql.QueryFlags, returnErr error) {
 	// return h.e.QueryWithBindings(ctx, query, parsed, nil, nil)
 
 	sql.IncrementStatusVariable(ctx, "Questions", 1)
@@ -495,20 +986,110 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	}
 
 	var (
-		schema sql.Schema
-		iter   sql.RowIter
 		rows   *stdsql.Rows
 		result stdsql.Result
 		err    error
 	)
+	// Transaction controls are protocol lifecycle operations. Resolve them
+	// before routing or acquiring an execution snapshot: a failed-block
+	// COMMIT/ROLLBACK must remain able to finalize its owner even when ordinary
+	// statement routing or connection acquisition is no longer usable.
+	switch transaction := parsed.(type) {
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction:
+		handled, controlErr := postgresTransactionControl(ctx, transaction, h.GetCatalogProvider())
+		if !handled {
+			return nil, nil, nil, fmt.Errorf("unsupported PostgreSQL transaction statement %T", parsed)
+		}
+		if controlErr != nil {
+			return nil, nil, nil, controlErr
+		}
+		return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{})), nil, nil
+	}
+	if err := rejectPostgresDatabaseDDLInTransaction(ctx, parsed); err != nil {
+		return nil, nil, nil, err
+	}
+	execer, ownerConn, _, leaseRelease, snapshotErr := h.getPostgresExecutionSnapshotLease(ctx, parsed)
+	if snapshotErr != nil {
+		return nil, nil, nil, snapshotErr
+	}
+	// Transfer the retained snapshot/operation lease to the returned iterator.
+	// Wrapping even OK-result iterators gives doQuery one idempotent close point;
+	// on every error or nil-iterator return the wrapper releases immediately.
+	defer func() {
+		if leaseRelease != nil {
+			iter = backend.WrapRowIterWithRelease(iter, leaseRelease)
+			leaseRelease = nil
+		}
+	}()
+	routedQuery, routeErr := h.rewritePostgresObjectRelationsWithSnapshot(ctx, query, execer, ownerConn)
+	if routeErr != nil {
+		return nil, nil, nil, routeErr
+	}
 
 	// NOTE: The query is parsed using Postgres parser, which does not support all DuckDB syntax.
 	//   Consequently, the following classification is not perfect.
 	switch parsed := parsed.(type) {
-	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction,
-		*tree.CreateTable, *tree.DropTable, *tree.AlterTable, *tree.CreateIndex, *tree.DropIndex,
+	case *tree.CreateTable:
+		selection, createErr := setPostgresCreateTableStorage(ctx, parsed)
+		if createErr != nil {
+			err = createErr
+			break
+		}
+		if parsed.Persistence == tree.PersistenceTemporary && selection.IsObjectStorage() {
+			err = fmt.Errorf("%w: temporary tables cannot use object storage", catalog.ErrInvalidTableStorage)
+			break
+		}
+		executionQuery, _, createErr := postgresCreateTableExecutionQuery(query, parsed)
+		if createErr != nil {
+			err = createErr
+			break
+		}
+		result, err = execer.ExecContext(ctx, executionQuery)
+		if err == nil {
+			err = persistPostgresCreateTableStorageWithExecutor(ctx, parsed, selection, h.GetCatalogProvider(), execer, ownerConn)
+		}
+		if err != nil {
+			break
+		}
+		affected, _ := result.RowsAffected()
+		insertId, _ := result.LastInsertId()
+		schema = types.OkResultSchema
+		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{
+			RowsAffected: uint64(affected),
+			InsertID:     uint64(insertId),
+		}))
+	case *tree.DropTable, *tree.AlterTable:
+		if ddlResult, handled, ddlErr := h.executePostgresObjectDDL(ctx, query, routedQuery, parsed, execer, ownerConn); handled {
+			result, err = ddlResult, ddlErr
+			if err != nil {
+				break
+			}
+			affected, _ := result.RowsAffected()
+			insertId, _ := result.LastInsertId()
+			schema = types.OkResultSchema
+			iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{
+				RowsAffected: uint64(affected),
+				InsertID:     uint64(insertId),
+			}))
+			break
+		} else if ddlErr != nil {
+			err = ddlErr
+			break
+		}
+		result, err = execer.ExecContext(ctx, routedQuery)
+		if err != nil {
+			break
+		}
+		affected, _ := result.RowsAffected()
+		insertId, _ := result.LastInsertId()
+		schema = types.OkResultSchema
+		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{
+			RowsAffected: uint64(affected),
+			InsertID:     uint64(insertId),
+		}))
+	case *tree.CreateIndex, *tree.DropIndex,
 		*tree.Update, *tree.Delete, *tree.Truncate, *tree.CopyFrom, *tree.CopyTo, *tree.SetVar:
-		result, err = adapter.Exec(ctx, query)
+		result, err = execer.ExecContext(ctx, routedQuery)
 		if err != nil {
 			break
 		}
@@ -521,7 +1102,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 		}))
 	case *tree.Insert:
 		if _, ok := postgresInsertReturningRows(parsed); ok {
-			rows, err = adapter.QueryCatalog(ctx, query)
+			rows, err = execer.QueryContext(ctx, routedQuery)
 			if err != nil {
 				break
 			}
@@ -536,7 +1117,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			}
 			break
 		}
-		result, err = adapter.Exec(ctx, query)
+		result, err = execer.ExecContext(ctx, routedQuery)
 		if err != nil {
 			break
 		}
@@ -554,7 +1135,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 		dbName := parsed.Name.String()
-		err = provider.CreateCatalog(dbName, parsed.IfNotExists)
+		err = provider.CreateCatalogOnConn(ctx, ownerConn, dbName, parsed.IfNotExists)
 		if err != nil {
 			break
 		}
@@ -567,14 +1148,14 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 		dbName := parsed.Name.String()
-		err = provider.DropCatalog(dbName, parsed.IfExists)
+		err = provider.DropCatalogOnConn(ctx, ownerConn, dbName, parsed.IfExists)
 		if err != nil {
 			break
 		}
 		schema = types.OkResultSchema
 		iter = sql.RowsToRowIter(sql.NewRow(types.OkResult{}))
 	case *tree.Select, tree.SelectStatement:
-		rows, schema, err = queryCatalogWithJSONScan(ctx, query)
+		rows, schema, err = queryCatalogWithJSONScan(ctx, routedQuery, execer)
 		if err != nil {
 			break
 		}
@@ -584,7 +1165,7 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 			break
 		}
 	default:
-		rows, err = adapter.QueryCatalog(ctx, query)
+		rows, err = execer.QueryContext(ctx, routedQuery)
 		if err != nil {
 			break
 		}
@@ -606,15 +1187,22 @@ func (h *DuckHandler) executeQuery(ctx *sql.Context, query string, parsed tree.S
 	return schema, iter, nil, nil
 }
 
-func queryCatalogWithJSONScan(ctx *sql.Context, query string, vars ...any) (*stdsql.Rows, sql.Schema, error) {
+// queryCatalogWithJSONScan performs both the schema probe and the final query
+// through the caller's captured executor. The caller must retain the matching
+// execution lease until the returned rows have been consumed and closed; this
+// helper deliberately never reacquires a session snapshot.
+func queryCatalogWithJSONScan(ctx *sql.Context, query string, execer adapter.SQLExecutor, vars ...any) (*stdsql.Rows, sql.Schema, error) {
+	if execer == nil {
+		return nil, nil, fmt.Errorf("query executor is unavailable")
+	}
 	probeQuery := "SELECT * FROM (" + sql.RemoveSpaceAndDelimiter(query, ';') + ") LIMIT 0"
-	probeRows, err := adapter.QueryCatalog(ctx, probeQuery, vars...)
+	probeRows, err := execer.QueryContext(ctx, probeQuery, vars...)
 	if err != nil {
 		// The PostgreSQL parser can classify DuckDB-only statements such as
 		// CREATE OR REPLACE TABLE as a SelectStatement. The probe wrapper is
 		// invalid for those statements, so preserve the pre-projection direct
 		// execution path instead of returning the wrapper's parser error.
-		rows, directErr := adapter.QueryCatalog(ctx, query, vars...)
+		rows, directErr := execer.QueryContext(ctx, query, vars...)
 		if directErr != nil {
 			return nil, nil, directErr
 		}
@@ -634,7 +1222,7 @@ func queryCatalogWithJSONScan(ctx *sql.Context, query string, vars ...any) (*std
 		return nil, nil, closeErr
 	}
 
-	rows, err := adapter.QueryCatalog(ctx, backend.QueryForJSONScan(query, schema), vars...)
+	rows, err := execer.QueryContext(ctx, backend.QueryForJSONScan(query, schema), vars...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -643,7 +1231,7 @@ func queryCatalogWithJSONScan(ctx *sql.Context, query string, vars ...any) (*std
 
 // executeBoundPlan is a QueryExecutor that calls QueryWithBindings on the given engine using the given query and parsed
 // statement, which may be nil.
-func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any) (sql.Schema, sql.RowIter, *sql.QueryFlags, error) {
+func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tree.Statement, stmt *duckdb.Stmt, vars []any) (schema sql.Schema, iter sql.RowIter, qFlags *sql.QueryFlags, returnErr error) {
 	// return h.e.PrepQueryPlanForExecution(ctx, query, plan, nil)
 
 	// TODO(fan): Currently, the result of executing the bound query is occasionally incorrect.
@@ -697,19 +1285,72 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 	// 	return nil, nil, nil, err
 	// }
 
-	stmtType, err := stmt.StatementType()
-	if err != nil {
-		return nil, nil, nil, err
+	// As in simple-query execution, transaction controls must not depend on an
+	// executor snapshot. In particular, failed-state COMMIT is the recovery
+	// operation that clears a potentially unusable transaction binding.
+	switch transaction := parsed.(type) {
+	case *tree.BeginTransaction, *tree.CommitTransaction, *tree.RollbackTransaction:
+		handled, controlErr := postgresTransactionControl(ctx, transaction, h.GetCatalogProvider())
+		if !handled {
+			return nil, nil, nil, fmt.Errorf("unsupported PostgreSQL transaction statement %T", parsed)
+		}
+		if controlErr != nil {
+			return nil, nil, nil, controlErr
+		}
+		return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{})), nil, nil
 	}
 
 	var (
-		schema sql.Schema
-		iter   sql.RowIter
 		rows   *stdsql.Rows
 		result stdsql.Result
+		err    error
 	)
+	execer, ownerConn, tx, leaseRelease, snapshotErr := h.getPostgresExecutionSnapshotLease(ctx, parsed)
+	if snapshotErr != nil {
+		return nil, nil, nil, snapshotErr
+	}
+	// Keep the selected connection/transaction and provider admission alive
+	// through iterator consumption. The defer handles every setup error and
+	// transfers ownership to the returned iterator on success.
+	defer func() {
+		if leaseRelease != nil {
+			iter = backend.WrapRowIterWithRelease(iter, leaseRelease)
+			leaseRelease = nil
+		}
+	}()
+	routedQuery, routeErr := h.rewritePostgresObjectRelationsWithSnapshot(ctx, query, execer, ownerConn)
+	if routeErr != nil {
+		return nil, nil, nil, routeErr
+	}
+	var stmtType duckdb.StmtType
+	if tx != nil {
+		// A parsed PostgreSQL portal is executed through the active *sql.Tx.
+		// Never inspect or prepare a raw driver statement on ownerConn here;
+		// doing so bypasses the transaction executor.
+		stmtType = postgresDuckDBStatementType(parsed, routedQuery)
+	} else if stmt != nil {
+		stmtType, err = stmt.StatementType()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	} else {
+		// Parse/Bind deliberately retain no raw DuckDB statement. In the
+		// no-transaction case only, use a short-lived raw probe for exact
+		// DuckDB classification. The retained execution snapshot keeps the
+		// physical owner stable while the probe runs.
+		prepareQuery := routedQuery
+		if create, ok := parsed.(*tree.CreateTable); ok {
+			if normalized, normalizeErr := postgresCreateTableQueryForPrepare(query, create); normalizeErr == nil {
+				prepareQuery = normalized
+			}
+		}
+		stmtType, _, err = prepareDuckDBStatementMetadata(ctx, ownerConn, prepareQuery)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	if _, ok := postgresInsertReturningRows(parsed); ok {
-		rows, err = adapter.QueryCatalog(ctx, query, vars...)
+		rows, err = execer.QueryContext(ctx, routedQuery, vars...)
 		if err == nil {
 			schema, err = pgtypes.InferSchema(rows)
 		}
@@ -722,10 +1363,69 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 		return schema, iter, nil, err
 	}
 
+	// Prepared PostgreSQL DDL is executed through this bound-plan path rather
+	// than executeQuery. Keep CREATE TABLE's selector and metadata behavior
+	// identical to the simple-query path, and remove MyDuck-only WITH options
+	// before handing the statement to DuckDB.
+	if create, ok := parsed.(*tree.CreateTable); ok {
+		selection, createErr := setPostgresCreateTableStorage(ctx, create)
+		if createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		if create.Persistence == tree.PersistenceTemporary && selection.IsObjectStorage() {
+			return nil, nil, nil, fmt.Errorf("%w: temporary tables cannot use object storage", catalog.ErrInvalidTableStorage)
+		}
+		executionQuery, _, createErr := postgresCreateTableExecutionQuery(query, create)
+		if createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		result, createErr := execer.ExecContext(ctx, executionQuery, vars...)
+		if createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		if createErr = persistPostgresCreateTableStorageWithExecutor(ctx, create, selection, h.GetCatalogProvider(), execer, ownerConn); createErr != nil {
+			return nil, nil, nil, createErr
+		}
+		affected, _ := result.RowsAffected()
+		insertID, _ := result.LastInsertId()
+		return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{
+			RowsAffected: uint64(affected),
+			InsertID:     uint64(insertID),
+		})), nil, nil
+	}
+	if _, ddl := parsed.(*tree.DropTable); ddl {
+		result, handled, ddlErr := h.executePostgresObjectDDL(ctx, query, routedQuery, parsed, execer, ownerConn, vars...)
+		if ddlErr != nil {
+			return nil, nil, nil, ddlErr
+		}
+		if handled {
+			affected, _ := result.RowsAffected()
+			insertID, _ := result.LastInsertId()
+			return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{
+				RowsAffected: uint64(affected),
+				InsertID:     uint64(insertID),
+			})), nil, nil
+		}
+	}
+	if _, ddl := parsed.(*tree.AlterTable); ddl {
+		result, handled, ddlErr := h.executePostgresObjectDDL(ctx, query, routedQuery, parsed, execer, ownerConn, vars...)
+		if ddlErr != nil {
+			return nil, nil, nil, ddlErr
+		}
+		if handled {
+			affected, _ := result.RowsAffected()
+			insertID, _ := result.LastInsertId()
+			return types.OkResultSchema, sql.RowsToRowIter(sql.NewRow(types.OkResult{
+				RowsAffected: uint64(affected),
+				InsertID:     uint64(insertID),
+			})), nil, nil
+		}
+	}
+
 	switch stmtType {
 	case duckdb.STATEMENT_TYPE_SELECT,
 		duckdb.STATEMENT_TYPE_RELATION:
-		rows, schema, err = queryCatalogWithJSONScan(ctx, query, vars...)
+		rows, schema, err = queryCatalogWithJSONScan(ctx, routedQuery, execer, vars...)
 		if err != nil {
 			break
 		}
@@ -737,7 +1437,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 	case duckdb.STATEMENT_TYPE_CALL,
 		duckdb.STATEMENT_TYPE_PRAGMA,
 		duckdb.STATEMENT_TYPE_EXPLAIN:
-		rows, err = adapter.QueryCatalog(ctx, query, vars...)
+		rows, err = execer.QueryContext(ctx, routedQuery, vars...)
 		if err != nil {
 			break
 		}
@@ -752,7 +1452,7 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 			break
 		}
 	default:
-		result, err = adapter.ExecCatalog(ctx, query, vars...)
+		result, err = execer.ExecContext(ctx, routedQuery, vars...)
 		if err != nil {
 			break
 		}
@@ -767,7 +1467,6 @@ func (h *DuckHandler) executeBoundPlan(ctx *sql.Context, query string, parsed tr
 	if err != nil {
 		return nil, nil, nil, err
 	}
-
 	return schema, iter, nil, nil
 }
 
@@ -780,11 +1479,26 @@ func postgresInsertReturningRows(stmt tree.Statement) (*tree.Insert, bool) {
 	return insert, ok
 }
 
-func inferPostgresInsertReturningSchema(ctx *sql.Context, insert *tree.Insert) (sql.Schema, error) {
-	returning := insert.Returning.(*tree.ReturningExprs)
-	query := "SELECT " + tree.AsString((*tree.SelectExprs)(returning)) +
+func postgresInsertReturningSchemaQuery(insert *tree.Insert) string {
+	if insert == nil {
+		return ""
+	}
+	returning, ok := insert.Returning.(*tree.ReturningExprs)
+	if !ok {
+		return ""
+	}
+	return "SELECT " + tree.AsString((*tree.SelectExprs)(returning)) +
 		" FROM " + tree.AsString(insert.Table) + " LIMIT 0"
-	rows, err := adapter.QueryCatalog(ctx, query)
+}
+
+func inferPostgresInsertReturningSchema(ctx *sql.Context, query string, execer adapter.SQLExecutor) (sql.Schema, error) {
+	if execer == nil {
+		return nil, fmt.Errorf("INSERT ... RETURNING metadata executor is unavailable")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("INSERT ... RETURNING metadata query is empty")
+	}
+	rows, err := execer.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}

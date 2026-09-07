@@ -124,7 +124,24 @@ func DeleteSubscription(ctx *sql.Context, name string) error {
 }
 
 func UpdateSubscriptionLsn(ctx *sql.Context, lsn, name string) error {
-	_, err := adapter.ExecCatalogInTxn(ctx, catalog.InternalTables.PgSubscription.UpdateStmt(keyColumns, lsnValueColumns), lsn, name)
+	_, tx, release, err := adapter.GetCatalogTxnExecutionSnapshotWithLease(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return UpdateSubscriptionLsnInTxn(ctx, tx, lsn, name)
+}
+
+// UpdateSubscriptionLsnInTxn updates the durable replication position through
+// the transaction supplied by the caller. Replication finalization snapshots
+// its physical connection and transaction together; reacquiring a catalog
+// transaction here could otherwise bind the LSN update to a replacement
+// transaction while the caller commits the old one.
+func UpdateSubscriptionLsnInTxn(ctx *sql.Context, tx *stdsql.Tx, lsn, name string) error {
+	if tx == nil {
+		return fmt.Errorf("subscription LSN update requires an active transaction")
+	}
+	_, err := tx.ExecContext(ctx, catalog.InternalTables.PgSubscription.UpdateStmt(keyColumns, lsnValueColumns), lsn, name)
 	return err
 }
 

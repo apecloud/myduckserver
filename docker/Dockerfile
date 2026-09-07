@@ -112,6 +112,7 @@ RUN useradd --create-home --user-group --shell /bin/bash admin \
 # verifies their hashes before loading them, and never downloads extensions at
 # runtime.
 COPY --chown=admin:admin --chmod=644 extensions/duckdb/v1.5.5/linux_${TARGETARCH}/ /usr/local/lib/myduckserver/duckdb-extensions/
+RUN chmod 755 /usr/local/lib/myduckserver /usr/local/lib/myduckserver/duckdb-extensions
 
 USER admin
 WORKDIR /home/admin

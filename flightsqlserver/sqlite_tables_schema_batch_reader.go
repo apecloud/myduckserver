@@ -60,10 +60,9 @@ func NewSqliteTablesSchemaBatchReader(ctx context.Context, mem memory.Allocator,
 // the historical *sql.DB API for external callers; FlightSQL uses this
 // connection-bound variant so a second uninitialized pool connection cannot
 // be opened while a request is streaming.
-func newSqliteTablesSchemaBatchReader(ctx context.Context, mem memory.Allocator, rdr array.RecordReader, preparer statementPreparer, mainQuery string) (*SqliteTablesSchemaBatchReader, error) {
-	schemaQuery := `SELECT table_name, name, type, [notnull] 
-					FROM pragma_table_info(table_name)
-					JOIN (` + mainQuery + `) WHERE table_name = ?`
+func newSqliteTablesSchemaBatchReader(ctx context.Context, mem memory.Allocator, rdr array.RecordReader, preparer statementPreparer, _ string) (*SqliteTablesSchemaBatchReader, error) {
+	schemaQuery := `SELECT ? AS table_name, name, type, "notnull"
+					FROM pragma_table_info(?)`
 
 	stmt, err := preparer.PrepareContext(ctx, schemaQuery)
 	if err != nil {
@@ -177,16 +176,16 @@ func (s *SqliteTablesSchemaBatchReader) Next() bool {
 	columnFields := make([]arrow.Field, 0)
 	for i := 0; i < tableNameArr.Len(); i++ {
 		table := tableNameArr.Value(i)
-		rows, err := s.stmt.QueryContext(s.ctx, table)
+		rows, err := s.stmt.QueryContext(s.ctx, table, table)
 		if err != nil {
 			s.err = err
 			return false
 		}
 
 		var tableName, name, typ string
-		var nn int
+		var notNull bool
 		for rows.Next() {
-			if err := rows.Scan(&tableName, &name, &typ, &nn); err != nil {
+			if err := rows.Scan(&tableName, &name, &typ, &notNull); err != nil {
 				rows.Close()
 				s.err = err
 				return false
@@ -195,7 +194,7 @@ func (s *SqliteTablesSchemaBatchReader) Next() bool {
 			columnFields = append(columnFields, arrow.Field{
 				Name:     name,
 				Type:     getArrowTypeFromString(typ),
-				Nullable: nn == 0,
+				Nullable: !notNull,
 				Metadata: getColumnMetadata(bldr, getSqlTypeFromTypeName(typ), tableName),
 			})
 		}

@@ -92,6 +92,11 @@ func (cs ConvertedStatement) QueryForAudit() string {
 // this statement is processed, the server accepts COPY DATA messages from the client with chunks of data to load
 // into a table.
 type copyFromStdinState struct {
+	// ctx is the frontend context that opened COPY. Keeping it on the state
+	// lets COPY FAIL abort the loader without manufacturing a plain/background
+	// context after the protocol has entered COPY mode.
+	ctx *sql.Context
+
 	// copyFromStdinNode stores the original CopyFrom statement that initiated the CopyData message sequence. This
 	// node is used to look at what parameters were specified, such as which table to load data into, file format,
 	// delimiters, etc.
@@ -105,16 +110,36 @@ type copyFromStdinState struct {
 	// dataLoader is the implementation of DataLoader that is used to load each individual CopyData chunk into the
 	// target table.
 	dataLoader DataLoader
+	// binding is captured before CopyInResponse is sent. Every later frontend
+	// message and asynchronous loader worker must continue to use this exact
+	// executor/connection/transaction identity.
+	binding postgresCopyBinding
+	// deferCommandComplete records that COPY was opened by the final statement
+	// of a simple Query. The handler clears its transient marker when the Query
+	// returns, but CopyDone arrives later and still needs the same protocol mode
+	// to order completion after the implicit commit.
+	deferCommandComplete bool
 	// copyErr stores any error that was returned while processing a CopyData message and loading a chunk of data
 	// to the target table. The server needs to keep track of any errors that were encountered while processing chunks
 	// so that it can avoid sending a CommandComplete message if an error was encountered after the client already
 	// sent a CopyDone message to the server.
 	copyErr error
+	// copyAborted records that the loader has already been cancelled and
+	// drained. Keep the surrounding state as a terminal sentinel until the
+	// client sends CopyDone/CopyFail (or the protocol reaches Sync), because
+	// clients such as pgx send CopyDone after observing a server-side error.
+	// This makes repeated terminal cleanup idempotent while preventing a stale
+	// COPY message from being mistaken for a new operation.
+	copyAborted bool
 }
 
 type PortalData struct {
-	Statement         ConvertedStatement
-	IsEmptyQuery      bool
+	Statement    ConvertedStatement
+	IsEmptyQuery bool
+	// Prepared indicates that this portal belongs to an engine-prepared
+	// statement. The underlying DuckDB statement is intentionally prepared at
+	// execution time and is never retained across protocol messages.
+	Prepared          bool
 	Fields            []pgproto3.FieldDescription
 	ResultFormatCodes []int16
 	Stmt              *duckdb.Stmt
@@ -123,7 +148,10 @@ type PortalData struct {
 }
 
 type PreparedStatementData struct {
-	Statement    ConvertedStatement
+	Statement ConvertedStatement
+	// Prepared distinguishes an engine statement from an in-place protocol
+	// command. Stmt is transient and is normally nil after Parse.
+	Prepared     bool
 	ReturnFields []pgproto3.FieldDescription
 	BindVarTypes []uint32
 	Stmt         *duckdb.Stmt
