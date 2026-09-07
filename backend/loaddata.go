@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/plan"
@@ -137,6 +136,27 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 	b.WriteString(" INTO ")
 
 	qualifiedTableName := catalog.ConnectIdentifiersANSI(insert.Database().Name(), dst.Name())
+	// Keep the physical snapshot alive through metadata routing, the INSERT,
+	// and consumption of the returned OK row.  LOAD DATA is built before the
+	// generic DuckBuilder snapshot path, so releasing here would let a pool
+	// reset retire the selected connection between any of those steps.
+	execer, conn, _, snapshotRelease, err := db.executionSnapshotWithLease(ctx)
+	if err != nil {
+		return nil, err
+	}
+	release := snapshotRelease
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	if db.provider != nil {
+		if physical, object, err := db.provider.PhysicalTableNameForTableWithExecutor(ctx, dst, execer, conn); err != nil {
+			return nil, err
+		} else if object {
+			qualifiedTableName = physical
+		}
+	}
 	b.WriteString(qualifiedTableName)
 
 	if len(load.ColNames) > 0 {
@@ -205,7 +225,7 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 	duckSQL := b.String()
 	ctx.GetLogger().Trace(duckSQL)
 
-	result, err := adapter.Exec(ctx, duckSQL)
+	result, err := execer.ExecContext(ctx, duckSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -220,10 +240,16 @@ func (db *DuckBuilder) executeLoadData(ctx *sql.Context, insert *plan.InsertInto
 		return nil, err
 	}
 
-	return sql.RowsToRowIter(sql.NewRow(types.OkResult{
+	iter := sql.RowsToRowIter(sql.NewRow(types.OkResult{
 		RowsAffected: uint64(affected),
 		InsertID:     uint64(insertId),
-	})), nil
+	}))
+	// The statement has no further synchronous work after this point. Transfer
+	// ownership of the snapshot lease to the result iterator and release it only
+	// after that iterator closes (including an error or an early close).
+	iter = wrapDuckLakeOperationIterWithContext(ctx, iter, snapshotRelease)
+	release = nil
+	return iter, nil
 }
 
 func singleQuotedDuckChar(s string) string {

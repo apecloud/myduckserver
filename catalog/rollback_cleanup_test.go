@@ -1,0 +1,349 @@
+package catalog
+
+import (
+	"context"
+	stdsql "database/sql"
+	"database/sql/driver"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/apecloud/myduckserver/adapter"
+	"github.com/apecloud/myduckserver/configuration"
+	"github.com/apecloud/myduckserver/mycontext"
+	"github.com/dolthub/go-mysql-server/memory"
+	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/duckdb/duckdb-go/v2"
+	"github.com/stretchr/testify/require"
+)
+
+// transactionTestSession supplies only the connection-holder surface needed by
+// rowInserter while retaining a real GMS session for sql.Context.
+type transactionTestSession struct {
+	*memory.Session
+	conn *stdsql.Conn
+	tx   *stdsql.Tx
+}
+
+var _ adapter.ConnectionHolder = (*transactionTestSession)(nil)
+var _ adapter.TransactionBindingHolder = (*transactionTestSession)(nil)
+
+func (s *transactionTestSession) GetConn(context.Context) (*stdsql.Conn, error) {
+	return s.conn, nil
+}
+
+func (s *transactionTestSession) GetTxn(context.Context, *stdsql.TxOptions) (*stdsql.Tx, error) {
+	return s.tx, nil
+}
+
+func (s *transactionTestSession) GetCatalogConn(context.Context) (*stdsql.Conn, error) {
+	return s.conn, nil
+}
+
+func (s *transactionTestSession) GetCatalogTxn(context.Context, *stdsql.TxOptions) (*stdsql.Tx, error) {
+	return s.tx, nil
+}
+
+func (s *transactionTestSession) TryGetTxn() *stdsql.Tx {
+	return s.tx
+}
+
+func (s *transactionTestSession) GetTxnBinding() (*stdsql.Conn, *stdsql.Tx) {
+	return s.conn, s.tx
+}
+
+func (s *transactionTestSession) GetCurrentCatalog() string {
+	return "memory"
+}
+
+func (s *transactionTestSession) GetCurrentSchema() string {
+	return "main"
+}
+
+func (s *transactionTestSession) CloseTxn() {
+	s.tx = nil
+}
+
+func (s *transactionTestSession) CloseConn() {}
+
+func TestRowInserterUsesActiveTransactionForObjectStyleDML(t *testing.T) {
+	ctx := context.Background()
+	connector, err := duckdb.NewConnector("", nil)
+	require.NoError(t, err)
+	db := stdsql.OpenDB(connector)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+		require.NoError(t, connector.Close())
+	})
+
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	_, err = conn.ExecContext(ctx, `CREATE TABLE "object_like" (id INTEGER, payload VARCHAR)`)
+	require.NoError(t, err)
+
+	tx, err := conn.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	session := &transactionTestSession{
+		Session: memory.NewSession(sql.NewBaseSession(), nil),
+		conn:    conn,
+		tx:      tx,
+	}
+	session.SetCurrentDatabase("memory")
+	sqlCtx := sql.NewContext(ctx, sql.WithSession(session))
+
+	ri := &rowInserter{
+		catalog: "memory",
+		db:      "main",
+		table:   "object_like",
+		schema: sql.Schema{
+			&sql.Column{Name: "id", Type: types.Int32, Nullable: false},
+			&sql.Column{Name: "payload", Type: types.Text, Nullable: true},
+		},
+	}
+	require.NoError(t, ri.Insert(sqlCtx, sql.Row{int32(7), "uncommitted"}))
+	require.NoError(t, ri.Close(sqlCtx))
+
+	var inTx int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM "object_like"`).Scan(&inTx))
+	require.Equal(t, 1, inTx)
+	require.NoError(t, tx.Rollback())
+
+	var afterRollback int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM "object_like"`).Scan(&afterRollback))
+	require.Zero(t, afterRollback)
+}
+
+func TestCleanupDuckLakeOrphansUsesCanonicalQueryAndClosesRows(t *testing.T) {
+	var actualQuery string
+	matcher := sqlmock.QueryMatcherFunc(func(_ string, actual string) error {
+		actualQuery = strings.Join(strings.Fields(actual), " ")
+		return nil
+	})
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(matcher))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	conn, err := db.Conn(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/tmp/task77/catalog.ducklake",
+		DataPath:     "/tmp/task77/data",
+	}}
+	provider := &DatabaseProvider{duckLake: runtime, storage: db}
+	// Mark the mock physical connection as already initialized and attached;
+	// this isolates the cleanup SQL from extension loading while retaining the
+	// real *sql.Conn/Raw path used in production.
+	require.NoError(t, conn.Raw(func(raw any) error {
+		physical, ok := raw.(driver.Conn)
+		require.True(t, ok)
+		runtime.initialized.Store(physical, struct{}{})
+		runtime.attached.Store(physical, struct{}{})
+		return nil
+	}))
+
+	mock.ExpectQuery("cleanup").WillReturnRows(
+		sqlmock.NewRows([]string{"path"}).AddRow("orphan-a.parquet").AddRow("orphan-b.parquet"),
+	).RowsWillBeClosed()
+
+	cleanupCtx := mycontext.WithMaintenanceQuery(context.Background())
+	require.NoError(t, provider.CleanupDuckLakeOrphansOnConn(cleanupCtx, conn))
+	require.Equal(t, strings.Join(strings.Fields(duckLakeOrphanCleanupSQL), " "), actualQuery)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCleanupDuckLakeOrphansNoopsForExtensionOnlyConfiguration(t *testing.T) {
+	provider := &DatabaseProvider{duckLake: &duckLakeRuntime{}}
+	require.NoError(t, provider.CleanupDuckLakeOrphansOnConn(
+		mycontext.WithMaintenanceQuery(context.Background()), nil,
+	))
+}
+
+func TestCleanupDuckLakeOrphansRejectsActiveSessionTransaction(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	conn, err := db.Conn(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/tmp/task77/catalog.ducklake",
+		DataPath:     "/tmp/task77/data",
+	}}
+	session := &transactionTestSession{
+		Session: memory.NewSession(sql.NewBaseSession(), nil),
+		conn:    conn,
+		tx:      new(stdsql.Tx),
+	}
+	ctx := sql.NewContext(mycontext.WithMaintenanceQuery(context.Background()), sql.WithSession(session))
+	provider := &DatabaseProvider{duckLake: runtime, storage: db}
+
+	err = provider.CleanupDuckLakeOrphansOnConn(ctx, conn)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "inactive transaction")
+}
+
+func TestCleanupDuckLakeOrphansPrechecksActiveTransactionBeforeBarrier(t *testing.T) {
+	connector, err := duckdb.NewConnector("", nil)
+	require.NoError(t, err)
+	db := stdsql.OpenDB(connector)
+	p := NewConnectionPool(connector, db, "memory")
+	provider := &DatabaseProvider{duckLake: &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/tmp/task77/catalog.ducklake",
+		DataPath:     "/tmp/task77/data",
+	}}}
+	// Use the same lifecycle hooks installed by a live provider. The active
+	// transaction must be visible to the provider barrier for this regression to
+	// catch the self-wait that occurred when the barrier ran first.
+	p.SetTransactionLifecycleHooks(provider.beginDuckLakeTransaction, provider.untrackDuckLakeTransaction)
+	t.Cleanup(func() {
+		require.NoError(t, p.Close())
+		require.NoError(t, connector.Close())
+	})
+
+	tx, err := p.GetTxn(context.Background(), 77, "", nil)
+	require.NoError(t, err)
+	conn, gotTx := p.GetTxnBinding(77)
+	require.Same(t, tx, gotTx)
+	require.NotNil(t, conn)
+
+	session := &transactionTestSession{
+		Session: memory.NewSession(sql.NewBaseSession(), nil),
+		conn:    conn,
+		tx:      tx,
+	}
+	ctx := sql.NewContext(mycontext.WithFrontendQuery(context.Background()), sql.WithSession(session))
+
+	result := make(chan error, 1)
+	go func() {
+		result <- provider.CleanupDuckLakeOrphansOnConn(ctx, conn)
+	}()
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "inactive transaction")
+	case <-time.After(time.Second):
+		t.Fatal("cleanup waited on the caller's active transaction")
+	}
+
+	_, inactive, rollbackErr := p.RollbackTxn(77, tx)
+	require.True(t, inactive)
+	require.NoError(t, rollbackErr)
+}
+
+func TestWithoutCancelContextRetainsSQLContext(t *testing.T) {
+	ctx := sql.NewContext(mycontext.WithFrontendQuery(context.Background()))
+	derived := withoutCancelContext(ctx)
+	require.IsType(t, (*sql.Context)(nil), derived)
+	require.Equal(t, mycontext.FrontendQueryOrigin, mycontext.QueryOrigin(derived))
+}
+
+func TestDuckLakeTransactionBarrierTracksPoolLifecycle(t *testing.T) {
+	connector, err := duckdb.NewConnector("", nil)
+	require.NoError(t, err)
+	db := stdsql.OpenDB(connector)
+	p := NewConnectionPool(connector, db, "memory")
+	provider := &DatabaseProvider{duckLake: &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/tmp/task77/catalog.ducklake",
+		DataPath:     "/tmp/task77/data",
+	}}}
+	p.SetTransactionLifecycleHooks(provider.beginDuckLakeTransaction, provider.untrackDuckLakeTransaction)
+	t.Cleanup(func() {
+		require.NoError(t, p.Close())
+		require.NoError(t, connector.Close())
+	})
+
+	tx, err := p.GetTxn(context.Background(), 1, "", nil)
+	require.NoError(t, err)
+	provider.duckLakeTxnMu.Lock()
+	_, tracked := provider.duckLakeActiveTx[tx]
+	provider.duckLakeTxnMu.Unlock()
+	require.True(t, tracked)
+
+	// Cleanup waits for the active writer, while a repeated GetTxn call on that
+	// same session remains immediately usable and does not join the wait.
+	cleanupDone := make(chan struct{})
+	go func() {
+		release := provider.beginDuckLakeCleanup()
+		release()
+		close(cleanupDone)
+	}()
+	select {
+	case <-cleanupDone:
+		t.Fatal("cleanup ran while a transaction was still active")
+	case <-time.After(20 * time.Millisecond):
+	}
+	got, err := p.GetTxn(context.Background(), 1, "", nil)
+	require.NoError(t, err)
+	require.Same(t, tx, got)
+	require.NoError(t, tx.Rollback())
+	p.CloseTxn(1)
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not resume after transaction finalization")
+	}
+}
+
+func TestDuckLakeTransactionAdmissionBlocksNewWriterDuringCleanup(t *testing.T) {
+	provider := &DatabaseProvider{duckLake: &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/tmp/task77/catalog.ducklake",
+		DataPath:     "/tmp/task77/data",
+	}}}
+	release := provider.beginDuckLakeCleanup()
+
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	var tx *stdsql.Tx
+	go func() {
+		close(started)
+		complete := provider.beginDuckLakeTransaction()
+		complete(tx)
+		close(finished)
+	}()
+	<-started
+	select {
+	case <-finished:
+		t.Fatal("new transaction was admitted during cleanup")
+	case <-time.After(20 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("transaction admission did not resume after cleanup")
+	}
+}
+
+func TestDuckLakeTransactionBarrierSupportsConcurrentCleanupCallers(t *testing.T) {
+	provider := &DatabaseProvider{duckLake: &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/tmp/task77/catalog.ducklake",
+		DataPath:     "/tmp/task77/data",
+	}}}
+	firstRelease := provider.beginDuckLakeCleanup()
+
+	var wg sync.WaitGroup
+	started := make(chan struct{}, 1)
+	finished := make(chan struct{}, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(started)
+		release := provider.beginDuckLakeCleanup()
+		release()
+		close(finished)
+	}()
+	<-started
+	select {
+	case <-finished:
+		t.Fatal("second cleanup entered before first released")
+	case <-time.After(20 * time.Millisecond):
+	}
+	firstRelease()
+	wg.Wait()
+}

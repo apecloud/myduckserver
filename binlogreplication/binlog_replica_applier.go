@@ -16,7 +16,6 @@ package binlogreplication
 
 import (
 	"context"
-	stdsql "database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -654,11 +653,10 @@ func (a *binlogReplicaApplier) discardOngoingTxn(ctx *sql.Context) error {
 
 	// Most replication transactions are owned by the GMS transaction above.
 	// Keep a fallback for direct writers that opened only the DuckDB transaction.
-	if txn := adapter.TryGetTxn(ctx); txn != nil {
-		if err := txn.Rollback(); err != nil && err != stdsql.ErrTxDone {
+	if txn := adapter.TryGetTxnForRelease(ctx); txn != nil {
+		if _, _, err := adapter.FinalizeRollback(ctx, txn); err != nil && !adapter.IsTransactionInactiveError(err) {
 			rollbackErr = errors.Join(rollbackErr, err)
 		}
-		adapter.CloseTxn(ctx)
 	}
 
 	a.tableWriterProvider.DiscardDeltaBuffer(ctx)
@@ -1003,11 +1001,10 @@ func (a *binlogReplicaApplier) commitOngoingTxn(ctx *sql.Context, engine *gms.En
 	}
 	// The session manager does not start an actual transaction in autocommit=1 mode,
 	// but there may be a transaction in progress if we have started it manually.
-	if tx := adapter.TryGetTxn(ctx); tx != nil {
-		if err := tx.Commit(); err != nil && err != stdsql.ErrTxDone {
+	if tx := adapter.TryGetTxnForRelease(ctx); tx != nil {
+		if err := adapter.FinalizeCommit(ctx, tx); err != nil && !adapter.IsTransactionInactiveError(err) {
 			return err
 		}
-		adapter.CloseTxn(ctx)
 	}
 
 	// --- Update the in-memory states --- //
@@ -1307,10 +1304,11 @@ func (a *binlogReplicaApplier) writeChanges(
 		dataRows = append(dataRows, dataRow)
 	}
 
-	txn, err := adapter.GetTxn(ctx, nil)
+	_, txn, release, err := adapter.GetTxnExecutionSnapshotWithLease(ctx, nil)
 	if err != nil {
 		return err
 	}
+	defer release()
 	tableWriter, err := a.tableWriterProvider.GetTableWriter(
 		ctx,
 		txn,
@@ -1463,14 +1461,11 @@ func (a *binlogReplicaApplier) appendRowFormatChanges(
 }
 
 func (a *binlogReplicaApplier) flushDeltaBuffer(ctx *sql.Context, reason delta.FlushReason) error {
-	conn, err := adapter.GetCatalogConn(ctx)
+	conn, tx, release, err := adapter.GetCatalogTxnExecutionSnapshotWithLease(ctx, nil)
 	if err != nil {
 		return err
 	}
-	tx, err := adapter.GetCatalogTxn(ctx, nil)
-	if err != nil {
-		return err
-	}
+	defer release()
 
 	defer a.deltaBufSize.Store(0)
 

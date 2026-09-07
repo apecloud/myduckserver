@@ -16,6 +16,7 @@ package backend
 import (
 	stdsql "database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
@@ -74,16 +75,32 @@ func (b *DuckBuilder) Provider() *catalog.DatabaseProvider {
 }
 
 func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sql.RowIter, err error) {
+	topLevel := r == nil
+	var snapshotRelease, operationRelease func()
+	var physicalTx *stdsql.Tx
+	defer func() {
+		// Query-row limiting is a top-level concern. Keep the two lifecycle leases
+		// outside that wrapper so an early limit/error closes the child before the
+		// snapshot is released, while an admitted operation can remain held until
+		// transaction finalization.
+		if topLevel && err == nil && iter != nil {
+			iter = ApplyQueryRowLimit(ctx, root.Schema(ctx), iter)
+			if snapshotRelease != nil || operationRelease != nil {
+				iter = wrapDuckLakeOperationIterWithLeasesAndTx(ctx, iter, physicalTx, snapshotRelease, operationRelease)
+				snapshotRelease = nil
+				operationRelease = nil
+			}
+		}
+		if snapshotRelease != nil {
+			snapshotRelease()
+		}
+		if operationRelease != nil {
+			operationRelease()
+		}
+	}()
+
 	// The engine passes a nil input row for the top-level result iterator.
 	// Subquery iterators must not count intermediate rows against the limit.
-	if r == nil {
-		defer func() {
-			if err == nil && iter != nil {
-				iter = ApplyQueryRowLimit(ctx, root.Schema(ctx), iter)
-			}
-		}()
-	}
-
 	// Flush the delta buffer before executing the query. Replication controller
 	// commands must remain able to stop an applier while it is connecting and
 	// therefore cannot wait on the applier-owned query barrier.
@@ -101,18 +118,51 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 		}).Traceln("Building node:", n)
 	}
 
+	// Admit every top-level frontend execution before any fallback
+	// classification. GMS-owned CALL/DDL/constraint paths can still touch
+	// DuckLake through their base builder, and classifying them first leaves a
+	// cleanup window in which rollback can overtake that work. Transaction
+	// controls are explicitly excluded because their job is to drain/release the
+	// barrier and must remain usable while cleanup is active.
+	if topLevel && b.shouldBeginDuckLakeOperation(ctx, root) {
+		operationRelease, err = b.beginDuckLakeOperationWithError(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// TODO; find a better way to fallback to the base builder
 	switch n.(type) {
+	case *plan.Call:
+		// GMS buildCall temporarily clears the session transaction and restores
+		// it in a defer. Mark that synchronous scope so Session can suspend an
+		// implicit marker instead of treating the detach as a real rollback.
+		if sess, ok := ctx.Session.(*Session); ok {
+			endProcedureScope := sess.beginProcedureTransactionScope()
+			defer endProcedureScope()
+		}
+		return b.base.Build(ctx, root, r)
 	case *plan.CreateDB, *plan.DropDB, *plan.DropTable, *plan.RenameTable,
 		*plan.CreateTable, *plan.AddColumn, *plan.RenameColumn, *plan.DropColumn, *plan.ModifyColumn,
 		*plan.Truncate,
 		*plan.CreateIndex, *plan.DropIndex, *plan.AlterIndex, *plan.ShowIndexes,
 		*plan.ShowTables, *plan.ShowCreateTable, *plan.ShowColumns,
 		*plan.ShowBinlogs, *plan.ShowBinlogStatus, *plan.ShowWarnings,
-		*plan.StartTransaction, *plan.Commit, *plan.Rollback,
+		*plan.Commit, *plan.Rollback,
 		*plan.Set, *plan.ShowVariables,
 		*plan.AlterDefaultSet, *plan.AlterDefaultDrop:
 		return b.base.Build(ctx, root, r)
+	case *plan.StartTransaction:
+		// GMS sets IgnoreAutoCommit only after calling Session.StartTransaction.
+		// An explicit BEGIN must therefore opt in before delegating so the
+		// session can bind the transaction to DuckDB even when @@autocommit=1.
+		ignoreAutoCommit := ctx.GetIgnoreAutoCommit()
+		ctx.SetIgnoreAutoCommit(true)
+		iter, err := b.base.Build(ctx, root, r)
+		if err != nil {
+			ctx.SetIgnoreAutoCommit(ignoreAutoCommit)
+		}
+		return iter, err
 	case *plan.InsertInto:
 		insert := n.(*plan.InsertInto)
 
@@ -158,8 +208,11 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 		ctx.GetLogger().Traceln("Falling back to the base builder")
 		return b.base.Build(ctx, root, r)
 	}
+	if !b.needsExecutionSnapshot(n) {
+		return b.base.Build(ctx, n, r)
+	}
 
-	conn, err := b.provider.Pool().GetConnForSchema(ctx, ctx.ID(), ctx.GetCurrentDatabase())
+	execer, conn, physicalTx, snapshotRelease, err := b.executionSnapshotWithLease(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -167,19 +220,23 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 	switch node := n.(type) {
 	case *plan.Use:
 		useStmt := "USE " + catalog.FullSchemaName(adapter.GetCurrentCatalog(ctx), node.Database().Name())
-		if _, err := conn.ExecContext(ctx.Context, useStmt); err != nil {
+		if _, err := execer.ExecContext(ctx.Context, useStmt); err != nil {
 			if catalog.IsDuckDBSetSchemaNotFoundError(err) {
 				return nil, sql.ErrDatabaseNotFound.New(node.Database().Name())
 			}
 			return nil, err
 		}
+		// USE has finished its only physical operation. Do not retain a pool
+		// snapshot while the native GMS result iterator is finalized.
+		snapshotRelease()
+		snapshotRelease = nil
 		return b.base.Build(ctx, root, r)
 	// ResolvedTable is for `SELECT * FROM table` and `TABLE table`
 	// SubqueryAlias is for `SELECT * FROM view`
 	case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.TableAlias:
-		return b.executeQuery(ctx, node, conn)
+		return b.executeQuery(ctx, node, execer, conn)
 	case *plan.Distinct, *plan.OrderedDistinct:
-		return b.executeQuery(ctx, node, conn)
+		return b.executeQuery(ctx, node, execer, conn)
 	case *plan.TableCopier:
 		// We preserve the table schema in a best-effort manner.
 		// For simple `CREATE TABLE t AS SELECT * FROM t`,
@@ -188,20 +245,123 @@ func (b *DuckBuilder) Build(ctx *sql.Context, root sql.Node, r sql.Row) (iter sq
 		if _, ok := node.Source.(*plan.ResolvedTable); ok {
 			return b.base.Build(ctx, root, r)
 		}
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, execer, conn)
 	case *plan.DeleteFrom:
 		if node.Returning != nil {
-			return b.executeQuery(ctx, node, conn)
+			return b.executeQuery(ctx, node, execer, conn)
 		}
 		node.Child = withMySQLOkResultSchema(node.Child)
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, execer, conn)
 	case sql.Expressioner:
-		return b.executeExpressioner(ctx, node, conn)
+		return b.executeExpressioner(ctx, node, execer, conn)
 	case *plan.Truncate:
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, execer, conn)
 	default:
 		return b.base.Build(ctx, n, r)
 	}
+}
+
+// needsExecutionSnapshot identifies the branches that actually execute SQL
+// through the DuckDB connection captured by executionSnapshotWithLease. GMS
+// fallback plans must retain their native iterator contract; taking a snapshot
+// for them merely to release it from a wrapper can cause finalization to rewrite
+// an otherwise valid child to nil.
+func (b *DuckBuilder) needsExecutionSnapshot(root sql.Node) bool {
+	// DDL and SHOW plans are intentionally executed by GMS's catalog builder.
+	// Several of them also satisfy sql.Expressioner, so this guard must precede
+	// the interface case below.
+	if plan.IsDDLNode(root) || plan.IsShowNode(root) {
+		return false
+	}
+	switch node := root.(type) {
+	case *plan.Use,
+		*plan.ResolvedTable,
+		*plan.SubqueryAlias,
+		*plan.TableAlias,
+		*plan.Distinct,
+		*plan.OrderedDistinct,
+		*plan.DeleteFrom,
+		sql.Expressioner:
+		return true
+	case *plan.TableCopier:
+		_, simple := node.Source.(*plan.ResolvedTable)
+		return !simple
+	default:
+		return false
+	}
+}
+
+func (b *DuckBuilder) shouldBeginDuckLakeOperation(ctx *sql.Context, root sql.Node) bool {
+	if b == nil || b.provider == nil || ctx == nil || ctx.Session == nil {
+		return false
+	}
+	// Do not install a lifecycle wrapper for ordinary local/catalog queries when
+	// the service-managed DuckLake catalog is disabled. Besides avoiding needless
+	// iterator layers, this preserves GMS's native fallback iterator contracts
+	// (some DDL paths intentionally return an unwrapped result iterator).
+	if !b.provider.DuckLakeObjectStorageEnabled() {
+		return false
+	}
+	// Transaction controls can invoke rollback/commit from iterator Close. They
+	// must not hold the same provider operation lease that rollback cleanup waits
+	// on, or a GMS-only control would wait on itself.
+	switch root.(type) {
+	case *plan.StartTransaction, *plan.Commit, *plan.Rollback:
+		return false
+	}
+	if _, ok := ctx.Session.(adapter.ConnectionHolder); !ok {
+		return false
+	}
+	// Admission is intentionally independent of the current transaction
+	// pointer. A transaction can be created immediately after this check; taking
+	// the operation lease first closes that race, while the provider's
+	// transaction barrier continues to account for the physical transaction.
+	return true
+}
+
+func (b *DuckBuilder) beginDuckLakeOperation(ctx *sql.Context) func() {
+	release, _ := b.beginDuckLakeOperationWithError(ctx)
+	return release
+}
+
+func (b *DuckBuilder) beginDuckLakeOperationWithError(ctx *sql.Context) (func(), error) {
+	if b == nil || b.provider == nil || ctx == nil {
+		return func() {}, nil
+	}
+	if sess, ok := ctx.Session.(*Session); ok {
+		return sess.BeginDuckLakeOperationWithError(ctx)
+	}
+	return b.provider.BeginDuckLakeOperationWithError(ctx)
+}
+
+// executionSnapshot obtains the executor and its physical owner atomically
+// from the session lifecycle. The small legacy fallback is retained for unit
+// contexts that expose a provider pool but no adapter.ConnectionHolder.
+func (b *DuckBuilder) executionSnapshot(ctx *sql.Context) (adapter.SQLExecutor, *stdsql.Conn, *stdsql.Tx, error) {
+	execer, conn, tx, release, err := b.executionSnapshotWithLease(ctx)
+	if release != nil {
+		release()
+	}
+	return execer, conn, tx, err
+}
+
+// executionSnapshotWithLease is the lifetime-safe execution form. The
+// returned release callback must remain held until all iterator work using the
+// captured executor and physical owner has completed.
+func (b *DuckBuilder) executionSnapshotWithLease(ctx *sql.Context) (adapter.SQLExecutor, *stdsql.Conn, *stdsql.Tx, func(), error) {
+	if ctx != nil && ctx.Session != nil {
+		if _, ok := ctx.Session.(adapter.ConnectionHolder); ok {
+			return adapter.GetExecutionSnapshotWithLease(ctx)
+		}
+	}
+	if b == nil || b.provider == nil {
+		return nil, nil, nil, func() {}, fmt.Errorf("database provider is unavailable")
+	}
+	conn, err := b.provider.Pool().GetConnForSchema(ctx, ctx.ID(), ctx.GetCurrentDatabase())
+	if err != nil {
+		return nil, nil, nil, func() {}, err
+	}
+	return conn, conn, nil, func() {}, nil
 }
 
 func (b *DuckBuilder) flushDeltaBuffer(ctx *sql.Context, root sql.Node) error {
@@ -239,25 +399,25 @@ func isStandaloneVectorConversion(ctx *sql.Context, n sql.Node) bool {
 	return found
 }
 
-func (b *DuckBuilder) executeExpressioner(ctx *sql.Context, n sql.Expressioner, conn *stdsql.Conn) (sql.RowIter, error) {
+func (b *DuckBuilder) executeExpressioner(ctx *sql.Context, n sql.Expressioner, execer adapter.SQLExecutor, conn *stdsql.Conn) (sql.RowIter, error) {
 	node := n.(sql.Node)
 	switch n := n.(type) {
 	case *plan.InsertInto:
 		if n.Returning != nil {
-			return b.executeQuery(ctx, node, conn)
+			return b.executeQuery(ctx, node, execer, conn)
 		}
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, execer, conn)
 	case *plan.Update:
 		if n.Returning == nil {
 			n.Child = withMySQLOkResultSchema(n.Child)
 		}
-		return b.executeDML(ctx, node, conn)
+		return b.executeDML(ctx, node, execer, conn)
 	default:
-		return b.executeQuery(ctx, node, conn)
+		return b.executeQuery(ctx, node, execer, conn)
 	}
 }
 
-func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Conn) (sql.RowIter, error) {
+func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, execer adapter.SQLExecutor, owners ...*stdsql.Conn) (sql.RowIter, error) {
 	ctx.GetLogger().Trace("Executing Query...")
 
 	var (
@@ -279,6 +439,14 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 		return nil, catalog.ErrTranspiler.New(err)
 	}
 	duckSQL = QueryForJSONScan(duckSQL, n.Schema(ctx))
+	var conn *stdsql.Conn
+	if len(owners) > 0 {
+		conn = owners[0]
+	}
+	duckSQL, err = b.rewriteObjectRelationsWithSnapshot(ctx, n, duckSQL, execer, conn)
+	if err != nil {
+		return nil, err
+	}
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
 		log.WithFields(logrus.Fields{
@@ -288,7 +456,7 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	}
 
 	// Execute the DuckDB query
-	rows, err := conn.QueryContext(ctx.Context, duckSQL)
+	rows, err := execer.QueryContext(ctx.Context, duckSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -296,11 +464,19 @@ func (b *DuckBuilder) executeQuery(ctx *sql.Context, n sql.Node, conn *stdsql.Co
 	return NewSQLRowIter(rows, n.Schema(ctx))
 }
 
-func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn) (sql.RowIter, error) {
+func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, execer adapter.SQLExecutor, owners ...*stdsql.Conn) (sql.RowIter, error) {
 	// Translate the MySQL query to a DuckDB query
 	duckSQL, err := transpiler.TranslateWithSQLGlot(queryForTranslation(ctx))
 	if err != nil {
 		return nil, catalog.ErrTranspiler.New(err)
+	}
+	var conn *stdsql.Conn
+	if len(owners) > 0 {
+		conn = owners[0]
+	}
+	duckSQL, err = b.rewriteObjectRelationsWithSnapshot(ctx, n, duckSQL, execer, conn)
+	if err != nil {
+		return nil, err
 	}
 
 	if log := ctx.GetLogger(); log.Logger.IsLevelEnabled(logrus.TraceLevel) {
@@ -314,10 +490,10 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 	if _, ok := n.(*plan.TableCopier); ok {
 		// DuckDB returns the CTAS insert count as a one-row result. Its C API
 		// rows-changed value is defined only for INSERT, UPDATE, and DELETE.
-		err = conn.QueryRowContext(ctx.Context, duckSQL).Scan(&affected)
+		err = execer.QueryRowContext(ctx.Context, duckSQL).Scan(&affected)
 	} else {
 		var result stdsql.Result
-		result, err = conn.ExecContext(ctx.Context, duckSQL)
+		result, err = execer.ExecContext(ctx.Context, duckSQL)
 		if err == nil {
 			affected, err = result.RowsAffected()
 		}
@@ -347,6 +523,83 @@ func (b *DuckBuilder) executeDML(ctx *sql.Context, n sql.Node, conn *stdsql.Conn
 		InsertID:     uint64(insertID),
 		Info:         info,
 	})), nil
+}
+
+// rewriteObjectRelations keeps GMS's logical shadow tables available for
+// analysis while routing the executed SQL to the durable DuckLake relation.
+// The plan is the source of truth for relation identity, so a bare table name
+// is only routed when it is unambiguous within this statement.
+func (b *DuckBuilder) rewriteObjectRelations(ctx *sql.Context, root sql.Node, query string) (string, error) {
+	execer, conn, _, err := b.executionSnapshot(ctx)
+	if err != nil {
+		return "", err
+	}
+	return b.rewriteObjectRelationsWithSnapshot(ctx, root, query, execer, conn)
+}
+
+// rewriteObjectRelationsWithSnapshot is the transaction-affine variant used
+// by statement execution. It never asks the pool for another executor while
+// resolving durable object-table metadata.
+func (b *DuckBuilder) rewriteObjectRelationsWithSnapshot(
+	ctx *sql.Context,
+	root sql.Node,
+	query string,
+	execer adapter.SQLExecutor,
+	conn *stdsql.Conn,
+) (string, error) {
+	if b.provider == nil || root == nil {
+		return query, nil
+	}
+	collector := &tableAndFuncCollector{ctx: ctx}
+	transform.Walk(collector, root)
+	routes := make(map[string]string)
+	bareRoutes := make(map[string]string)
+	bareHasLocal := make(map[string]bool)
+	ambiguousBare := make(map[string]bool)
+	for _, node := range collector.tables {
+		var table *catalog.Table
+		switch underlying := node.UnderlyingTable().(type) {
+		case *catalog.Table:
+			table = underlying
+		case *catalog.IndexedTable:
+			table = underlying.Table
+		}
+		if table == nil {
+			continue
+		}
+		physical, object, err := b.provider.PhysicalTableNameForTableWithExecutor(ctx, table, execer, conn)
+		if err != nil {
+			return "", err
+		}
+		if !object {
+			bareHasLocal[strings.ToLower(table.Name())] = true
+			continue
+		}
+		schema := ""
+		if db := node.Database(); db != nil {
+			schema = db.Name()
+		}
+		name := strings.ToLower(table.Name())
+		if schema != "" {
+			routes[strings.ToLower(schema)+"."+name] = physical
+		}
+		if ambiguousBare[name] {
+			continue
+		}
+		if previous, exists := bareRoutes[name]; exists && previous != physical {
+			delete(bareRoutes, name)
+			ambiguousBare[name] = true
+			continue
+		}
+		bareRoutes[name] = physical
+	}
+	for name, physical := range bareRoutes {
+		if !bareHasLocal[name] && !ambiguousBare[name] {
+			routes[name] = physical
+		}
+	}
+	rewritten, _ := RewriteSQLRelations(query, routes)
+	return rewritten, nil
 }
 
 // queryForTranslation canonicalizes ANSI-quoted identifiers before SQLGlot

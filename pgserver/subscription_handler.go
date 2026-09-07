@@ -2,14 +2,16 @@ package pgserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
+	"strings"
+
 	"github.com/apecloud/myduckserver/adapter"
 	"github.com/apecloud/myduckserver/catalog"
 	"github.com/apecloud/myduckserver/pgserver/logrepl"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jackc/pglogrepl"
-	"regexp"
-	"strings"
 )
 
 // This file handles SQL statements for managing PostgreSQL subscriptions. It supports:
@@ -176,7 +178,7 @@ func (h *ConnectionHandler) executeSubscriptionSQL(subscriptionConfig *Subscript
 }
 
 func (h *ConnectionHandler) executeEnableSubscription(subscriptionConfig *SubscriptionConfig) error {
-	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(frontendContext(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
@@ -197,7 +199,7 @@ func (h *ConnectionHandler) executeEnableSubscription(subscriptionConfig *Subscr
 }
 
 func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *SubscriptionConfig) error {
-	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(frontendContext(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
@@ -218,7 +220,7 @@ func (h *ConnectionHandler) executeDisableSubscription(subscriptionConfig *Subsc
 }
 
 func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) error {
-	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(frontendContext(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
@@ -239,7 +241,7 @@ func (h *ConnectionHandler) executeDrop(subscriptionConfig *SubscriptionConfig) 
 }
 
 func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig) error {
-	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(context.Background(), h.mysqlConn, "")
+	sqlCtx, err := h.duckHandler.sm.NewContextWithQuery(frontendContext(context.Background()), h.mysqlConn, "")
 	if err != nil {
 		return fmt.Errorf("failed to create context for query: %w", err)
 	}
@@ -257,14 +259,10 @@ func (h *ConnectionHandler) executeCreate(subscriptionConfig *SubscriptionConfig
 	return nil
 }
 
-func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig) (pglogrepl.LSN, error) {
+func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig) (lsn pglogrepl.LSN, err error) {
 	// If there is ongoing transcation, commit it
-	if txn := adapter.TryGetTxn(sqlCtx); txn != nil {
-		if err := func() error {
-			defer txn.Rollback()
-			defer adapter.CloseTxn(sqlCtx)
-			return txn.Commit()
-		}(); err != nil {
+	if _, txn := adapter.TryGetTxnBindingForRelease(sqlCtx); txn != nil {
+		if err := adapter.FinalizeCommit(sqlCtx, txn); err != nil {
 			return 0, fmt.Errorf("failed to commit current transaction: %w", err)
 		}
 	}
@@ -282,7 +280,7 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 	}()
 
 	var currentLSN string
-	err := adapter.QueryRowCatalog(
+	err = adapter.QueryRowCatalog(
 		sqlCtx,
 		fmt.Sprintf("SELECT * FROM postgres_query('%s', 'SELECT pg_current_wal_lsn()')", attachName),
 	).Scan(&currentLSN)
@@ -290,7 +288,7 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 		return 0, fmt.Errorf("failed to query WAL LSN: %w", err)
 	}
 
-	lsn, err := pglogrepl.ParseLSN(currentLSN)
+	lsn, err = pglogrepl.ParseLSN(currentLSN)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse LSN: %w", err)
 	}
@@ -328,19 +326,32 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 		return 0, err
 	}
 
+	txn, err := adapter.GetCatalogTxn(sqlCtx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		_, _, rollbackErr := adapter.FinalizeRollback(sqlCtx, txn)
+		if rollbackErr != nil && !adapter.IsTransactionInactiveError(rollbackErr) {
+			rollbackErr = fmt.Errorf("failed to roll back snapshot transaction: %w", rollbackErr)
+			if err == nil {
+				err = rollbackErr
+			} else {
+				err = errors.Join(err, rollbackErr)
+			}
+		}
+	}()
+
 	// Create all schemas in the target database
 	for _, t := range tables {
 		if _, err := adapter.ExecCatalogInTxn(sqlCtx, `CREATE SCHEMA IF NOT EXISTS `+catalog.QuoteIdentifierANSI(t.schema)); err != nil {
 			return 0, fmt.Errorf("failed to create schema: %w", err)
 		}
 	}
-
-	txn, err := adapter.GetCatalogTxn(sqlCtx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get transaction: %w", err)
-	}
-	defer txn.Rollback()
-	defer adapter.CloseTxn(sqlCtx)
 
 	for _, t := range tables {
 		if _, err := adapter.ExecCatalogInTxn(
@@ -351,11 +362,15 @@ func (h *ConnectionHandler) doSnapshot(sqlCtx *sql.Context, subscriptionConfig *
 		}
 	}
 
-	return lsn, txn.Commit()
+	if err = adapter.FinalizeCommit(sqlCtx, txn); err != nil {
+		return 0, fmt.Errorf("failed to commit snapshot transaction: %w", err)
+	}
+	committed = true
+	return lsn, nil
 }
 
-func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) error {
-	err := logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
+func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscriptionConfig *SubscriptionConfig, lsn pglogrepl.LSN) (err error) {
+	err = logrepl.CreatePublicationIfNotExists(subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName)
 	if err != nil {
 		return fmt.Errorf("failed to create publication: %w", err)
 	}
@@ -364,16 +379,30 @@ func (h *ConnectionHandler) doCreateSubscription(sqlCtx *sql.Context, subscripti
 	if err != nil {
 		return fmt.Errorf("failed to get transaction: %w", err)
 	}
-	defer tx.Rollback()
-	defer adapter.CloseTxn(sqlCtx)
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		_, _, rollbackErr := adapter.FinalizeRollback(sqlCtx, tx)
+		if rollbackErr != nil && !adapter.IsTransactionInactiveError(rollbackErr) {
+			rollbackErr = fmt.Errorf("failed to roll back subscription transaction: %w", rollbackErr)
+			if err == nil {
+				err = rollbackErr
+			} else {
+				err = errors.Join(err, rollbackErr)
+			}
+		}
+	}()
 
 	if err = logrepl.CreateSubscription(sqlCtx, subscriptionConfig.SubscriptionName, subscriptionConfig.ToDNS(), subscriptionConfig.PublicationName, lsn.String(), true); err != nil {
 		return fmt.Errorf("failed to write subscription: %w", err)
 	}
 
-	if err = adapter.CommitAndCloseTxn(sqlCtx); err != nil {
-		return err
+	if err = adapter.FinalizeCommit(sqlCtx, tx); err != nil {
+		return fmt.Errorf("failed to commit subscription transaction: %w", err)
 	}
+	committed = true
 
 	if err = logrepl.UpdateSubscriptions(sqlCtx); err != nil {
 		return fmt.Errorf("failed to update subscriptions: %w", err)

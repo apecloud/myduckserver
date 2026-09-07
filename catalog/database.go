@@ -2,6 +2,7 @@ package catalog
 
 import (
 	stdsql "database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -18,9 +19,10 @@ import (
 )
 
 type Database struct {
-	mu      *sync.RWMutex
-	catalog string
-	name    string
+	mu       *sync.RWMutex
+	catalog  string
+	name     string
+	provider *DatabaseProvider
 }
 
 type ExtraViewInfo struct {
@@ -52,10 +54,23 @@ func vectorGeneratedExpression(col *sql.Column, typ types.VectorType) (string, e
 }
 
 func NewDatabase(name string, catalogName string) *Database {
+	return newDatabase(name, catalogName, nil)
+}
+
+// NewDatabaseWithProvider constructs a logical database bound to the owning
+// provider. Protocol adapters that bypass DatabaseProvider.Database (notably
+// PostgreSQL's direct parser path) must use this form so object-table
+// materialization and physical-name resolution retain the DuckLake runtime.
+func NewDatabaseWithProvider(name string, catalogName string, provider *DatabaseProvider) *Database {
+	return newDatabase(name, catalogName, provider)
+}
+
+func newDatabase(name string, catalogName string, provider *DatabaseProvider) *Database {
 	return &Database{
-		mu:      &sync.RWMutex{},
-		name:    name,
-		catalog: catalogName,
+		mu:       &sync.RWMutex{},
+		name:     name,
+		catalog:  catalogName,
+		provider: provider,
 	}
 }
 
@@ -146,7 +161,39 @@ func (d *Database) Name() string {
 	return d.name
 }
 
-func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, temporary bool) error {
+func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, storage TableStorageSelection, temporary bool) error {
+	if err := storage.Validate(); err != nil {
+		return err
+	}
+	if temporary && storage.IsObjectStorage() {
+		return fmt.Errorf("%w: temporary tables cannot use object storage", ErrInvalidTableStorage)
+	}
+	if storage.Kind == "" {
+		storage = DefaultTableStorageSelection()
+	}
+	if storage.IsObjectStorage() {
+		return d.createObjectTable(ctx, name, schema, collation, comment, storage)
+	}
+	return d.createLocalTable(ctx, name, schema, collation, comment, storage, temporary)
+}
+
+// createLocalTable materializes the managed shadow table. Object tables use
+// the same path after their physical DuckLake relation has been created; the
+// shadow is intentionally empty and exists only for GMS schema/comment
+// discovery.
+func (d *Database) createLocalTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, storage TableStorageSelection, temporary bool) error {
+	execer, _, _, release, err := adapter.GetExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return d.createLocalTableWithExecutor(ctx, name, schema, collation, comment, storage, temporary, execer)
+}
+
+func (d *Database) createLocalTableWithExecutor(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, storage TableStorageSelection, temporary bool, execer adapter.SQLExecutor) error {
+	if execer == nil {
+		return fmt.Errorf("table creation executor is unavailable")
+	}
 	var columns []string
 	var columnCommentSQLs []string
 	var fullTableName string
@@ -269,7 +316,13 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 	b.WriteString(")")
 
 	// Add comment to the table
-	info := ExtraTableInfo{schema.PkOrdinals, withoutIndex, fullSequenceName, nil}
+	info := ExtraTableInfo{
+		PkOrdinals: schema.PkOrdinals,
+		Replicated: withoutIndex,
+		Sequence:   fullSequenceName,
+		Checks:     nil,
+		Storage:    storage.Kind,
+	}
 	b.WriteString(fmt.Sprintf(
 		"; COMMENT ON TABLE %s IS '%s'",
 		fullTableName,
@@ -288,7 +341,7 @@ func (d *Database) createAllTable(ctx *sql.Context, name string, schema sql.Prim
 		logger.WithField("DuckSQL", ddl).Debug("Executing DDL")
 	}
 
-	_, err := adapter.Exec(ctx, ddl)
+	_, err := execer.ExecContext(ctx, ddl)
 	if err != nil {
 		if IsDuckDBTableAlreadyExistsError(err) {
 			return sql.ErrTableAlreadyExists.New(name)
@@ -322,14 +375,162 @@ func isIndexCreationDisabled(ctx *sql.Context) bool {
 func (d *Database) CreateTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.createAllTable(ctx, name, schema, collation, comment, false)
+	storage := DefaultTableStorageSelection()
+	if selected, ok := TableStorageSelectionFromContext(ctx); ok {
+		storage = selected
+	}
+	return d.createAllTable(ctx, name, schema, collation, comment, storage, false)
+}
+
+// CreateTableWithStorage is the explicit catalog boundary for protocol
+// adapters that already normalized a table selector. It is intentionally
+// limited to selection propagation and metadata; object-table physical
+// routing is owned by the follow-up storage implementation.
+func (d *Database) CreateTableWithStorage(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID, comment string, storage TableStorageSelection) error {
+	if err := storage.Validate(); err != nil {
+		return err
+	}
+	if err := SetTableStorageSelection(ctx, storage); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.createAllTable(ctx, name, schema, collation, comment, storage, false)
+}
+
+// RecordTableStorageSelection updates the managed table metadata for a table
+// created by a protocol path that bypasses sql.TableCreator (currently the
+// PostgreSQL handler). It preserves the user-visible table comment and makes
+// the selection available after a fresh catalog reload.
+func (d *Database) RecordTableStorageSelection(ctx *sql.Context, name string, storage TableStorageSelection) error {
+	if storage.IsObjectStorage() {
+		_, activeTx := adapter.TryGetTxnBinding(ctx)
+		if activeTx == nil {
+			conn, tx, release, err := adapter.GetCatalogTxnExecutionSnapshotWithLease(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer release()
+			execer := adapter.SQLExecutor(tx)
+			operationErr := d.recordTableStorageSelectionWithExecutor(ctx, name, storage, execer, conn)
+			if operationErr != nil {
+				_, _, rollbackErr := adapter.FinalizeRollback(ctx, tx)
+				return errors.Join(operationErr, rollbackErr)
+			}
+			return adapter.FinalizeCommit(ctx, tx)
+		}
+	}
+	execer, conn, _, release, err := adapter.GetCatalogExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return d.recordTableStorageSelectionWithExecutor(ctx, name, storage, execer, conn)
+}
+
+// RecordTableStorageSelectionWithExecutor updates managed table metadata
+// through an executor/connection pair that the caller already captured. PG
+// protocol execution holds that snapshot across the statement (and often its
+// result iterator), so reacquiring it here can deadlock behind a pending pool
+// shutdown writer. Callers using this method own any surrounding transaction;
+// this method deliberately does not open a second scoped transaction.
+func (d *Database) RecordTableStorageSelectionWithExecutor(
+	ctx *sql.Context,
+	name string,
+	storage TableStorageSelection,
+	execer adapter.SQLExecutor,
+	conn *stdsql.Conn,
+) error {
+	return d.recordTableStorageSelectionWithExecutor(ctx, name, storage, execer, conn)
+}
+
+func (d *Database) recordTableStorageSelectionWithExecutor(
+	ctx *sql.Context,
+	name string,
+	storage TableStorageSelection,
+	execer adapter.SQLExecutor,
+	conn *stdsql.Conn,
+) error {
+	if err := storage.Validate(); err != nil {
+		return err
+	}
+	if d.catalog == "temp" && storage.IsObjectStorage() {
+		return fmt.Errorf("%w: temporary tables cannot use object storage", ErrInvalidTableStorage)
+	}
+	// Keep the PostgreSQL parser bridge's disabled-service contract aligned
+	// with the ordinary MySQL object-table path.  The bridge runs after the
+	// logical shadow CREATE, so it cannot rely on createObjectTable's earlier
+	// configuration guard.
+	if storage.IsObjectStorage() && (d.provider == nil || d.provider.duckLake == nil) {
+		return fmt.Errorf("%w: DuckLake service configuration is disabled", ErrInvalidTableStorage)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if execer == nil {
+		return fmt.Errorf("table storage metadata executor is unavailable")
+	}
+
+	if storage.IsObjectStorage() {
+		// Both the ordinary catalog boundary and the PostgreSQL parser bridge must
+		// create the physical relation. The bridge supplies an executor-affine
+		// snapshot and deliberately skips opening a second scoped transaction, but
+		// that must not turn metadata publication into a shadow-only operation.
+		if err := d.materializeObjectTableWithExecutor(ctx, name, execer, conn); err != nil {
+			return err
+		}
+		if err := d.provider.EnsureDuckLakeConnectionWithExecutor(ctx, execer, conn); err != nil {
+			return err
+		}
+	}
+
+	rows, err := execer.QueryContext(ctx, `
+		SELECT comment
+		FROM duckdb_tables()
+		WHERE database_name = ? AND schema_name = ? AND table_name = ?
+	`, d.catalog, d.name, name)
+	if err != nil {
+		return ErrDuckDB.New(err)
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return ErrDuckDB.New(err)
+		}
+		_ = rows.Close()
+		return sql.ErrTableNotFound.New(name)
+	}
+
+	var rawComment stdsql.NullString
+	if err := rows.Scan(&rawComment); err != nil {
+		_ = rows.Close()
+		return ErrDuckDB.New(err)
+	}
+	if err := rows.Close(); err != nil {
+		return ErrDuckDB.New(err)
+	}
+	comment := DecodeComment[ExtraTableInfo](rawComment.String)
+	info := comment.Meta
+	info.Storage = storage.Kind
+	encoded := NewCommentWithMeta(comment.Text, info).Encode()
+	_, err = execer.ExecContext(ctx, fmt.Sprintf(`COMMENT ON TABLE %s IS '%s'`, FullTableName(d.catalog, d.name, name), encoded))
+	if err != nil {
+		if storage.IsObjectStorage() {
+			d.dropLakeRelation(nil, nil, ctx, d.objectPhysicalTableName(name))
+		}
+		return ErrDuckDB.New(err)
+	}
+	return nil
 }
 
 // CreateTemporaryTable implements sql.CreateTemporaryTable.
 func (d *Database) CreateTemporaryTable(ctx *sql.Context, name string, schema sql.PrimaryKeySchema, collation sql.CollationID) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.createAllTable(ctx, name, schema, collation, "", true)
+	storage := DefaultTableStorageSelection()
+	if selected, ok := TableStorageSelectionFromContext(ctx); ok {
+		storage = selected
+	}
+	return d.createAllTable(ctx, name, schema, collation, "", storage, true)
 }
 
 // DropTable implements sql.TableDropper.
@@ -337,13 +538,38 @@ func (d *Database) DropTable(ctx *sql.Context, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := adapter.Exec(ctx, fmt.Sprintf(`DROP TABLE %s`, FullTableName(d.catalog, d.name, name)))
+	execer, conn, _, release, err := adapter.GetExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	physical := FullTableName(d.catalog, d.name, name)
+	object := false
+	if d.provider != nil && d.provider.duckLake != nil {
+		if resolved, found, err := d.provider.ObjectTableNameWithExecutor(ctx, execer, d.catalog, d.name, name); err != nil {
+			return err
+		} else if found {
+			physical, object = resolved, true
+			if err := d.provider.EnsureDuckLakeConnectionWithExecutor(ctx, execer, conn); err != nil {
+				return err
+			}
+		}
+	}
+
+	_, err = execer.ExecContext(ctx, fmt.Sprintf(`DROP TABLE %s`, physical))
 
 	if err != nil {
 		if IsDuckDBTableNotFoundError(err) {
 			return sql.ErrTableNotFound.New(name)
 		}
 		return ErrDuckDB.New(err)
+	}
+	if object {
+		// The local relation is a schema/comment shadow only. Remove it after
+		// the lake relation so a failed physical drop never hides live data.
+		if _, err := execer.ExecContext(ctx, fmt.Sprintf(`DROP TABLE %s`, FullTableName(d.catalog, d.name, name))); err != nil && !IsDuckDBTableNotFoundError(err) {
+			return ErrDuckDB.New(err)
+		}
 	}
 	return nil
 }
@@ -353,7 +579,25 @@ func (d *Database) RenameTable(ctx *sql.Context, oldName string, newName string)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := adapter.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s RENAME TO "%s"`, FullTableName(d.catalog, d.name, oldName), newName))
+	execer, conn, _, release, err := adapter.GetExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	physical := FullTableName(d.catalog, d.name, oldName)
+	object := false
+	if d.provider != nil && d.provider.duckLake != nil {
+		if resolved, found, err := d.provider.ObjectTableNameWithExecutor(ctx, execer, d.catalog, d.name, oldName); err != nil {
+			return err
+		} else if found {
+			physical, object = resolved, true
+			if err := d.provider.EnsureDuckLakeConnectionWithExecutor(ctx, execer, conn); err != nil {
+				return err
+			}
+		}
+	}
+
+	_, err = execer.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, physical, QuoteIdentifierANSI(newName)))
 	if err != nil {
 		if IsDuckDBTableNotFoundError(err) {
 			return sql.ErrTableNotFound.New(oldName)
@@ -362,6 +606,11 @@ func (d *Database) RenameTable(ctx *sql.Context, oldName string, newName string)
 			return sql.ErrTableAlreadyExists.New(newName)
 		}
 		return ErrDuckDB.New(err)
+	}
+	if object {
+		if _, err := execer.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, FullTableName(d.catalog, d.name, oldName), QuoteIdentifierANSI(newName))); err != nil {
+			return ErrDuckDB.New(err)
+		}
 	}
 	return nil
 }
@@ -539,10 +788,36 @@ func (d *Database) CopyTableData(ctx *sql.Context, sourceTable string, destinati
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Use INSERT INTO ... SELECT to copy data
-	sql := `INSERT INTO ` + FullTableName(d.catalog, d.name, destinationTable) + ` FROM ` + FullTableName(d.catalog, d.name, sourceTable)
+	execer, conn, _, release, err := adapter.GetExecutionSnapshotWithLease(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	sourceName := FullTableName(d.catalog, d.name, sourceTable)
+	destinationName := FullTableName(d.catalog, d.name, destinationTable)
+	if d.provider != nil && d.provider.duckLake != nil {
+		if resolved, found, err := d.provider.ObjectTableNameWithExecutor(ctx, execer, d.catalog, d.name, sourceTable); err != nil {
+			return 0, err
+		} else if found {
+			sourceName = resolved
+			if err := d.provider.EnsureDuckLakeConnectionWithExecutor(ctx, execer, conn); err != nil {
+				return 0, err
+			}
+		}
+		if resolved, found, err := d.provider.ObjectTableNameWithExecutor(ctx, execer, d.catalog, d.name, destinationTable); err != nil {
+			return 0, err
+		} else if found {
+			destinationName = resolved
+			if err := d.provider.EnsureDuckLakeConnectionWithExecutor(ctx, execer, conn); err != nil {
+				return 0, err
+			}
+		}
+	}
 
-	res, err := adapter.Exec(ctx, sql)
+	// Use INSERT INTO ... SELECT to copy data
+	sql := `INSERT INTO ` + destinationName + ` SELECT * FROM ` + sourceName
+
+	res, err := execer.ExecContext(ctx, sql)
 	if err != nil {
 		return 0, ErrDuckDB.New(err)
 	}

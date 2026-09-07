@@ -246,7 +246,7 @@ func TestFlightSQLPreparedAndTransactionOperationsStayOnInitializedConnection(t 
 	queryHandle := testPreparedCommand{handle: queryResult.Handle}
 	queryState, ok := srv.prepared.Load(string(queryResult.Handle))
 	require.True(t, ok)
-	queryStatement := queryState.(Statement)
+	queryStatement := queryState.(*Statement)
 	queryConnID, err := physicalConnectionID(queryStatement.conn)
 	require.NoError(t, err)
 
@@ -267,7 +267,7 @@ func TestFlightSQLPreparedAndTransactionOperationsStayOnInitializedConnection(t 
 	updateHandle := testPreparedCommand{handle: updateResult.Handle}
 	updateState, ok := srv.prepared.Load(string(updateResult.Handle))
 	require.True(t, ok)
-	updateConnID, err := physicalConnectionID(updateState.(Statement).conn)
+	updateConnID, err := physicalConnectionID(updateState.(*Statement).conn)
 	require.NoError(t, err)
 	updateParams := oneIntMessageReader(t, 7)
 	affected, err := srv.DoPutPreparedStatementUpdate(ctx, updateHandle, updateParams)
@@ -283,7 +283,7 @@ func TestFlightSQLPreparedAndTransactionOperationsStayOnInitializedConnection(t 
 	require.NoError(t, err)
 	txnValue, ok := srv.openTransactions.Load(string(txnID))
 	require.True(t, ok)
-	txnState := txnValue.(transactionState)
+	txnState := txnValue.(*transactionState)
 	txnConnID, err := physicalConnectionID(txnState.conn)
 	require.NoError(t, err)
 	ids, origins := recorder.snapshot()

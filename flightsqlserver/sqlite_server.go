@@ -46,6 +46,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -208,6 +209,7 @@ func decodeTransactionQuery(ticket []byte) (txnID, query string, err error) {
 }
 
 type Statement struct {
+	mu     sync.Mutex
 	stmt   *sql.Stmt
 	query  string
 	params [][]interface{}
@@ -219,21 +221,42 @@ type Statement struct {
 	// must remain checked out until ClosePreparedStatement so the statement and
 	// every execution stay on the initialized physical connection.
 	ownsConn bool
+	// external is set for provider-owned FlightSQL handles. A standalone
+	// prepared statement owns the external session; a transaction-owned
+	// statement shares the transaction's session and leaves its lifetime to the
+	// transaction finalizer.
+	external    *catalog.ExternalSession
+	transaction *transactionState
+	closed      atomic.Bool
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 type transactionState struct {
-	tx   *sql.Tx
-	conn *sql.Conn
+	tx       *sql.Tx
+	conn     *sql.Conn
+	external *catalog.ExternalSession
+	handle   string
+	closed   atomic.Bool
+}
+
+type managedFlightRequest struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	once   sync.Once
 }
 
 type SQLiteFlightSQLServer struct {
 	flightsql.BaseServer
 	db                *sql.DB
-	conn              *duckdb.Conn
 	initializeStorage func(context.Context, *sql.Conn) error
+	provider          *catalog.DatabaseProvider
 
 	prepared         sync.Map
 	openTransactions sync.Map
+	requestMu        sync.Mutex
+	requests         map[*managedFlightRequest]struct{}
+	closed           bool
 }
 
 // NewSQLiteFlightSQLServer accepts an optional service initializer. Keeping
@@ -250,12 +273,32 @@ func NewSQLiteFlightSQLServer(db *sql.DB, initializer ...func(context.Context, *
 	if len(initializer) == 1 {
 		initializeConnection = initializer[0]
 	}
-	ret := &SQLiteFlightSQLServer{db: db, initializeStorage: initializeConnection}
-	ret.Alloc = memory.DefaultAllocator
-	for k, v := range SqlInfoResultMap() {
-		ret.RegisterSqlInfo(flightsql.SqlInfo(k), v)
-	}
+	ret := &SQLiteFlightSQLServer{db: db, initializeStorage: initializeConnection, requests: make(map[*managedFlightRequest]struct{})}
+	ret.initialize()
 	return ret, nil
+}
+
+// NewSQLiteFlightSQLServerWithProvider binds FlightSQL to the provider-owned
+// connection pool instead of caching the startup *sql.DB. Pool-owned external
+// sessions are invalidated on Close/Reset, while each in-flight operation keeps
+// its storage generation alive until synchronous work or Arrow streaming ends.
+func NewSQLiteFlightSQLServerWithProvider(provider *catalog.DatabaseProvider) (*SQLiteFlightSQLServer, error) {
+	if provider == nil || provider.Pool() == nil {
+		return nil, fmt.Errorf("FlightSQL database provider is unavailable")
+	}
+	ret := &SQLiteFlightSQLServer{provider: provider, requests: make(map[*managedFlightRequest]struct{})}
+	ret.initialize()
+	return ret, nil
+}
+
+func (s *SQLiteFlightSQLServer) initialize() {
+	if s == nil {
+		return
+	}
+	s.Alloc = memory.DefaultAllocator
+	for k, v := range SqlInfoResultMap() {
+		s.RegisterSqlInfo(flightsql.SqlInfo(k), v)
+	}
 }
 
 // frontendConnection marks the request before selecting a physical
@@ -278,26 +321,6 @@ func frontendConnection(ctx context.Context, db *sql.DB, initializer func(contex
 
 func (s *SQLiteFlightSQLServer) frontendConnection(ctx context.Context) (context.Context, *sql.Conn, error) {
 	return frontendConnection(ctx, s.db, s.initializeStorage)
-}
-
-func duckDBConn(conn *sql.Conn) (*duckdb.Conn, error) {
-	var duckConn *duckdb.Conn
-	if err := conn.Raw(func(driverConn any) error {
-		var ok bool
-		duckConn, ok = driverConn.(*duckdb.Conn)
-		if !ok {
-			return fmt.Errorf("unexpected DuckDB driver connection type %T", driverConn)
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return duckConn, nil
-}
-
-func streamReaderWithConn(ctx context.Context, rdr array.RecordReader, conn *sql.Conn, ch chan<- flight.StreamChunk) {
-	defer conn.Close()
-	flight.StreamChunksFromReader(ctx, rdr, ch)
 }
 
 func (s *SQLiteFlightSQLServer) flightInfoForCommand(desc *flight.FlightDescriptor, schema *arrow.Schema) *flight.FlightInfo {
@@ -335,6 +358,9 @@ func (s *SQLiteFlightSQLServer) DoGetStatement(ctx context.Context, cmd flightsq
 	}
 	if txnid != "" {
 		return nil, nil, fmt.Errorf("transactions not yet supported with DuckDB")
+	}
+	if s.provider != nil {
+		return s.managedStatelessQuery(ctx, query)
 	}
 
 	// var db dbQueryCtx = s.db
@@ -423,38 +449,18 @@ func (s *SQLiteFlightSQLServer) DoGetTables(ctx context.Context, cmd flightsql.G
 	if err := catalog.RejectSensitiveSQL(query); err != nil {
 		return nil, nil, err
 	}
+	if s.provider != nil {
+		return s.managedTablesQuery(ctx, query, cmd.GetIncludeSchema())
+	}
 	ctx, conn, err := s.frontendConnection(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	duckConn, err := duckDBConn(conn)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	arrow, err := duckdb.NewArrowFromConn(duckConn)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	rdr, err := arrow.QueryContext(ctx, query)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-
-	ch := make(chan flight.StreamChunk, 2)
+	terminal := func() { _ = conn.Close() }
 	if cmd.GetIncludeSchema() {
-		rdr, err = newSqliteTablesSchemaBatchReader(ctx, s.Alloc, rdr, conn, query)
-		if err != nil {
-			_ = conn.Close()
-			return nil, nil, err
-		}
+		return startMaterializedTablesQuery(ctx, s.Alloc, conn, query, terminal)
 	}
-
-	schema := rdr.Schema()
-	go streamReaderWithConn(ctx, rdr, conn, ch)
-	return schema, ch, nil
+	return startArrowQuery(ctx, conn, query, [][]interface{}{nil}, terminal)
 }
 
 func (s *SQLiteFlightSQLServer) GetFlightInfoXdbcTypeInfo(_ context.Context, _ flightsql.GetXdbcTypeInfo, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -481,12 +487,18 @@ func (s *SQLiteFlightSQLServer) GetFlightInfoTableTypes(_ context.Context, desc 
 
 func (s *SQLiteFlightSQLServer) DoGetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	query := "SELECT DISTINCT type AS table_type FROM sqlite_master"
+	if s.provider != nil {
+		return s.managedStatelessQuery(ctx, query)
+	}
 	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.TableTypes)
 }
 
 func (s *SQLiteFlightSQLServer) DoPutCommandStatementUpdate(ctx context.Context, cmd flightsql.StatementUpdate) (int64, error) {
 	if err := catalog.RejectSensitiveSQL(cmd.GetQuery()); err != nil {
 		return 0, err
+	}
+	if s.provider != nil {
+		return s.managedStatementUpdate(ctx, cmd)
 	}
 	ctx = mycontext.WithFrontendQuery(ctx)
 	var (
@@ -500,7 +512,11 @@ func (s *SQLiteFlightSQLServer) DoPutCommandStatementUpdate(ctx context.Context,
 			return -1, status.Error(codes.InvalidArgument, "invalid transaction handle provided")
 		}
 
-		res, err = tx.(transactionState).tx.ExecContext(ctx, cmd.GetQuery())
+		state, ok := tx.(*transactionState)
+		if !ok || state == nil || state.tx == nil {
+			return -1, status.Error(codes.InvalidArgument, "invalid transaction handle provided")
+		}
+		res, err = state.tx.ExecContext(ctx, cmd.GetQuery())
 	} else {
 		var conn *sql.Conn
 		ctx, conn, err = s.frontendConnection(ctx)
@@ -523,6 +539,9 @@ func (s *SQLiteFlightSQLServer) CreatePreparedStatement(ctx context.Context, req
 	if err := catalog.RejectSensitiveSQL(query); err != nil {
 		return result, err
 	}
+	if s.provider != nil {
+		return s.createManagedPreparedStatement(ctx, req)
+	}
 	ctx = mycontext.WithFrontendQuery(ctx)
 	var stmtConn *sql.Conn
 
@@ -531,7 +550,10 @@ func (s *SQLiteFlightSQLServer) CreatePreparedStatement(ctx context.Context, req
 		if !loaded {
 			return result, status.Error(codes.InvalidArgument, "invalid transaction handle provided")
 		}
-		state := tx.(transactionState)
+		state, ok := tx.(*transactionState)
+		if !ok || state == nil || state.tx == nil {
+			return result, status.Error(codes.InvalidArgument, "invalid transaction handle provided")
+		}
 		stmt, err = state.tx.PrepareContext(ctx, req.GetQuery())
 		stmtConn = state.conn
 	} else {
@@ -552,7 +574,7 @@ func (s *SQLiteFlightSQLServer) CreatePreparedStatement(ctx context.Context, req
 	}
 
 	handle := genRandomString()
-	s.prepared.Store(string(handle), Statement{
+	s.prepared.Store(string(handle), &Statement{
 		stmt:     stmt,
 		query:    query,
 		conn:     stmtConn,
@@ -567,8 +589,14 @@ func (s *SQLiteFlightSQLServer) CreatePreparedStatement(ctx context.Context, req
 func (s *SQLiteFlightSQLServer) ClosePreparedStatement(ctx context.Context, request flightsql.ActionClosePreparedStatementRequest) error {
 	handle := request.GetPreparedStatementHandle()
 	if val, loaded := s.prepared.LoadAndDelete(string(handle)); loaded {
-		stmt := val.(Statement)
-		stmtErr := stmt.stmt.Close()
+		stmt, ok := val.(*Statement)
+		if !ok || stmt == nil {
+			return status.Error(codes.InvalidArgument, "prepared statement not found")
+		}
+		if stmt.external != nil && stmt.transaction == nil {
+			return errors.Join(stmt.external.Close(), stmt.closePrepared())
+		}
+		stmtErr := stmt.closePrepared()
 		if stmt.conn == nil || !stmt.ownsConn {
 			return stmtErr
 		}
@@ -576,12 +604,16 @@ func (s *SQLiteFlightSQLServer) ClosePreparedStatement(ctx context.Context, requ
 		return errors.Join(stmtErr, connErr)
 	}
 
-	return status.Error(codes.InvalidArgument, "prepared statement not found")
+	// ADBC/Python cursors close prepared statements from __exit__/__del__
+	// after execute (and sometimes after commit already dropped the handle).
+	// Close is idempotent.
+	return nil
 }
 
 func (s *SQLiteFlightSQLServer) GetFlightInfoPreparedStatement(_ context.Context, cmd flightsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
-	_, ok := s.prepared.Load(string(cmd.GetPreparedStatementHandle()))
-	if !ok {
+	value, ok := s.prepared.Load(string(cmd.GetPreparedStatementHandle()))
+	stmt, valid := value.(*Statement)
+	if !ok || !valid || stmt == nil || stmt.closed.Load() {
 		return nil, status.Error(codes.InvalidArgument, "prepared statement not found")
 	}
 
@@ -609,34 +641,22 @@ func doGetQueryWithInitializer(ctx context.Context, initializer func(context.Con
 	if err != nil {
 		return nil, nil, err
 	}
-	duckConn, err := duckDBConn(conn)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	arrow, err := duckdb.NewArrowFromConn(duckConn)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	rdr, err := arrow.QueryContext(ctx, query, args...)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	schema = rdr.Schema()
-	ch := make(chan flight.StreamChunk)
-	go streamReaderWithConn(ctx, rdr, conn, ch)
-	return schema, ch, nil
+	return startArrowQuery(ctx, conn, query, [][]interface{}{args}, func() { _ = conn.Close() })
 }
 
 func (s *SQLiteFlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery) (schema *arrow.Schema, out <-chan flight.StreamChunk, err error) {
+	if s.provider != nil {
+		return s.managedPreparedQuery(ctx, cmd)
+	}
 	val, ok := s.prepared.Load(string(cmd.GetPreparedStatementHandle()))
 
 	if !ok {
 		return nil, nil, status.Error(codes.InvalidArgument, "prepared statement not found")
 	}
-	stmt := val.(Statement)
+	stmt, ok := val.(*Statement)
+	if !ok || stmt == nil || stmt.closed.Load() {
+		return nil, nil, status.Error(codes.InvalidArgument, "prepared statement not found")
+	}
 	if err := catalog.RejectSensitiveSQL(stmt.query); err != nil {
 		return nil, nil, err
 	}
@@ -650,50 +670,17 @@ func (s *SQLiteFlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd 
 		return nil, nil, fmt.Errorf("prepared statement has no owning connection")
 	}
 
-	duckConn, err := duckDBConn(conn)
-	if err != nil {
-		return nil, nil, err
+	stmt.mu.Lock()
+	query := stmt.query
+	argSets := make([][]interface{}, len(stmt.params))
+	for i := range stmt.params {
+		argSets[i] = append([]interface{}(nil), stmt.params[i]...)
 	}
-
-	arrow, err := duckdb.NewArrowFromConn(duckConn)
-	if err != nil {
-		return nil, nil, err
+	stmt.mu.Unlock()
+	if len(argSets) == 0 {
+		argSets = [][]interface{}{nil}
 	}
-
-	readers := make([]array.RecordReader, 0, len(stmt.params))
-	if len(stmt.params) == 0 {
-		rdr, err := arrow.QueryContext(ctx, stmt.query)
-		if err != nil {
-			return nil, nil, err
-		}
-		schema = rdr.Schema()
-		readers = append(readers, rdr)
-	} else {
-		defer func() {
-			if err != nil {
-				for _, r := range readers {
-					r.Release()
-				}
-			}
-		}()
-		// if we have multiple rows of bound params, execute the query
-		// multiple times and concatenate the result sets.
-		for _, p := range stmt.params {
-			rdr, err := arrow.QueryContext(ctx, stmt.query, p...)
-			if err != nil {
-				return nil, nil, err
-			}
-			schema = rdr.Schema()
-			readers = append(readers, rdr)
-		}
-	}
-	ch := make(chan flight.StreamChunk)
-	// Keep the owning connection checked out. Standalone statements release it
-	// from ClosePreparedStatement; transaction statements release it when the
-	// transaction ends.
-	go flight.ConcatenateReaders(readers, ch)
-	out = ch
-	return
+	return startArrowQuery(ctx, conn, query, argSets, func() {})
 }
 
 func scalarToIFace(s scalar.Scalar) (interface{}, error) {
@@ -767,7 +754,10 @@ func (s *SQLiteFlightSQLServer) DoPutPreparedStatementQuery(_ context.Context, c
 		return nil, status.Error(codes.InvalidArgument, "prepared statement not found")
 	}
 
-	stmt := val.(Statement)
+	stmt, ok := val.(*Statement)
+	if !ok || stmt == nil || stmt.closed.Load() {
+		return nil, status.Error(codes.InvalidArgument, "prepared statement not found")
+	}
 	if err := catalog.RejectSensitiveSQL(stmt.query); err != nil {
 		return nil, err
 	}
@@ -776,8 +766,12 @@ func (s *SQLiteFlightSQLServer) DoPutPreparedStatementQuery(_ context.Context, c
 		return nil, status.Errorf(codes.Internal, "error gathering parameters for prepared statement query: %s", err.Error())
 	}
 
+	stmt.mu.Lock()
+	defer stmt.mu.Unlock()
+	if stmt.closed.Load() || (stmt.transaction != nil && stmt.transaction.closed.Load()) {
+		return nil, status.Error(codes.InvalidArgument, "prepared statement not found")
+	}
 	stmt.params = args
-	s.prepared.Store(string(cmd.GetPreparedStatementHandle()), stmt)
 	return cmd.GetPreparedStatementHandle(), nil
 }
 
@@ -787,7 +781,10 @@ func (s *SQLiteFlightSQLServer) DoPutPreparedStatementUpdate(ctx context.Context
 		return 0, status.Error(codes.InvalidArgument, "prepared statement not found")
 	}
 
-	stmt := val.(Statement)
+	stmt, ok := val.(*Statement)
+	if !ok || stmt == nil || stmt.closed.Load() {
+		return 0, status.Error(codes.InvalidArgument, "prepared statement not found")
+	}
 	if err := catalog.RejectSensitiveSQL(stmt.query); err != nil {
 		return 0, err
 	}
@@ -796,7 +793,19 @@ func (s *SQLiteFlightSQLServer) DoPutPreparedStatementUpdate(ctx context.Context
 	if err != nil {
 		return 0, status.Errorf(codes.Internal, "error gathering parameters for prepared statement: %s", err.Error())
 	}
+	if s.provider != nil {
+		affected, err := s.managedPreparedUpdate(ctx, cmd, args)
+		if err != nil && strings.Contains(err.Error(), "no such table") {
+			return affected, status.Error(codes.NotFound, err.Error())
+		}
+		return affected, err
+	}
 
+	stmt.mu.Lock()
+	defer stmt.mu.Unlock()
+	if stmt.closed.Load() {
+		return 0, status.Error(codes.InvalidArgument, "prepared statement not found")
+	}
 	if len(args) == 0 {
 		result, err := stmt.stmt.ExecContext(ctx)
 		if err != nil {
@@ -853,6 +862,9 @@ func (s *SQLiteFlightSQLServer) DoGetPrimaryKeys(ctx context.Context, cmd flight
 
 	fmt.Fprintf(&b, " and table_name LIKE '%s'", cmd.Table)
 
+	if s.provider != nil {
+		return s.managedStatelessQuery(ctx, b.String())
+	}
 	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, b.String(), schema_ref.PrimaryKeys)
 }
 
@@ -869,6 +881,9 @@ func (s *SQLiteFlightSQLServer) DoGetImportedKeys(ctx context.Context, ref fligh
 		filter += " AND fk_schema_name = '" + *ref.DBSchema + "'"
 	}
 	query := prepareQueryForGetKeys(filter)
+	if s.provider != nil {
+		return s.managedStatelessQuery(ctx, query)
+	}
 	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.ImportedKeys)
 }
 
@@ -885,6 +900,9 @@ func (s *SQLiteFlightSQLServer) DoGetExportedKeys(ctx context.Context, ref fligh
 		filter += " AND pk_schema_name = '" + *ref.DBSchema + "'"
 	}
 	query := prepareQueryForGetKeys(filter)
+	if s.provider != nil {
+		return s.managedStatelessQuery(ctx, query)
+	}
 	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.ExportedKeys)
 }
 
@@ -911,10 +929,16 @@ func (s *SQLiteFlightSQLServer) DoGetCrossReference(ctx context.Context, cmd fli
 		filter += " AND fk_schema_name = '" + *fkref.DBSchema + "'"
 	}
 	query := prepareQueryForGetKeys(filter)
+	if s.provider != nil {
+		return s.managedStatelessQuery(ctx, query)
+	}
 	return doGetQueryWithInitializer(ctx, s.initializeStorage, s.db, query, schema_ref.ExportedKeys)
 }
 
 func (s *SQLiteFlightSQLServer) BeginTransaction(ctx context.Context, req flightsql.ActionBeginTransactionRequest) (id []byte, err error) {
+	if s.provider != nil {
+		return s.beginManagedTransaction(ctx)
+	}
 	ctx, conn, err := s.frontendConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -926,18 +950,27 @@ func (s *SQLiteFlightSQLServer) BeginTransaction(ctx context.Context, req flight
 	}
 
 	handle := genRandomString()
-	s.openTransactions.Store(string(handle), transactionState{tx: tx, conn: conn})
+	s.openTransactions.Store(string(handle), &transactionState{tx: tx, conn: conn})
 	return handle, nil
 }
 
-func (s *SQLiteFlightSQLServer) EndTransaction(_ context.Context, req flightsql.ActionEndTransactionRequest) error {
+func (s *SQLiteFlightSQLServer) EndTransaction(ctx context.Context, req flightsql.ActionEndTransactionRequest) error {
 	if req.GetAction() == flightsql.EndTransactionUnspecified {
 		return status.Error(codes.InvalidArgument, "must specify Commit or Rollback to end transaction")
+	}
+	if s.provider != nil {
+		if err := s.endManagedTransaction(ctx, req); err != nil {
+			return status.Error(codes.Internal, err.Error())
+		}
+		return nil
 	}
 
 	handle := string(req.GetTransactionId())
 	if tx, loaded := s.openTransactions.LoadAndDelete(handle); loaded {
-		state := tx.(transactionState)
+		state, ok := tx.(*transactionState)
+		if !ok || state == nil || state.tx == nil {
+			return status.Error(codes.InvalidArgument, "transaction id not found")
+		}
 		txn := state.tx
 		var txErr error
 		switch req.GetAction() {

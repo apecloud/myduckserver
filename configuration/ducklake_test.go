@@ -54,10 +54,11 @@ func TestDuckLakeConfigRejectsInvalidEnabledValues(t *testing.T) {
 		AccessKeyID: "id", SecretAccessKey: "secret",
 	}}
 	for name, mutate := range map[string]func(*DuckLakeConfig){
-		"relative extension dir": func(c *DuckLakeConfig) { c.ExtensionDir = "relative" },
-		"missing endpoint":       func(c *DuckLakeConfig) { c.S3.Endpoint = "" },
-		"missing region":         func(c *DuckLakeConfig) { c.S3.Region = "" },
-		"bad url style":          func(c *DuckLakeConfig) { c.S3.URLStyle = "query" },
+		"relative extension dir":     func(c *DuckLakeConfig) { c.ExtensionDir = "relative" },
+		"missing endpoint":           func(c *DuckLakeConfig) { c.S3.Endpoint = "" },
+		"missing region":             func(c *DuckLakeConfig) { c.S3.Region = "" },
+		"bad url style":              func(c *DuckLakeConfig) { c.S3.URLStyle = "query" },
+		"metadata secret identifier": func(c *DuckLakeConfig) { c.MetadataPath = "lake_secret" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := base

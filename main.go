@@ -318,12 +318,15 @@ func main() {
 
 	var flightServer flight.Server
 	if flightsqlPort > 0 {
-		db := provider.Storage()
-
-		srv, err := flightsqlserver.NewSQLiteFlightSQLServer(db, provider.InitializeConnection)
+		srv, err := flightsqlserver.NewSQLiteFlightSQLServerWithProvider(provider)
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer func() {
+			if err := srv.Close(); err != nil {
+				logrus.WithError(err).Warn("Failed to close FlightSQL lifecycle handles")
+			}
+		}()
 
 		flightServer = flight.NewServerWithMiddleware(nil)
 		flightServer.RegisterFlightService(flightsql.NewFlightServer(srv))
