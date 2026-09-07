@@ -1841,9 +1841,9 @@ func (rt *duckLakeRuntime) attachLocked(ctx context.Context, key any, execer dri
 	}
 	// Both values have already passed configuration validation. SQL-literal
 	// quoting is still required because service paths can contain apostrophes.
-	attach := "ATTACH IF NOT EXISTS " + duckDBStringLiteral("ducklake:"+metadata) +
-		" AS " + QuoteIdentifierANSI(DuckLakeCatalogName) +
-		" (DATA_PATH " + duckDBStringLiteral(dataPath) + ", DATA_INLINING_ROW_LIMIT 0, CREATE_IF_NOT_EXISTS true)"
+	// CREATE_IF_NOT_EXISTS is only for first attach. Reopening an existing
+	// local catalog with that option fails DuckDB ATTACH after restart.
+	attach := duckLakeAttachSQL(metadata, dataPath)
 	if _, err := execer.ExecContext(ctx, attach, nil); err != nil {
 		return newDuckLakeInitError(duckLakeStageAttach, "", err)
 	}
@@ -1884,6 +1884,16 @@ func localDuckLakeCatalogPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "ducklake-catalog.duckdb"), nil
+}
+
+func duckLakeAttachSQL(metadata, dataPath string) string {
+	opts := "DATA_PATH " + duckDBStringLiteral(dataPath) + ", DATA_INLINING_ROW_LIMIT 0"
+	if _, err := os.Stat(metadata); err != nil {
+		opts += ", CREATE_IF_NOT_EXISTS true"
+	}
+	return "ATTACH IF NOT EXISTS " + duckDBStringLiteral("ducklake:"+metadata) +
+		" AS " + QuoteIdentifierANSI(DuckLakeCatalogName) +
+		" (" + opts + ")"
 }
 
 func duckDBStringLiteral(value string) string {

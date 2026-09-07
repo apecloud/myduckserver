@@ -116,6 +116,9 @@ RUN chmod 755 /usr/local/lib/myduckserver /usr/local/lib/myduckserver/duckdb-ext
 
 USER admin
 WORKDIR /home/admin
+# Empty Docker named volumes copy this directory's ownership. Without it the
+# volume is root:root and admin cannot create myduck.db / ducklake.db.
+RUN mkdir -p /home/admin/data /home/admin/log
 
 # Copy application files
 COPY --from=builder /myduckserver /usr/local/bin/myduckserver
