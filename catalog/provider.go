@@ -525,6 +525,17 @@ func (prov *DatabaseProvider) HasCatalog(name string) bool {
 }
 
 // attachCatalogs attaches all the databases in the data directory
+func (prov *DatabaseProvider) duckLakeMetadataFile(name string) bool {
+	if prov == nil || prov.duckLake == nil {
+		return false
+	}
+	meta := strings.TrimSpace(prov.duckLake.config.MetadataPath)
+	if meta == "" {
+		return false
+	}
+	return filepath.Clean(filepath.Join(prov.dataDir, name)) == filepath.Clean(meta)
+}
+
 func (prov *DatabaseProvider) attachCatalogs() error {
 	files, err := os.ReadDir(prov.dataDir)
 	if err != nil {
@@ -554,6 +565,12 @@ func (prov *DatabaseProvider) AttachCatalog(file interface {
 			return nil
 		}
 		return fmt.Errorf("file %s is not a database file", file.Name())
+	}
+	// The DuckLake catalog file lives in dataDir but must not be ATTACHed as a
+	// regular DuckDB database. Doing so occupies the file and makes the later
+	// ducklake: ATTACH fail after restart.
+	if prov.duckLakeMetadataFile(file.Name()) {
+		return nil
 	}
 	name := strings.TrimSuffix(file.Name(), ".db")
 	quoted := QuoteIdentifierANSI(name)

@@ -4,6 +4,8 @@ import (
 	"context"
 	stdsql "database/sql"
 	"database/sql/driver"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -130,6 +132,56 @@ func TestDuckLakeAttachUsesServicePaths(t *testing.T) {
 	require.Equal(t, []string{
 		"ATTACH IF NOT EXISTS 'ducklake:/var/lib/myduck/catalog.ducklake' AS \"__myduck_ducklake\" (DATA_PATH 's3://test-bucket/data', DATA_INLINING_ROW_LIMIT 0, CREATE_IF_NOT_EXISTS true)",
 	}, execer.queries)
+}
+
+func TestDuckLakeAttachOmitsCreateIfCatalogExists(t *testing.T) {
+	dir := t.TempDir()
+	metadata := filepath.Join(dir, "catalog.ducklake")
+	require.NoError(t, os.WriteFile(metadata, []byte("existing"), 0o600))
+	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: metadata,
+		DataPath:     "s3://test-bucket/data",
+	}}
+	execer := &recordingDuckLakeExecer{}
+
+	require.NoError(t, runtime.attachLocked(context.Background(), nil, execer))
+	require.Equal(t, []string{
+		"ATTACH IF NOT EXISTS 'ducklake:" + metadata + "' AS \"__myduck_ducklake\" (DATA_PATH 's3://test-bucket/data', DATA_INLINING_ROW_LIMIT 0)",
+	}, execer.queries)
+	require.NotContains(t, execer.queries[0], "CREATE_IF_NOT_EXISTS")
+}
+
+func TestAttachCatalogSkipsDuckLakeMetadataFile(t *testing.T) {
+	dir := t.TempDir()
+	meta := filepath.Join(dir, "ducklake.db")
+	require.NoError(t, os.WriteFile(meta, []byte("existing"), 0o600))
+	prov := &DatabaseProvider{
+		dataDir: dir,
+		duckLake: &duckLakeRuntime{config: configuration.DuckLakeConfig{
+			MetadataPath: meta,
+		}},
+	}
+	info, err := os.Stat(meta)
+	require.NoError(t, err)
+	require.NoError(t, prov.AttachCatalog(info, false))
+}
+
+func TestDuckLakeAttachStatNonExistErrorDoesNotCreate(t *testing.T) {
+	orig := duckLakeStat
+	t.Cleanup(func() { duckLakeStat = orig })
+	duckLakeStat = func(string) (os.FileInfo, error) {
+		return nil, os.ErrPermission
+	}
+	runtime := &duckLakeRuntime{config: configuration.DuckLakeConfig{
+		MetadataPath: "/injected/catalog.ducklake",
+		DataPath:     "s3://test-bucket/data",
+	}}
+	execer := &recordingDuckLakeExecer{}
+
+	err := runtime.attachLocked(context.Background(), nil, execer)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "reason=permission_denied")
+	require.Empty(t, execer.queries)
 }
 
 func TestDuckLakeAttachRejectsRemoteCatalogURI(t *testing.T) {

@@ -1841,9 +1841,15 @@ func (rt *duckLakeRuntime) attachLocked(ctx context.Context, key any, execer dri
 	}
 	// Both values have already passed configuration validation. SQL-literal
 	// quoting is still required because service paths can contain apostrophes.
-	attach := "ATTACH IF NOT EXISTS " + duckDBStringLiteral("ducklake:"+metadata) +
-		" AS " + QuoteIdentifierANSI(DuckLakeCatalogName) +
-		" (DATA_PATH " + duckDBStringLiteral(dataPath) + ", DATA_INLINING_ROW_LIMIT 0, CREATE_IF_NOT_EXISTS true)"
+	// CREATE_IF_NOT_EXISTS is only for first attach when the catalog file is
+	// missing. An existing catalog ATTACHes with or without that option.
+	// Restart failed because attachCatalogs opened the metadata file as a
+	// regular DuckDB database before the ducklake: ATTACH.
+	missing, err := duckLakeCatalogMissing(metadata)
+	if err != nil {
+		return newDuckLakeInitError(duckLakeStageAttach, "", err)
+	}
+	attach := duckLakeAttachSQL(metadata, dataPath, missing)
 	if _, err := execer.ExecContext(ctx, attach, nil); err != nil {
 		return newDuckLakeInitError(duckLakeStageAttach, "", err)
 	}
@@ -1884,6 +1890,31 @@ func localDuckLakeCatalogPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "ducklake-catalog.duckdb"), nil
+}
+
+// duckLakeStat is os.Stat in production. Tests replace it to inject Stat
+// failures that chmod 000 cannot produce when the process is root.
+var duckLakeStat = os.Stat
+
+func duckLakeCatalogMissing(path string) (bool, error) {
+	_, err := duckLakeStat(path)
+	if err == nil {
+		return false, nil
+	}
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	return false, err
+}
+
+func duckLakeAttachSQL(metadata, dataPath string, catalogMissing bool) string {
+	opts := "DATA_PATH " + duckDBStringLiteral(dataPath) + ", DATA_INLINING_ROW_LIMIT 0"
+	if catalogMissing {
+		opts += ", CREATE_IF_NOT_EXISTS true"
+	}
+	return "ATTACH IF NOT EXISTS " + duckDBStringLiteral("ducklake:"+metadata) +
+		" AS " + QuoteIdentifierANSI(DuckLakeCatalogName) +
+		" (" + opts + ")"
 }
 
 func duckDBStringLiteral(value string) string {
