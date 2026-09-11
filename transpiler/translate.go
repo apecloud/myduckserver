@@ -630,29 +630,145 @@ def rewrite_mysql_for_duckdb(node):
     # MySQL FORMAT(x, d[, locale]) is number-to-string with grouping.
     # DuckDB FORMAT is {fmt}; map the scale and swap separators for common EU locales.
     if isinstance(node, exp.NumberToStr):
+        # DuckDB rejects precision specifiers for integer values. Keep the format
+        # string dynamic so DuckDB can select its integer form at execution time;
+        # casting every value to DOUBLE would silently lose large-number precision.
         value = node.this
+        integer_types = [
+            exp.Literal.string(t)
+            for t in (
+                "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+                "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
+            )
+        ]
+        string_types = [
+            exp.Literal.string(t)
+            for t in ("VARCHAR", "CHAR", "BPCHAR", "TEXT", "STRING")
+        ]
+        value_type = exp.Anonymous(this="typeof", expressions=[value.copy()])
+        is_integer = exp.In(this=value_type.copy(), expressions=integer_types)
+        is_decimal = exp.Like(this=value_type.copy(), expression=exp.Literal.string("DECIMAL%%"))
+        is_string = exp.In(this=value_type, expressions=string_types)
         digits = node.args.get("format")
         culture = node.args.get("culture")
         if isinstance(digits, exp.Literal) and digits.is_int:
             fmt = "{:,." + str(int(digits.this)) + "f}"
-            formatted = exp.Anonymous(
-                this="format",
-                expressions=[exp.Literal.string(fmt), value],
-            )
+            format_expr = exp.Literal.string(fmt)
+            integer_suffix = None
+            if int(digits.this) > 0:
+                integer_suffix = exp.Anonymous(
+                    this="concat",
+                    expressions=[
+                        exp.Literal.string("."),
+                        exp.Anonymous(
+                            this="repeat",
+                            expressions=[exp.Literal.string("0"), digits.copy()],
+                        ),
+                    ],
+                )
         else:
-            formatted = exp.Anonymous(
-                this="format",
+            format_expr = exp.Anonymous(
+                this="concat",
+                expressions=[
+                    exp.Literal.string("{:,."),
+                    exp.Cast(this=digits, to=exp.DataType.build("TEXT")),
+                    exp.Literal.string("f}"),
+                ],
+            )
+            integer_suffix = exp.Case(
+                ifs=[
+                    exp.If(
+                        this=exp.And(
+                            this=is_integer.copy(),
+                            expression=exp.GT(this=digits.copy(), expression=exp.Literal.number(0)),
+                        ),
+                        true=exp.Anonymous(
+                            this="concat",
+                            expressions=[
+                                exp.Literal.string("."),
+                                exp.Anonymous(
+                                    this="repeat",
+                                    expressions=[exp.Literal.string("0"), digits.copy()],
+                                ),
+                            ],
+                        ),
+                    )
+                ],
+                default=exp.Literal.string(""),
+            )
+        numeric_format_expr = exp.Case(
+            ifs=[exp.If(this=is_integer.copy(), true=exp.Literal.string("{:,}"))],
+            default=format_expr,
+        )
+        numeric_formatted = exp.Anonymous(
+            this="format",
+            expressions=[numeric_format_expr, value.copy()],
+        )
+        string_formatted = exp.Anonymous(
+            this="format",
+            expressions=[
+                format_expr.copy(),
+                exp.TryCast(this=value.copy(), to=exp.DataType.build("DOUBLE")),
+            ],
+        )
+        rounded_decimal = exp.Cast(
+            this=exp.Anonymous(
+                this="round",
+                expressions=[value.copy(), digits.copy()],
+            ),
+            to=exp.DataType.build("TEXT"),
+        )
+        decimal_integer = exp.Anonymous(
+            this="split_part",
+            expressions=[rounded_decimal.copy(), exp.Literal.string("."), exp.Literal.number(1)],
+        )
+        if isinstance(digits, exp.Literal) and digits.is_int and int(digits.this) > 0:
+            decimal_fraction = exp.Anonymous(
+                this="rpad",
                 expressions=[
                     exp.Anonymous(
-                        this="concat",
-                        expressions=[
-                            exp.Literal.string("{:,."),
-                            exp.Cast(this=digits, to=exp.DataType.build("TEXT")),
-                            exp.Literal.string("f}"),
-                        ],
+                        this="split_part",
+                        expressions=[rounded_decimal.copy(), exp.Literal.string("."), exp.Literal.number(2)],
                     ),
-                    value,
+                    digits.copy(),
+                    exp.Literal.string("0"),
                 ],
+            )
+            decimal_text = exp.Anonymous(
+                this="concat",
+                expressions=[decimal_integer, exp.Literal.string("."), decimal_fraction],
+            )
+        else:
+            decimal_text = decimal_integer
+        # DuckDB FORMAT currently routes DECIMAL through a floating formatter.
+        # Group the rounded TEXT representation instead, which keeps up to the
+        # full DECIMAL precision supported by DuckDB.
+        decimal_formatted = decimal_text
+        for grouping_pass in range(12):
+            pattern = r"(\d+)(\d{3})([.]|$)" if grouping_pass == 0 else r"(\d+)(\d{3})([,.]|$)"
+            decimal_formatted = exp.Anonymous(
+                this="regexp_replace",
+                expressions=[
+                    decimal_formatted,
+                    exp.Literal.string(pattern),
+                    exp.Literal.string(r"\1,\2\3"),
+                    exp.Literal.string("g"),
+                ],
+            )
+        formatted = exp.Case(
+            ifs=[
+                exp.If(this=is_string, true=string_formatted),
+                exp.If(this=is_decimal, true=decimal_formatted),
+            ],
+            default=numeric_formatted,
+        )
+        if integer_suffix is not None:
+            formatted = exp.Anonymous(
+                this="concat",
+                expressions=[formatted, exp.Case(
+                    ifs=[exp.If(this=is_integer, true=integer_suffix)],
+                    default=exp.Literal.string(""),
+                )],
             )
         if isinstance(culture, exp.Literal) and culture.is_string:
             loc = str(culture.this).lower().replace("-", "_")
