@@ -12,7 +12,7 @@ var pgProcContent string
 var pgTypeContent string
 
 var InitialTableDataMap = map[string]string{
-	"pg_class": pgClassContent,
-	"pg_proc":  pgProcContent,
-	"pg_type":  pgTypeContent,
+	"pg_class_catalog": pgClassContent,
+	"pg_proc":          pgProcContent,
+	"pg_type":          pgTypeContent,
 }

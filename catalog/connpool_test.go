@@ -20,6 +20,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDuckBeginTxOptionsStripsReadOnly(t *testing.T) {
+	require.Nil(t, duckBeginTxOptions(nil))
+	keep := &stdsql.TxOptions{Isolation: stdsql.LevelDefault}
+	require.Same(t, keep, duckBeginTxOptions(keep))
+
+	in := &stdsql.TxOptions{ReadOnly: true, Isolation: stdsql.LevelSerializable}
+	out := duckBeginTxOptions(in)
+	require.NotSame(t, in, out)
+	require.True(t, in.ReadOnly)
+	require.False(t, out.ReadOnly)
+	require.Equal(t, stdsql.LevelSerializable, out.Isolation)
+}
+
 func TestConnectionPoolRegistersMySQLUDFsOnce(t *testing.T) {
 	connector, err := duckdb.NewConnector("", nil)
 	require.NoError(t, err)

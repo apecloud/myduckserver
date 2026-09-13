@@ -42,9 +42,13 @@ jobs:
           sudo mv duckdb /usr/local/bin
           duckdb -c 'INSTALL json from core'
           
-          wget https://dl.min.io/client/mc/release/linux-amd64/mc
+          # dl.min.io/client/mc now returns HTTP 410 (community downloads archived).
+          # Pin the last public GitHub linux-amd64 release instead of the unversioned URL.
+          MC_RELEASE=RELEASE.2025-08-13T08-35-41Z
+          curl -fL "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}" -o mc
           chmod +x mc
           sudo mv mc /usr/local/bin/
+          mc --version
 
       - name: Build MyDuck
         run: go build -v
