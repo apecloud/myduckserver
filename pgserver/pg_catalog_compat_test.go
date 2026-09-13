@@ -59,6 +59,52 @@ WHERE c.relkind IN ('r', 'p', 'v', 'f', 'm')
 			require.NoError(t, conn.QueryRow(ctx, `select version()`).Scan(&duckVersion))
 			require.NotEmpty(t, duckVersion)
 			require.NotEqual(t, banner, duckVersion)
+
+			_, err = conn.Exec(ctx, `BEGIN READ ONLY`)
+			require.NoError(t, err)
+			var one int
+			require.NoError(t, conn.QueryRow(ctx, `SELECT 1`).Scan(&one))
+			require.Equal(t, 1, one)
+			_, err = conn.Exec(ctx, `COMMIT`)
+			require.NoError(t, err)
+
+			var tz string
+			require.NoError(t, conn.QueryRow(ctx, `SHOW timezone`).Scan(&tz))
+			require.NotEqual(t, "Local", tz)
+			require.NotEmpty(t, tz)
+
+			_, err = conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS app.pk_t (id INT PRIMARY KEY, v VARCHAR(32))`)
+			require.NoError(t, err)
+
+			rows, err := conn.Query(ctx, `
+SELECT
+    result.TABLE_SCHEM, result.TABLE_NAME, result.COLUMN_NAME, result.KEY_SEQ, result.PK_NAME
+FROM (SELECT
+          n.nspname AS TABLE_SCHEM,
+          ct.relname AS TABLE_NAME,
+          a.attname AS COLUMN_NAME,
+          (information_schema._pg_expandarray(i.indkey)).n AS KEY_SEQ,
+          ci.relname AS PK_NAME,
+          information_schema._pg_expandarray(i.indkey) AS KEYS,
+          a.attnum AS A_ATTNUM,
+          i.indnkeyatts AS KEY_COUNT
+      FROM pg_catalog.pg_class ct
+           JOIN pg_catalog.pg_attribute a ON (ct.oid = a.attrelid)
+           JOIN pg_catalog.pg_namespace n ON (ct.relnamespace = n.oid)
+           JOIN pg_catalog.pg_index i ON ( a.attrelid = i.indrelid)
+           JOIN pg_catalog.pg_class ci ON (ci.oid = i.indexrelid)
+      WHERE n.nspname = 'app' AND ct.relname = 'pk_t' AND i.indisprimary) result
+WHERE result.A_ATTNUM = (result.KEYS).x AND result.KEY_SEQ <= result.KEY_COUNT
+ORDER BY result.table_name, result.pk_name, result.key_seq`)
+			require.NoError(t, err)
+			defer rows.Close()
+			for rows.Next() {
+				var schem, name, col string
+				var keySeq int64
+				var pkName string
+				require.NoError(t, rows.Scan(&schem, &name, &col, &keySeq, &pkName))
+			}
+			require.NoError(t, rows.Err())
 		})
 	}
 }

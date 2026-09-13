@@ -271,3 +271,13 @@ func TzOffsetToDuration(d string) (time.Duration, error) {
 		return -1, fmt.Errorf("error: unable to process time")
 	}
 }
+
+// defaultPostgresTimeZone is the SHOW timezone default. Darwin often reports
+// Location "Local", which Metabase rejects during Postgres sync.
+func defaultPostgresTimeZone() string {
+	loc := time.Now().Location().String()
+	if loc == "" || strings.EqualFold(loc, "Local") {
+		return "UTC"
+	}
+	return loc
+}
