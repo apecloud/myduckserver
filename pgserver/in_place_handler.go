@@ -21,6 +21,12 @@ import (
 // precompile a regex to match "select pg_catalog.pg_is_in_recovery();"
 var pgIsInRecoveryRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.pg_is_in_recovery\(\s*\)\s*;?\s*$`)
 
+// SQLAlchemy connects with "select pg_catalog.version()". DuckDB treats that
+// identifier as a column unless we rewrite it. Bare SELECT version() stays as
+// DuckDB's own version function.
+var pgCatalogVersionCallRegex = regexp.MustCompile(`(?i)\bpg_catalog\.version\s*\(\s*\)`)
+var pgCatalogVersionStmtRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.version\s*\(\s*\)\s*;?\s*$`)
+
 // precompile a regex to match "select pg_catalog.pg_current_wal_lsn();" or "select pg_catalog.pg_last_wal_replay_lsn();"
 var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current_wal_lsn|pg_last_wal_replay_lsn)\(\s*\)\s*;?\s*$`)
 
@@ -67,6 +73,18 @@ func (h *ConnectionHandler) readOneWALPositionStr() (string, error) {
 	}
 
 	return lsn, nil
+}
+
+func (h *ConnectionHandler) postgresVersionBanner() string {
+	v, err := h.queryPGSetting("server_version")
+	if err != nil || v == nil {
+		return "PostgreSQL 16.1 (Homebrew)"
+	}
+	return "PostgreSQL " + fmt.Sprintf("%v", v)
+}
+
+func sqlStringLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
 }
 
 // queryPGSetting will query the system variable value from the system variable map
@@ -144,6 +162,22 @@ type SelectionConversion struct {
 }
 
 var selectionConversions = []SelectionConversion{
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			sql := RemoveComments(query.String)
+			return pgCatalogVersionCallRegex.MatchString(sql)
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			sql := RemoveComments(query.String)
+			banner := sqlStringLiteral(h.postgresVersionBanner())
+			if pgCatalogVersionStmtRegex.MatchString(sql) {
+				query.String = fmt.Sprintf(`SELECT '%s' AS "version"`, banner)
+				return nil
+			}
+			query.String = pgCatalogVersionCallRegex.ReplaceAllString(sql, `'`+banner+`'`)
+			return nil
+		},
+	},
 	{
 		needConvert: func(query *ConvertedStatement) bool {
 			sql := RemoveComments(query.String)

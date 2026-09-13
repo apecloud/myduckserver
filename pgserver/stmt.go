@@ -2,12 +2,13 @@ package pgserver
 
 import (
 	"bytes"
-	"github.com/apecloud/myduckserver/catalog"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
 
+	"github.com/apecloud/myduckserver/catalog"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/duckdb/duckdb-go/v2"
 )
@@ -289,8 +290,15 @@ func getPgCatalogRegex() *regexp.Regexp {
 			}
 			internalNames = append(internalNames, view.Name)
 		}
+		sort.Slice(internalNames, func(i, j int) bool {
+			return len(internalNames[i]) > len(internalNames[j])
+		})
+		quoted := make([]string, 0, len(internalNames))
+		for _, name := range internalNames {
+			quoted = append(quoted, regexp.QuoteMeta(name))
+		}
 		pgCatalogRegex = regexp.MustCompile(
-			`(?i)\b(FROM|JOIN|INTO)\s+(?:pg_catalog\.)?(?:"?(` + strings.Join(internalNames, "|") + `)"?)`)
+			`(?i)\b(FROM|JOIN|INTO)\s+(?:"?pg_catalog"?\.)?(?:"?(` + strings.Join(quoted, "|") + `)"?)`)
 	})
 	return pgCatalogRegex
 }
