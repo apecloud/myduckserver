@@ -98,13 +98,21 @@ WHERE result.A_ATTNUM = (result.KEYS).x AND result.KEY_SEQ <= result.KEY_COUNT
 ORDER BY result.table_name, result.pk_name, result.key_seq`)
 			require.NoError(t, err)
 			defer rows.Close()
+			found := 0
 			for rows.Next() {
 				var schem, name, col string
 				var keySeq int64
 				var pkName string
 				require.NoError(t, rows.Scan(&schem, &name, &col, &keySeq, &pkName))
+				require.Equal(t, "app", schem)
+				require.Equal(t, "pk_t", name)
+				require.Equal(t, "id", col)
+				require.Equal(t, int64(1), keySeq)
+				require.NotEmpty(t, pkName)
+				found++
 			}
 			require.NoError(t, rows.Err())
+			require.Equal(t, 1, found, "JDBC PK / _pg_expandarray must return app.pk_t.id")
 		})
 	}
 }
