@@ -50,7 +50,8 @@ wait_for_source() {
         docker exec "$SOURCE_CONTAINER" mariadb -uroot -proot -e "SELECT 1" >/dev/null 2>&1 && return 0
         ;;
       dolt)
-        docker exec "$SOURCE_CONTAINER" dolt sql -q "SELECT 1" >/dev/null 2>&1 && return 0
+        docker exec "$SOURCE_CONTAINER" dolt --host 127.0.0.1 --port 3306 \
+          --user root --password "" --no-tls sql -q "SELECT 1" >/dev/null 2>&1 && return 0
         ;;
     esac
     sleep 2
