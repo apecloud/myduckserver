@@ -44,9 +44,12 @@ var InternalMacros = []InternalMacro{
 		Definitions: []MacroDefinition{
 			{
 				Params: []string{"a"},
+				// DuckDB 1.5 packs generate_series() as a list inside STRUCT_PACK,
+				// so KEY_SEQ became BIGINT[] and Metabase JDBC
+				// `KEY_SEQ <= KEY_COUNT` failed. Unnest both sides so n is scalar.
 				DDL: `SELECT STRUCT_PACK(
     x := unnest(a),
-    n := generate_series(1, array_length(a))
+    n := unnest(generate_series(1, CAST(len(a) AS BIGINT)))
 ) AS item`,
 			},
 		},
@@ -94,9 +97,9 @@ var InternalMacros = []InternalMacro{
 				Params: []string{"l", "v"},
 				DDL: `CASE
     WHEN typeof(l) = 'VARCHAR' THEN
-        list_contains(regexp_split_to_array(l::VARCHAR, '[{},\s]+'), v)
+        list_contains(regexp_split_to_array(l::VARCHAR, '[{},\s]+'), v::VARCHAR)
     ELSE
-        list_contains(l::text[], v)
+        list_contains(CAST(l AS VARCHAR[]), v::VARCHAR)
     END`,
 			},
 		},
