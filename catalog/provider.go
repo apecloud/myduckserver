@@ -392,6 +392,13 @@ func (prov *DatabaseProvider) initCatalogWithExecutor(execer adapter.SQLExecutor
 		}
 	}
 
+	if err := migrateLegacyPGCatalogTable(execer, "pg_namespace", "pg_namespace_catalog"); err != nil {
+		return err
+	}
+	if err := migrateLegacyPGCatalogTable(execer, "pg_class", "pg_class_catalog"); err != nil {
+		return err
+	}
+
 	for _, t := range internalTables {
 		if _, err := execer.ExecContext(
 			context.Background(),
@@ -462,7 +469,7 @@ func (prov *DatabaseProvider) initCatalogWithExecutor(execer adapter.SQLExecutor
 		}
 		if _, err := execer.ExecContext(
 			context.Background(),
-			"CREATE VIEW IF NOT EXISTS "+v.QualifiedName()+" AS "+v.DDL,
+			"CREATE OR REPLACE VIEW "+v.QualifiedName()+" AS "+v.DDL,
 		); err != nil {
 			return fmt.Errorf("failed to create internal view %q: %w", v.Name, err)
 		}
