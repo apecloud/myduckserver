@@ -187,3 +187,11 @@ func TestRemoveComments(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertToSysRewritesQuotedPgCatalog(t *testing.T) {
+	got := ConvertToSys(`SELECT n.nspname FROM "pg_catalog"."pg_namespace" AS n`)
+	require.Equal(t, `SELECT n.nspname FROM __sys__.pg_namespace AS n`, got)
+
+	got = ConvertToSys(`FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON c.relnamespace = n.oid`)
+	require.Equal(t, `FROM __sys__.pg_class AS c JOIN __sys__.pg_namespace AS n ON c.relnamespace = n.oid`, got)
+}
