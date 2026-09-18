@@ -142,8 +142,29 @@ if check_if_source_supports_copying_instance; then
     check_command "copying a snapshot of the MySQL instance"
 else
     echo "The source server cannot be copied using MySQL Shell. The snapshot step has been skipped."
-    # Without a snapshot, the source position must be the replication baseline.
-    # This prevents pre-setup CREATE DATABASE events from being replayed after
+    # Without a snapshot, existing source tables and rows cannot be copied to
+    # the empty target. Reject that case instead of advancing past their DDL
+    # and silently starting a healthy replica with missing data.
+    if [[ -n "${SOURCE_DATABASE:-}" && "$SOURCE_DATABASE" != "mysql" ]]; then
+        if [[ "$SOURCE_DATABASE" == *'`'* ]]; then
+            echo "Source database contains an unsupported backtick: $SOURCE_DATABASE" >&2
+            exit 1
+        fi
+        existing_tables_output=$(mysqlsh --uri="$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql \
+            --result-format=tabbed -e \
+            "SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema='${SOURCE_DATABASE}';")
+        check_command "checking source tables before snapshotless replication"
+        existing_tables=$(printf '%s\n' "$existing_tables_output" \
+            | awk 'NF && $1 ~ /^[0-9]+$/ { value=$1 } END { if (value == "") exit 1; print value }')
+        check_command "parsing source table count before snapshotless replication"
+        if [[ "$existing_tables" != "0" ]]; then
+            echo "Source database '$SOURCE_DATABASE' already has $existing_tables table(s); snapshotless replication requires an empty source database." >&2
+            exit 1
+        fi
+    fi
+
+    # The source position is the replication baseline after the empty-source
+    # check. This prevents pre-setup CREATE DATABASE from being replayed after
     # the empty target schema is initialized below.
     EXECUTED_GTID_SET="$GTID_EXECUTED"
     echo "Using source GTID position as replication baseline: $EXECUTED_GTID_SET"
