@@ -513,7 +513,7 @@ var InternalTables = struct {
 	// relpartbound        | pg_node_tree | C         |          |         | extended |             |              |
 	PGClass: InternalTable{
 		Schema: "__sys__",
-		Name:   "pg_class",
+		Name:   "pg_class_catalog",
 		KeyColumns: []string{
 			"oid",
 		},
@@ -594,7 +594,7 @@ var InternalTables = struct {
 	// nspacl   | aclitem[] |           |          |         | extended |             |              |
 	PGNamespace: InternalTable{
 		Schema: "__sys__",
-		Name:   "pg_namespace",
+		Name:   "pg_namespace_catalog",
 		KeyColumns: []string{
 			"oid",
 		},
