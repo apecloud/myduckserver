@@ -81,6 +81,32 @@ fi
 
 source checker.sh
 
+# A snapshot normally creates the target databases before replication starts.
+# Sources that do not support MySQL Shell's copy-instance (for example Dolt)
+# skip that step, but their existing CREATE DATABASE statements are already
+# behind the replication start position. Create the DSN target schema
+# explicitly so the first replicated table DDL has a database to attach to.
+initialize_target_schema() {
+    local schema="${SOURCE_DATABASE:-}"
+    if [[ -z "$schema" || "$schema" == "mysql" ]]; then
+        echo "No explicit source database configured; skipping target schema initialization."
+        return 0
+    fi
+
+    # Keep the DSN database compatible with SQL identifier syntax. A backtick
+    # cannot be represented safely by this shell SQL wrapper, so reject it.
+    local escaped_schema
+    if [[ "$schema" == *'`'* ]]; then
+        echo "Source database contains an unsupported backtick: $schema" >&2
+        return 1
+    fi
+    escaped_schema="$schema"
+    echo "Initializing target schema from SOURCE_DATABASE=$SOURCE_DATABASE..."
+    mysqlsh --sql --host="${MYDUCK_HOST}" --port="${MYDUCK_PORT}" \
+        --user="${MYDUCK_USER}" "${MYDUCK_PASSWORD_OPTION}" <<< \
+        "CREATE DATABASE IF NOT EXISTS \`${escaped_schema}\`;"
+}
+
 # Step 1: Check if mysqlsh exists, if not, install it
 if ! command -v mysqlsh &> /dev/null; then
     echo "mysqlsh not found, attempting to install..."
@@ -117,6 +143,13 @@ if check_if_source_supports_copying_instance; then
 else
     echo "The source server cannot be copied using MySQL Shell. The snapshot step has been skipped."
 fi
+
+# A skipped snapshot leaves the target without the source databases. This is
+# idempotent after a successful snapshot and is required before START REPLICA
+# when the source's CREATE DATABASE event predates the replication position.
+echo "Initializing target schema before replication..."
+initialize_target_schema
+check_command "initializing target schemas"
 
 # Step 5: Establish replication
 echo "Starting replication..."
