@@ -218,6 +218,8 @@ func isInactiveTransactionError(err error) bool {
 
 func postgresBeginOptions(stmt *tree.BeginTransaction) *stdsql.TxOptions {
 	if stmt != nil && stmt.Modes.ReadWriteMode == tree.ReadOnly {
+		// DuckDB cannot start a read-only transaction. The pool strips this
+		// flag before BeginTx so Metabase's BEGIN READ ONLY catalog sync works.
 		return &stdsql.TxOptions{ReadOnly: true}
 	}
 	return &stdsql.TxOptions{}
