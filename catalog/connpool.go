@@ -1948,6 +1948,18 @@ func (p *ConnectionPool) CloseConn(id uint32) error {
 	return p.closeConnLockedWithBatch(id, nil, &completions)
 }
 
+// duckBeginTxOptions drops ReadOnly because DuckDB rejects BEGIN READ ONLY
+// ("read-only transactions are not supported"). Metabase JDBC uses that mode
+// for catalog/field sync; a normal DuckDB transaction still serves the reads.
+func duckBeginTxOptions(options *stdsql.TxOptions) *stdsql.TxOptions {
+	if options == nil || !options.ReadOnly {
+		return options
+	}
+	cp := *options
+	cp.ReadOnly = false
+	return &cp
+}
+
 func (p *ConnectionPool) GetTxn(ctx context.Context, id uint32, schemaName string, options *stdsql.TxOptions) (*stdsql.Tx, error) {
 	_, tx, err := p.GetTxnWithBinding(ctx, id, schemaName, options)
 	return tx, err
@@ -2053,7 +2065,7 @@ func (p *ConnectionPool) GetTxnWithBinding(ctx context.Context, id uint32, schem
 		}
 		// A session transaction can span multiple protocol requests (for example,
 		// after SET autocommit=0), so a request-scoped cancellation must not end it.
-		tx, err := conn.BeginTx(context.WithoutCancel(ctx), options)
+		tx, err := conn.BeginTx(context.WithoutCancel(ctx), duckBeginTxOptions(options))
 		if err != nil {
 			completeAdmission(nil)
 			unlock()
