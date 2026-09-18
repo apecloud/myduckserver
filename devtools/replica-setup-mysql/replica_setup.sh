@@ -150,9 +150,10 @@ else
             echo "Source database contains an unsupported backtick: $SOURCE_DATABASE" >&2
             exit 1
         fi
+        source_database_sql=$(printf '%s' "$SOURCE_DATABASE" | sed "s/'/''/g")
         existing_tables_output=$(mysqlsh --uri="$SOURCE_DSN" $SOURCE_PASSWORD_OPTION --sql \
             --result-format=tabbed -e \
-            "SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema='${SOURCE_DATABASE}';")
+            "SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema='${source_database_sql}';")
         check_command "checking source tables before snapshotless replication"
         existing_tables=$(printf '%s\n' "$existing_tables_output" \
             | awk 'NF && $1 ~ /^[0-9]+$/ { value=$1 } END { if (value == "") exit 1; print value }')
