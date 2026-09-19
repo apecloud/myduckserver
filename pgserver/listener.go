@@ -18,7 +18,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"os"
 	"sync/atomic"
 
 	gms "github.com/dolthub/go-mysql-server"
@@ -27,10 +26,7 @@ import (
 	"github.com/dolthub/vitess/go/netutil"
 )
 
-var (
-	processID   = uint32(os.Getpid())
-	certificate tls.Certificate //TODO: move this into the mysql.ListenerConfig
-)
+var certificate tls.Certificate //TODO: move this into the mysql.ListenerConfig
 
 // Listener listens for connections to process PostgreSQL requests into Dolt requests.
 type Listener struct {

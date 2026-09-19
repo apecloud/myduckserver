@@ -27,6 +27,10 @@ var pgIsInRecoveryRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.pg_is
 var pgCatalogVersionCallRegex = regexp.MustCompile(`(?i)\bpg_catalog\.version\s*\(\s*\)`)
 var pgCatalogVersionStmtRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.version\s*\(\s*\)\s*;?\s*$`)
 
+// Superset asks for a backend identifier before executing SQL Lab queries.
+// Match only the standalone call so literals and unrelated SQL are untouched.
+var pgBackendPIDStmtRegex = regexp.MustCompile(`(?i)^\s*select\s+(?:pg_catalog\.)?pg_backend_pid\s*\(\s*\)\s*;?\s*$`)
+
 // precompile a regex to match "select pg_catalog.pg_current_wal_lsn();" or "select pg_catalog.pg_last_wal_replay_lsn();"
 var pgWALLSNRegex = regexp.MustCompile(`(?i)^\s*select\s+pg_catalog\.(pg_current_wal_lsn|pg_last_wal_replay_lsn)\(\s*\)\s*;?\s*$`)
 
@@ -162,6 +166,17 @@ type SelectionConversion struct {
 }
 
 var selectionConversions = []SelectionConversion{
+	{
+		needConvert: func(query *ConvertedStatement) bool {
+			return pgBackendPIDStmtRegex.MatchString(RemoveComments(query.String))
+		},
+		doConvert: func(h *ConnectionHandler, query *ConvertedStatement) error {
+			// A MyDuck process serves many sessions. Use the same per-connection
+			// identifier as BackendKeyData, not the shared operating-system PID.
+			query.String = fmt.Sprintf(`SELECT %d::INTEGER AS "pg_backend_pid"`, h.backendPID())
+			return nil
+		},
+	},
 	{
 		needConvert: func(query *ConvertedStatement) bool {
 			sql := RemoveComments(query.String)
