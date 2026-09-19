@@ -59,10 +59,14 @@ mysql -h127.0.0.1 -uroot -P11229
 
 With Dolt configured, refer to [replica-setup-rds.md](replica-setup-rds.md) to complete the setup process for replication.
 Only data from the `main` branch can be replicated to MyDuckServer. 
+When MySQL Shell snapshot is unavailable, MyDuck creates only the empty database named in `SOURCE_DSN` and starts binlog replication from the source GTID position. The source database must therefore be empty when setup begins; existing tables and rows are rejected rather than silently skipped. Load existing data with a snapshot-capable source or an explicit import before enabling replication.
+
 To replicate data from other branches, please refer to the [Dolt to MySQL Replication guide](https://www.dolthub.com/blog/2024-07-05-binlog-source-preview/), which offers detailed instructions and additional options for working with different branches in Dolt.
 
 When MySQL Shell's `copy-instance` is unavailable, MyDuck skips the snapshot and
 creates an empty target database from the database path in `SOURCE_DSN` before
-starting replication. Existing tables and rows are still populated by
-subsequent binlog events. Include the source database in `SOURCE_DSN` so the
-target schema can be initialized before the first table event.
+starting replication. Setup rejects a source database that already contains
+tables, because the source GTID position is used as the replication baseline
+and those earlier table and row events cannot be copied without a snapshot.
+Include the source database in `SOURCE_DSN` so the target schema can be
+initialized before the first table event.
