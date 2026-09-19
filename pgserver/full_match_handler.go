@@ -46,6 +46,9 @@ var queryPatterns = map[string]string{
 
 // handleFullMatchQuery checks if the given query matches any known patterns and returns the corresponding SQL query.
 func handleFullMatchQuery(inputQuery string) string {
+	if query := rewriteSQLAlchemyReflection(inputQuery); query != "" {
+		return query
+	}
 	return queryPatterns[preProcessing(inputQuery)]
 }
 
