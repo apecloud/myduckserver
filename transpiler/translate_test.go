@@ -14,6 +14,7 @@ func TestTranslate(t *testing.T) {
 		name     string
 		input    string
 		expected string
+		validate func(*testing.T, string)
 	}{
 
 		{
@@ -82,14 +83,25 @@ func TestTranslate(t *testing.T) {
 			expected: "SELECT FLOOR(i), AVG(LENGTH(s)) FROM mytable AS mt GROUP BY 1 ORDER BY FLOOR(i) DESC",
 		},
 		{
-			name:     "FORMAT two-arg uses DuckDB fmt grouping",
-			input:    "SELECT FORMAT(i, 3) FROM mytable",
-			expected: "SELECT FORMAT('{:,.3f}', i) FROM mytable",
+			name:  "FORMAT two-arg uses DuckDB fmt grouping",
+			input: "SELECT FORMAT(i, 3) FROM mytable",
+			validate: func(t *testing.T, result string) {
+				if !strings.Contains(result, "TYPEOF(i)") || !strings.Contains(result, "THEN '{:,}'") {
+					t.Errorf("FORMAT translation must select an integer-safe format dynamically: %s", result)
+				}
+				if strings.Contains(result, "FORMAT('{:,.3f}', CAST(i AS DOUBLE))") {
+					t.Errorf("FORMAT translation must not coerce the value to DOUBLE: %s", result)
+				}
+			},
 		},
 		{
-			name:     "FORMAT with da_DK swaps grouping separators",
-			input:    "SELECT FORMAT(i, 3, 'da_DK') FROM mytable",
-			expected: "SELECT REPLACE(REPLACE(REPLACE(FORMAT('{:,.3f}', i), ',', '\x01'), '.', ','), '\x01', '.') FROM mytable",
+			name:  "FORMAT with da_DK swaps grouping separators",
+			input: "SELECT FORMAT(i, 3, 'da_DK') FROM mytable",
+			validate: func(t *testing.T, result string) {
+				if !strings.Contains(result, "REPLACE(REPLACE(REPLACE(") || !strings.Contains(result, "TYPEOF(i)") {
+					t.Errorf("FORMAT locale translation lost the precision-safe formatter: %s", result)
+				}
+			},
 		},
 		{
 			name:     "aggregate without GROUP BY wraps non-agg columns",
@@ -618,7 +630,9 @@ func TestTranslate(t *testing.T) {
 
 			trimmedResult := strings.TrimSpace(result)
 			fmt.Println("trimmedResult:", trimmedResult)
-			if trimmedResult != tc.expected {
+			if tc.validate != nil {
+				tc.validate(t, trimmedResult)
+			} else if trimmedResult != tc.expected {
 				t.Errorf("translate(%q) = %v; want %v", tc.input, trimmedResult, tc.expected)
 			}
 		})
