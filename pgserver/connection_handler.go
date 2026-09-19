@@ -528,6 +528,13 @@ func (h *ConnectionHandler) handleStartup() (bool, error) {
 	}
 }
 
+// backendPID exposes the session identity as PostgreSQL's positive int4 PID.
+// Internally, PG connection IDs reserve the high bit to distinguish them from
+// MySQL connections; that protocol marker is not part of the public PG PID.
+func (h *ConnectionHandler) backendPID() uint32 {
+	return h.mysqlConn.ConnectionID & ((1 << 31) - 1)
+}
+
 // sendClientStartupMessages sends introductory messages to the client and returns any error
 func (h *ConnectionHandler) sendClientStartupMessages() error {
 	sessParams := []struct {
@@ -578,8 +585,8 @@ func (h *ConnectionHandler) sendClientStartupMessages() error {
 		}
 	}
 	return h.send(&pgproto3.BackendKeyData{
-		ProcessID: processID,
-		SecretKey: make([]byte, 4), // TODO: this should represent an ID that can uniquely identify this connection, so that CancelRequest will work
+		ProcessID: h.backendPID(),
+		SecretKey: make([]byte, 4), // TODO: generate and validate a per-session secret when implementing CancelRequest.
 	})
 }
 
