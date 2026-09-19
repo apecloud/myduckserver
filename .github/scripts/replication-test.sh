@@ -307,6 +307,12 @@ start_myduck REPLICA
 wait_for_myduck_setup
 
 if [[ "$SOURCE" == "dolt" ]]; then
+  target_schema_count=$(myduck_scalar \
+    "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name='test'")
+  if [[ "$target_schema_count" != 1 ]]; then
+    echo "Dolt target schema test was not initialized before binlog replay" >&2
+    exit 1
+  fi
   create_source_data
 fi
 
