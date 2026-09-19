@@ -142,6 +142,11 @@ if check_if_source_supports_copying_instance; then
     check_command "copying a snapshot of the MySQL instance"
 else
     echo "The source server cannot be copied using MySQL Shell. The snapshot step has been skipped."
+    # Without a snapshot, the source position must be the replication baseline.
+    # This prevents pre-setup CREATE DATABASE events from being replayed after
+    # the empty target schema is initialized below.
+    EXECUTED_GTID_SET="$GTID_EXECUTED"
+    echo "Using source GTID position as replication baseline: $EXECUTED_GTID_SET"
 fi
 
 # A skipped snapshot leaves the target without the source databases. This is
